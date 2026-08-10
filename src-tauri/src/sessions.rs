@@ -113,6 +113,7 @@ pub struct SessionMeta {
     pub is_subagent: bool,
     pub task_id: Option<String>,
     pub parent_session_id: Option<String>, // set when is_subagent (== header id)
+    pub parent_session_path: Option<String>, // linked parent session file (text/timing match)
     pub message_count: usize,
     pub running: bool,
     pub size: u64,
@@ -328,11 +329,115 @@ fn first_line(p: &Path) -> Option<String> {
         })
 }
 
+// ---------------------------------------------------------------------------
+// Subagent detection: a session is a subagent if its uuid appears in any
+// agent-logs/task-*.jsonl first line, or in a *subagent-task-* mirror header,
+// or its filename contains "subagent-task-". The pi-subagent-durable extension
+// spawns real pi sessions (normal filenames) that ALSO have a slim mirror file
+// and a task log — all sharing the same session uuid.
+// ---------------------------------------------------------------------------
+
+fn subagent_index() -> (HashSet<String>, HashMap<String, String>, HashMap<String, String>) {
+    // uuid -> taskId
+    let mut by_uuid: HashMap<String, String> = HashMap::new();
+    // uuid -> first user message (from mirror files; matches the parent's
+    // original subagent call text better than the resumed real session)
+    let mut match_text_by_uuid: HashMap<String, String> = HashMap::new();
+    // 1) agent-logs/task-<taskId>.jsonl first line -> session uuid
+    let logs = pi_agent_dir().join("agent-logs");
+    if let Ok(fd) = fs::read_dir(&logs) {
+        for f in fd.flatten() {
+            let name = f.file_name().to_string_lossy().to_string();
+            if !name.starts_with("task-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let task_id = name
+                .strip_prefix("task-")
+                .and_then(|s| s.strip_suffix(".jsonl"))
+                .map(|s| s.to_string());
+            if let Some(line) = first_line(&f.path()) {
+                if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                    if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                        if let Some(t) = &task_id {
+                            by_uuid.insert(id.to_string(), t.clone());
+                        } else {
+                            by_uuid.entry(id.to_string()).or_default();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 2) mirror files: header id + taskId + first user message
+    let root = sessions_dir();
+    if let Ok(rd) = fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let path = e.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Ok(fd) = fs::read_dir(&path) {
+                for f in fd.flatten() {
+                    let name = f.file_name().to_string_lossy().to_string();
+                    if !name.contains("subagent-task-") || !name.ends_with(".jsonl") {
+                        continue;
+                    }
+                    let task_id = task_id_from_filename(&name);
+                    let Ok(data) = fs::read(f.path()) else { continue };
+                    let text = String::from_utf8_lossy(&data);
+                    let mut first_msg = None;
+                    for (i, line) in text.lines().enumerate() {
+                        if i > 20 {
+                            break;
+                        }
+                        let Ok(v) = serde_json::from_str::<Value>(line) else {
+                            continue;
+                        };
+                        match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+                            "session" => {
+                                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                                    if let Some(t) = &task_id {
+                                        by_uuid.insert(id.to_string(), t.clone());
+                                    } else {
+                                        by_uuid.entry(id.to_string()).or_default();
+                                    }
+                                }
+                            }
+                            "message" => {
+                                if let Some(m) = v.get("message") {
+                                    if m.get("role").and_then(|x| x.as_str()) == Some("user")
+                                        && first_msg.is_none()
+                                    {
+                                        first_msg = text_of_message(m, 400);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let (Some(id), Some(fm)) = (
+                        text.lines()
+                            .next()
+                            .and_then(|l| serde_json::from_str::<Value>(l).ok())
+                            .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string())),
+                        first_msg,
+                    ) {
+                        match_text_by_uuid.insert(id, fm);
+                    }
+                }
+            }
+        }
+    }
+    let uuids: HashSet<String> = by_uuid.keys().cloned().collect();
+    (uuids, by_uuid, match_text_by_uuid)
+}
+
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let root = sessions_dir();
     let dir = root.join(project_key);
     let mut out = Vec::new();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
+    let (sub_uuids, task_by_uuid, match_text_by_uuid) = subagent_index();
 
     if let Ok(fd) = fs::read_dir(&dir) {
         for f in fd.flatten() {
@@ -341,32 +446,81 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             if !fname.ends_with(".jsonl") {
                 continue;
             }
-            if let Some(m) = parse_meta(&path, &fname, &running) {
+            if let Some(m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid) {
                 out.push(m);
             }
         }
     }
+    // dedupe: same uuid can have a mirror (subagent-task-*) and a real session
+    // file (normal name). Prefer the real one (fuller history).
+    let mut by_id: HashMap<String, SessionMeta> = HashMap::new();
+    for m in out {
+        let cur = by_id.get(&m.id);
+        let replace = match cur {
+            None => true,
+            Some(c) => {
+                if !c.path.contains("subagent-task-") && m.path.contains("subagent-task-") {
+                    false // current is real pi session, new is mirror -> keep current
+                } else if c.path.contains("subagent-task-") && !m.path.contains("subagent-task-") {
+                    true // current is mirror, new is real -> replace
+                } else {
+                    m.size > c.size
+                }
+            }
+        };
+        if replace {
+            by_id.insert(m.id.clone(), m);
+        }
+    }
+    let mut out: Vec<SessionMeta> = by_id.into_values().collect();
+
+    // parent linkage: match subagent first message against the parent session's
+    // subagent tool calls (task text), within this project.
+    let parent_calls = collect_parent_calls(project_key);
+    for m in out.iter_mut() {
+        if m.is_subagent {
+            let match_text = match_text_by_uuid
+                .get(&m.id)
+                .cloned()
+                .or_else(|| m.first_message.clone());
+            if let Some(fm) = match_text {
+                if let Some(p) = match_parent(&fm, &parent_calls) {
+                    m.parent_session_path = Some(p);
+                }
+            }
+        }
+    }
+
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     out
 }
 
-fn parse_meta(path: &Path, fname: &str, running: &HashSet<String>) -> Option<SessionMeta> {
-    let is_sub = fname.contains("subagent-task-");
+fn parse_meta(
+    path: &Path,
+    fname: &str,
+    running: &HashSet<String>,
+    sub_uuids: &HashSet<String>,
+    task_by_uuid: &HashMap<String, String>,
+) -> Option<SessionMeta> {
     let (id, cwd, created_iso, name, first_msg, model) = scan_head(path);
     if id.is_empty() {
         // not a valid pi session file; skip
         return None;
     }
+    let is_sub = fname.contains("subagent-task-") || sub_uuids.contains(&id);
     let md = fmetadata(path);
     let mtime = md.as_ref().map(|m| m.mtime).unwrap_or(0);
     let size = md.as_ref().map(|m| m.size).unwrap_or(0);
     let last_msg = tail_preview(path, 160);
     let spath = path.to_string_lossy().to_string();
-    let parent = if is_sub { Some(id.clone()) } else { None };
-    let task_id = if is_sub { task_id_from_filename(fname) } else { None };
+    let task_id = if is_sub {
+        task_id_from_filename(fname).or_else(|| task_by_uuid.get(&id).cloned())
+    } else {
+        None
+    };
     Some(SessionMeta {
         path: spath.clone(),
-        id,
+        id: id.clone(),
         cwd,
         name,
         first_message: first_msg,
@@ -377,11 +531,161 @@ fn parse_meta(path: &Path, fname: &str, running: &HashSet<String>) -> Option<Ses
         model,
         is_subagent: is_sub,
         task_id,
-        parent_session_id: parent,
+        parent_session_id: None,
+        parent_session_path: None,
         message_count: 0,
         running: running.contains(&spath),
         size,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Parent linkage: the pi-subagent-durable tool result does not record the
+// taskId, so we match the subagent's first user message ("Task: ...") against
+// the parent session's `subagent` tool call `task` text. Prefix/containment
+// + length ratio gives exact matches (score 1.0) in the common case; orphans
+// land in the dedicated subagent section.
+// ---------------------------------------------------------------------------
+
+struct ParentCall {
+    path: String,
+    task: String, // normalized
+}
+
+fn normalize_text(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
+    let mut out = Vec::new();
+    let root = sessions_dir();
+    let dir = root.join(project_key);
+    let Ok(fd) = fs::read_dir(&dir) else {
+        return out;
+    };
+    for f in fd.flatten() {
+        let path = f.path();
+        let fname = f.file_name().to_string_lossy().to_string();
+        if !fname.ends_with(".jsonl") || fname.contains("subagent-task-") {
+            continue;
+        }
+        let Ok(data) = fs::read(&path) else { continue };
+        let text = String::from_utf8_lossy(&data);
+        for line in text.lines() {
+            if !line.contains("subagent") {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let Some(m) = v.get("message") else { continue };
+            if m.get("role").and_then(|x| x.as_str()) != Some("assistant") {
+                continue;
+            }
+            let Some(content) = m.get("content").and_then(|x| x.as_array()) else {
+                continue;
+            };
+            for c in content {
+                if c.get("type").and_then(|x| x.as_str()) != Some("toolCall") {
+                    continue;
+                }
+                if c.get("name").and_then(|x| x.as_str()) != Some("subagent") {
+                    continue;
+                }
+                let args = c.get("arguments").cloned().unwrap_or(Value::Null);
+                extract_tasks(&args, &mut out, &path);
+            }
+        }
+    }
+    out
+}
+
+fn extract_tasks(args: &Value, out: &mut Vec<ParentCall>, path: &Path) {
+    match args {
+        Value::String(s) => {
+            if let Ok(v) = serde_json::from_str::<Value>(s) {
+                extract_tasks(&v, out, path);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(t) = map.get("task").and_then(|x| x.as_str()) {
+                out.push(ParentCall {
+                    path: path.to_string_lossy().to_string(),
+                    task: normalize_text(t),
+                });
+            }
+            if let Some(tasks) = map.get("tasks").and_then(|x| x.as_array()) {
+                for t in tasks {
+                    if let Some(s) = t.get("task").and_then(|x| x.as_str()) {
+                        out.push(ParentCall {
+                            path: path.to_string_lossy().to_string(),
+                            task: normalize_text(s),
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn match_parent(first_message: &str, calls: &[ParentCall]) -> Option<String> {
+    let body = first_message
+        .split_once("Task:")
+        .map(|(_, r)| r)
+        .unwrap_or(first_message);
+    let body = normalize_text(body);
+    if body.is_empty() {
+        return None;
+    }
+    let body_alpha = extract_alpha_id(&body);
+    let mut best: Option<(f64, String)> = None;
+    for c in calls {
+        if c.task.is_empty() {
+            continue;
+        }
+        let a = &c.task;
+        let b = &body;
+        let mut score = if a.contains(b) || b.contains(a) {
+            let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+            short.len() as f64 / long.len() as f64
+        } else {
+            0.0
+        };
+        // alpha id (e.g. blQqQL86) present in both -> strong signal
+        if let Some(pid) = extract_alpha_id(a) {
+            if body_alpha.as_deref() == Some(pid.as_str()) {
+                score = score.max(1.0);
+            }
+        }
+        // long common prefix (re-submission with appended context)
+        let lcp = common_prefix_len(a, b);
+        score = score.max((lcp as f64 / 50.0).min(1.0));
+        if score >= 0.55 && best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+            best = Some((score, c.path.clone()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Extract an 8-char alpha id right after "alpha"/"Alpha" (WorldQuant style).
+fn extract_alpha_id(s: &str) -> Option<String> {
+    let lower = s.to_lowercase();
+    for (i, m) in lower.match_indices("alpha") {
+        let rest = &s[i + m.len()..];
+        let rest = rest.trim_start_matches(|c: char| c == ':' || c == ' ' || c == '　');
+        let rest = rest.trim_start_matches(|c: char| c.is_whitespace());
+        let token: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        if token.len() >= 8 && token.len() <= 12 {
+            return Some(token);
+        }
+    }
+    None
+}
+
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
 struct Fmeta {
@@ -839,8 +1143,7 @@ mod tests {
             for s in &sessions {
                 if s.is_subagent {
                     saw_sub = true;
-                    // mirror header id == parent session uuid
-                    assert!(s.parent_session_id.is_some());
+                    assert!(s.task_id.is_some(), "subagent must carry a task id");
                 } else {
                     saw_main = true;
                 }
@@ -866,22 +1169,46 @@ mod tests {
 
     #[test]
     fn test_subagent_parent_link() {
-        // Every subagent whose header id matches a main session must link.
+        // Text-based linkage: most subagents resolve to a parent main session.
         let projects = list_projects();
         let mut subs = 0usize;
         let mut linked = 0usize;
         for p in projects {
             let sessions = list_sessions(&p.key);
-            let mains: Vec<&SessionMeta> = sessions.iter().filter(|s| !s.is_subagent).collect();
             for s in sessions.iter().filter(|s| s.is_subagent) {
                 subs += 1;
-                if mains.iter().any(|m| m.id == s.parent_session_id.as_deref().unwrap_or("")) {
+                if s.parent_session_path.is_some() {
                     linked += 1;
                 }
             }
         }
         assert!(subs > 0);
-        // we observed 26/27 on the real machine; require most to link
-        assert!(linked * 100 / subs >= 90, "linkage rate too low: {linked}/{subs}");
+        // observed ~74% direct match; require most to resolve
+        assert!(linked * 100 / subs >= 50, "linkage rate too low: {linked}/{subs}");
     }
+
+    #[test]
+    fn test_real_subagent_file_detected() {
+        // Real pi session files spawned by the subagent extension (normal
+        // filenames) must be flagged is_subagent; mirror + real pair for the
+        // same uuid must be deduped to a single entry.
+        let projects = list_projects();
+        let mut found_real_sub = false;
+        for p in projects {
+            let sessions = list_sessions(&p.key);
+            let mut counts: HashMap<&str, usize> = HashMap::new();
+            for s in &sessions {
+                *counts.entry(s.id.as_str()).or_insert(0) += 1;
+                if s.is_subagent && !s.path.contains("subagent-task-") {
+                    found_real_sub = true;
+                }
+            }
+            for (id, n) in counts {
+                assert!(n == 1, "uuid {id} appears {n} times (dedupe failed)");
+            }
+        }
+        assert!(found_real_sub, "expected a real-file subagent to be detected");
+    }
+
 }
+

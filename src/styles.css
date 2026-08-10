@@ -89,6 +89,45 @@ body {
 .session-list { flex: 1; overflow-y: auto; padding: 6px; }
 .session-list-head { padding: 4px 8px; color: var(--fg-dim); font-size: 11px; }
 
+/* collapsible section headers */
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin: 4px 0 2px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: 0.3px;
+  user-select: none;
+}
+.section-head:hover { background: var(--bg3); }
+.section-head.collapsed { opacity: 0.7; }
+.section-head.sub { color: var(--purple); }
+.section-arrow { font-size: 9px; color: var(--fg-dim); }
+.section-count {
+  background: var(--bg3);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+.section-head.sub .section-count { background: rgba(149, 117, 205, 0.15); color: var(--purple); }
+
+.subagent-parent {
+  font-size: 10px;
+  color: var(--fg-dim);
+  padding: 0 8px 4px 26px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent-parent .orphan { color: var(--red); }
+
 .session-item {
   display: block;
   width: 100%;

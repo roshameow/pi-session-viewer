@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import type { Project, SessionMeta } from "../types";
 
 function relTime(epochSec: number): string {
@@ -69,25 +69,36 @@ export function Sidebar({
   onSelectSession: (s: SessionMeta) => void;
   onRefresh: () => void;
 }) {
-  const { mainSessions, childrenMap, orphans } = useMemo(() => {
+  const [collapsedMain, setCollapsedMain] = useState(false);
+  const [collapsedSub, setCollapsedSub] = useState(false);
+  const [collapsedProjects, setCollapsedProjects] = useState(false);
+
+  const { mainSessions, childrenMap, subagents } = useMemo(() => {
     const main: SessionMeta[] = [];
     const children = new Map<string, SessionMeta[]>();
-    const orphans: SessionMeta[] = [];
+    const subs: SessionMeta[] = [];
     for (const s of sessions) {
       if (!s.isSubagent) {
         main.push(s);
         continue;
       }
-      if (s.parentSessionId && sessions.some((m) => !m.isSubagent && m.id === s.parentSessionId)) {
-        const list = children.get(s.parentSessionId) ?? [];
+      subs.push(s);
+      if (s.parentSessionPath && sessions.some((m) => !m.isSubagent && m.path === s.parentSessionPath)) {
+        const list = children.get(s.parentSessionPath) ?? [];
         list.push(s);
-        children.set(s.parentSessionId, list);
-      } else {
-        orphans.push(s);
+        children.set(s.parentSessionPath, list);
       }
     }
-    return { mainSessions: main, childrenMap: children, orphans };
+    return { mainSessions: main, childrenMap: children, subagents: subs };
   }, [sessions]);
+
+  const parentTitle = (path: string | null): string | null => {
+    if (!path) return null;
+    const m = sessions.find((s) => s.path === path);
+    if (!m) return null;
+    const t = m.name || m.firstMessage || "(父会话)";
+    return t.length > 26 ? t.slice(0, 26) + "…" : t;
+  };
 
   return (
     <div className="sidebar">
@@ -98,58 +109,114 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* projects */}
+      {/* projects (collapsible) */}
       <div className="project-list">
-        {projects.map((p) => (
-          <button
-            key={p.key}
-            className={`project-item ${selectedProject === p.key ? "selected" : ""}`}
-            onClick={() => onSelectProject(p)}
-          >
-            <span className="project-icon">📁</span>
-            <span className="project-name">{projectName(p.cwd)}</span>
-            <span className="project-count">{p.sessionCount}</span>
-            {p.subagentCount > 0 && <span className="project-sub">🕸️{p.subagentCount}</span>}
-          </button>
-        ))}
-        {projects.length === 0 && <div className="empty">未找到 pi 会话目录</div>}
+        <div
+          className={`section-head ${collapsedProjects ? "collapsed" : ""}`}
+          onClick={() => setCollapsedProjects(!collapsedProjects)}
+        >
+          <span className="section-arrow">{collapsedProjects ? "▸" : "▾"}</span>
+          <span>项目</span>
+          <span className="section-count">{projects.length}</span>
+        </div>
+        {!collapsedProjects && (
+          <>
+            {projects.map((p) => (
+              <button
+                key={p.key}
+                className={`project-item ${selectedProject === p.key ? "selected" : ""}`}
+                onClick={() => onSelectProject(p)}
+              >
+                <span className="project-icon">📁</span>
+                <span className="project-name">{projectName(p.cwd)}</span>
+                <span className="project-count">{p.sessionCount}</span>
+                {p.subagentCount > 0 && <span className="project-sub">🕸️{p.subagentCount}</span>}
+              </button>
+            ))}
+            {projects.length === 0 && <div className="empty">未找到 pi 会话目录</div>}
+          </>
+        )}
       </div>
 
       {/* sessions of selected project */}
       {selectedProject && (
         <div className="session-list">
-          <div className="session-list-head">
-            {loadingSessions ? "加载中…" : `${mainSessions.length + orphans.length} 个会话`}
-          </div>
-          {mainSessions.map((s) => {
-            const subs = childrenMap.get(s.id) ?? [];
-            return (
-              <React.Fragment key={s.path}>
-                <SessionItem s={s} depth={0} selected={selectedSession?.path === s.path} onSelect={onSelectSession} />
-                {subs.length > 0 && (
-                  <div className="subagent-group">
-                    <div className="subagent-group-head">
-                      <span>🕸️ 子代理</span>
-                      <span className="subagent-count">{subs.length}</span>
-                      {subs.some((x) => x.running) && <span className="subagent-running">● 运行中</span>}
-                    </div>
-                    {subs.map((sub) => (
+          {loadingSessions ? (
+            <div className="empty">加载中…</div>
+          ) : (
+            <>
+              {/* main sessions */}
+              <div
+                className={`section-head ${collapsedMain ? "collapsed" : ""}`}
+                onClick={() => setCollapsedMain(!collapsedMain)}
+              >
+                <span className="section-arrow">{collapsedMain ? "▸" : "▾"}</span>
+                <span>主会话</span>
+                <span className="section-count">{mainSessions.length}</span>
+              </div>
+              {!collapsedMain &&
+                mainSessions.map((s) => {
+                  const subs = childrenMap.get(s.path) ?? [];
+                  return (
+                    <React.Fragment key={s.path}>
                       <SessionItem
-                        key={sub.path}
-                        s={sub}
+                        s={s}
                         depth={0}
-                        selected={selectedSession?.path === sub.path}
+                        selected={selectedSession?.path === s.path}
                         onSelect={onSelectSession}
                       />
-                    ))}
-                  </div>
-                )}
-              </React.Fragment>
-            );
-          })}
-          {orphans.map((s) => (
-            <SessionItem key={s.path} s={s} depth={0} selected={selectedSession?.path === s.path} onSelect={onSelectSession} />
-          ))}
+                      {subs.length > 0 && (
+                        <div className="subagent-group">
+                          <div className="subagent-group-head">
+                            <span>🕸️ 子代理</span>
+                            <span className="subagent-count">{subs.length}</span>
+                            {subs.some((x) => x.running) && (
+                              <span className="subagent-running">● 运行中</span>
+                            )}
+                          </div>
+                          {subs.map((sub) => (
+                            <SessionItem
+                              key={sub.path}
+                              s={sub}
+                              depth={0}
+                              selected={selectedSession?.path === sub.path}
+                              onSelect={onSelectSession}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+
+              {/* subagent sessions (dedicated section) */}
+              <div
+                className={`section-head sub ${collapsedSub ? "collapsed" : ""}`}
+                onClick={() => setCollapsedSub(!collapsedSub)}
+              >
+                <span className="section-arrow">{collapsedSub ? "▸" : "▾"}</span>
+                <span>子代理会话</span>
+                <span className="section-count">{subagents.length}</span>
+              </div>
+              {!collapsedSub &&
+                subagents.map((s) => {
+                  const pt = parentTitle(s.parentSessionPath);
+                  return (
+                    <React.Fragment key={s.path}>
+                      <SessionItem
+                        s={s}
+                        depth={0}
+                        selected={selectedSession?.path === s.path}
+                        onSelect={onSelectSession}
+                      />
+                      <div className="subagent-parent">
+                        {pt ? <>父: {pt}</> : <span className="orphan">未关联父会话</span>}
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
+            </>
+          )}
         </div>
       )}
     </div>

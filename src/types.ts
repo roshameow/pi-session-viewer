@@ -22,6 +22,7 @@ export interface SessionMeta {
   isSubagent: boolean;
   taskId: string | null;
   parentSessionId: string | null;
+  parentSessionPath: string | null;
   messageCount: number;
   running: boolean;
   size: number;
