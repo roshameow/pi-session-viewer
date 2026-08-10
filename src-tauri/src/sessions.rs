@@ -136,7 +136,7 @@ pub struct SessionMeta {
     pub sleeping: bool,   // process alive, waiting on a bash sleep
     pub interrupted: bool, // process dead + no terminal event, resumable
     pub in_rmux: bool,
-    pub rmux_target: Option<String>, // e.g. "pi-Users-...:s019fe979"
+    pub rmux_target: Option<String>, // e.g. "pi-Users-...:s<id8>"
     pub rmux_attached: bool, // a terminal client is attached to the rmux session
     pub rmux_dead: bool,     // rmux window kept by remain-on-exit, pane process exited
     pub term_alive: bool,    // an alive pi process runs this session in a terminal window
@@ -861,7 +861,7 @@ fn extract_task_id(s: &str) -> Option<String> {
 
 #[derive(Clone)]
 pub struct RmuxRuntime {
-    pub target: String, // e.g. "pi-Users-...:s019fe979"
+    pub target: String, // e.g. "pi-Users-...:s<id8>"
     pub attached: bool, // a terminal client is currently attached (has UI)
     pub dead: bool,     // the pane process has exited (window kept by remain-on-exit)
 }
