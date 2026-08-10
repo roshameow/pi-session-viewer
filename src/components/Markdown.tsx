@@ -5,6 +5,8 @@ import remarkGfm from "remark-gfm";
 // Markdown renderer styled after the no-tool-bg / minimal-mode palette.
 
 export function Markdown({ text }: { text: string }) {
+  // re-parsing markdown on every render is the dominant cost for big threads;
+  // memoize so unchanged text blocks skip react-markdown entirely
   return (
     <div className="md">
       <ReactMarkdown
@@ -38,3 +40,5 @@ export function Markdown({ text }: { text: string }) {
     </div>
   );
 }
+
+export const MemoMarkdown = React.memo(Markdown);

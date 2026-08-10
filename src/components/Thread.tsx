@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentBlock, Entry, SessionDetail } from "../types";
-import { Markdown } from "./Markdown";
+import { Markdown, MemoMarkdown } from "./Markdown";
 import { api } from "../api";
 
 // ---------- Live conversation blocks (assembled from pi json events) ----------
@@ -254,6 +254,13 @@ export function Thread({
   const searchRef = useRef<HTMLInputElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterMode>("default");
+  // windowed rendering: a 7MB session can have 2400+ messages; rendering
+  // every react-markdown block at once is what made switching lag. Render the
+  // tail and grow upward on demand.
+  const [windowSize, setWindowSize] = useState(150);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const prevScrollHeight = useRef(0);
+  const [expanding, setExpanding] = useState(false);
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
@@ -398,6 +405,28 @@ export function Thread({
     return { items, skip, matchCount, hideToolOutput: filter === "no-tools" };
   }, [detail, filter, search]);
 
+  // only the tail of the rendered items is mounted; expand on demand
+  const visibleItems = useMemo(() => {
+    const vis = renderItems.items.filter((_, i) => !renderItems.skip.has(renderItems.items[i].activeIdx));
+    if (windowSize >= vis.length) return vis;
+    return vis.slice(vis.length - windowSize);
+  }, [renderItems, windowSize]);
+
+  const loadEarlier = () => {
+    const el = scrollRef.current;
+    if (el) prevScrollHeight.current = el.scrollHeight;
+    setExpanding(true);
+    setWindowSize((w) => w + 300);
+  };
+  // keep the viewport anchored when older messages are prepended above
+  useEffect(() => {
+    if (expanding && scrollRef.current) {
+      const el = scrollRef.current;
+      el.scrollTop += el.scrollHeight - prevScrollHeight.current;
+      setExpanding(false);
+    }
+  }, [windowSize, expanding]);
+
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [renderItems.items.length, liveBlocks, autoScroll]);
@@ -514,9 +543,14 @@ export function Thread({
           </div>
         </div>
       </div>
-      <div className="thread-scroll" onScroll={onScroll}>
+      <div className="thread-scroll" onScroll={onScroll} ref={scrollRef}>
         <div className="thread-inner">
-          {renderItems.items.map(({ entry, inlineResults, activeIdx }, idx) => {
+          {renderItems.matchCount > visibleItems.length && (
+            <button className="load-earlier" onClick={loadEarlier}>
+              ↑ show {renderItems.matchCount - visibleItems.length} earlier messages
+            </button>
+          )}
+          {visibleItems.map(({ entry, inlineResults, activeIdx }, idx) => {
             if (renderItems.skip.has(activeIdx)) return null;
             return (
               <EntryView
@@ -542,7 +576,7 @@ export function Thread({
                 {b.thinking && <ThinkingLine text={b.thinking} />}
                 {b.text ? (
                   <div className="msg-text">
-                    <Markdown text={b.text} />
+                    <MemoMarkdown text={b.text} />
                     {!b.done && <span className="cursor" />}
                   </div>
                 ) : (
@@ -641,7 +675,7 @@ function EntryView({
       <div className="msg user">
         <div className="msg-text">
           {entry.content.map((c, i) =>
-            c.kind === "text" ? <Markdown key={i} text={c.text} /> : null
+            c.kind === "text" ? <MemoMarkdown key={i} text={c.text} /> : null
           )}
         </div>
       </div>
@@ -658,7 +692,7 @@ function EntryView({
         ))}
         {text && (
           <div className="msg-text">
-            <Markdown text={text} />
+            <MemoMarkdown text={text} />
           </div>
         )}
         {calls.map((c, i) => {

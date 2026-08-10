@@ -2109,3 +2109,21 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod size_profile {
+    use super::*;
+    #[test]
+    fn sizes() {
+        let projs = list_projects();
+        for p in projs.iter().take(3) {
+            let ss = list_sessions(&p.key);
+            println!("SIZE project={} sessions={}", &p.key[..24.min(p.key.len())], ss.len());
+            for m in ss.iter().filter(|m| !m.is_subagent).take(3) {
+                let d = session_detail(&m.path).unwrap();
+                let bytes = std::fs::metadata(&m.path).map(|x| x.len()).unwrap_or(0);
+                println!("  size={:.1}MB entries={} msgs={} chars={}", bytes as f64 / 1e6, d.entries.len(), d.stats.message_count, d.stats.token_count);
+            }
+        }
+    }
+}

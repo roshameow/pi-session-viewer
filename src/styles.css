@@ -1051,3 +1051,21 @@ body {
   background: rgba(0, 215, 255, 0.12);
   border: 1px solid rgba(0, 215, 255, 0.6);
 }
+
+/* windowed thread: load-earlier button at the top of the rendered window */
+.load-earlier {
+  display: block;
+  margin: 10px auto;
+  padding: 6px 14px;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.load-earlier:hover {
+  color: var(--fg);
+  border-color: var(--cyan);
+  background: rgba(122, 162, 247, 0.08);
+}
