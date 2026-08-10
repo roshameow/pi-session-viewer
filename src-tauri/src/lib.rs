@@ -31,7 +31,7 @@ fn pi_sessions_dir() -> String {
 
 #[tauri::command]
 fn pi_version() -> Result<String, String> {
-    let bin = sessions::resolve_pi_bin().ok_or("未找到 pi 可执行文件")?;
+    let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
     let out = std::process::Command::new(bin)
         .arg("--version")
         .output()

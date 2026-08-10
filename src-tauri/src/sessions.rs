@@ -979,7 +979,7 @@ fn tail_preview(path: &Path, max_chars: usize) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
-    let data = fs::read(path).map_err(|e| format!("读取会话文件失败: {e}"))?;
+    let data = fs::read(path).map_err(|e| format!("Failed to read session file: {e}"))?;
     let text = String::from_utf8_lossy(&data);
 
     let mut header_id = String::new();

@@ -4,10 +4,10 @@ import type { Project, SessionMeta } from "../types";
 function relTime(epochSec: number): string {
   if (!epochSec) return "";
   const diff = Date.now() / 1000 - epochSec;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
   return new Date(epochSec * 1000).toLocaleDateString();
 }
 
@@ -35,7 +35,7 @@ function SessionItem({
   subsCollapsed?: boolean;
   onToggleSubs?: () => void;
 }) {
-  const title = s.name || s.firstMessage || "(空会话)";
+  const title = s.name || s.firstMessage || "(empty)";
   return (
     <button
       className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"} ${s.running ? "running" : ""}`}
@@ -47,7 +47,7 @@ function SessionItem({
         {!s.isSubagent && hasSubs && (
           <span
             className={`group-toggle ${subsCollapsed ? "collapsed" : ""}`}
-            title={subsCollapsed ? "展开子代理" : "折叠子代理"}
+            title={subsCollapsed ? "Expand subagents" : "Collapse subagents"}
             onClick={(e) => {
               e.stopPropagation();
               onToggleSubs?.();
@@ -61,8 +61,8 @@ function SessionItem({
         <span className="session-title">{title}</span>
         {s.isSubagent && <span className="sub-chip">SUB</span>}
         {!s.isSubagent && runningSubs > 0 && (
-          <span className="subs-running-badge" title={`${runningSubs} 个子代理运行中`}>
-            🕸️ {runningSubs} 运行中
+          <span className="subs-running-badge" title={`${runningSubs} subagent(s) running`}>
+            🕸️ {runningSubs} running
           </span>
         )}
       </div>
@@ -70,7 +70,7 @@ function SessionItem({
         <span className="session-time">{relTime(s.updatedAt)}</span>
         {s.model && <span className="session-model">{s.model}</span>}
         {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
-        {s.isSubagent && s.running && <span className="sub-running-chip">● 运行中</span>}
+        {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
       </div>
     </button>
   );
@@ -132,7 +132,7 @@ export function Sidebar({
     if (!path) return null;
     const m = sessions.find((s) => s.path === path);
     if (!m) return null;
-    const t = m.name || m.firstMessage || "(父会话)";
+    const t = m.name || m.firstMessage || "(parent)";
     return t.length > 26 ? t.slice(0, 26) + "…" : t;
   };
 
@@ -140,7 +140,7 @@ export function Sidebar({
     <div className="sidebar">
       <div className="sidebar-top">
         <span className="app-title">Pi Desktop</span>
-        <button className="icon-btn" title="刷新" onClick={onRefresh}>
+        <button className="icon-btn" title="Refresh" onClick={onRefresh}>
           ⟳
         </button>
       </div>
@@ -152,7 +152,7 @@ export function Sidebar({
           onClick={() => setCollapsedProjects(!collapsedProjects)}
         >
           <span className="section-arrow">{collapsedProjects ? "▸" : "▾"}</span>
-          <span>项目</span>
+          <span>Projects</span>
           <span className="section-count">{projects.length}</span>
         </div>
         {!collapsedProjects && (
@@ -167,14 +167,14 @@ export function Sidebar({
                 <span className="project-name">{projectName(p.cwd)}</span>
                 <span className="project-count">{p.sessionCount}</span>
                 {p.runningCount > 0 && (
-                  <span className="project-running" title={`${p.runningCount} 个会话运行中`}>
+                  <span className="project-running" title={`${p.runningCount} session(s) running`}>
                     ● {p.runningCount}
                   </span>
                 )}
                 {p.subagentCount > 0 && <span className="project-sub">🕸️{p.subagentCount}</span>}
               </button>
             ))}
-            {projects.length === 0 && <div className="empty">未找到 pi 会话目录</div>}
+            {projects.length === 0 && <div className="empty">No pi sessions found</div>}
           </>
         )}
       </div>
@@ -183,7 +183,7 @@ export function Sidebar({
       {selectedProject && (
         <div className="session-list">
           {loadingSessions ? (
-            <div className="empty">加载中…</div>
+            <div className="empty">Loading…</div>
           ) : (
             <>
               {/* main sessions */}
@@ -192,7 +192,7 @@ export function Sidebar({
                 onClick={() => setCollapsedMain(!collapsedMain)}
               >
                 <span className="section-arrow">{collapsedMain ? "▸" : "▾"}</span>
-                <span>主会话</span>
+                <span>Main sessions</span>
                 <span className="section-count">{mainSessions.length}</span>
               </div>
               {!collapsedMain &&
@@ -217,13 +217,13 @@ export function Sidebar({
                           <div
                             className="subagent-group-head"
                             onClick={() => toggleGroup(s.path)}
-                            title={groupCollapsed ? "展开" : "折叠"}
+                            title={groupCollapsed ? "Expand" : "Collapse"}
                           >
                             <span className="section-arrow">{groupCollapsed ? "▸" : "▾"}</span>
-                            <span>🕸️ 子代理</span>
+                            <span>🕸️ subagents</span>
                             <span className="subagent-count">{subs.length}</span>
                             {subs.some((x) => x.running) && (
-                              <span className="subagent-running">● 运行中</span>
+                              <span className="subagent-running">● running</span>
                             )}
                           </div>
                           {!groupCollapsed &&
@@ -248,7 +248,7 @@ export function Sidebar({
                 onClick={() => setCollapsedSub(!collapsedSub)}
               >
                 <span className="section-arrow">{collapsedSub ? "▸" : "▾"}</span>
-                <span>子代理会话</span>
+                <span>Subagent sessions</span>
                 <span className="section-count">{subagents.length}</span>
               </div>
               {!collapsedSub &&
@@ -263,7 +263,7 @@ export function Sidebar({
                         onSelect={onSelectSession}
                       />
                       <div className="subagent-parent">
-                        {pt ? <>父: {pt}</> : <span className="orphan">未关联父会话</span>}
+                        {pt ? <>parent: {pt}</> : <span className="orphan">no parent</span>}
                       </div>
                     </React.Fragment>
                   );

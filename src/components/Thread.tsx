@@ -148,7 +148,7 @@ function toolSummary(name: string, args: string, output: string, isError: boolea
     case "edit":
       return `Edit(${arg}) → ${lines} lines`;
     case "bash":
-      return `$ ${arg}` + (isError ? " → 失败" : lines > 1 ? ` → ${lines} lines` : "");
+      return `$ ${arg}` + (isError ? " → failed" : lines > 1 ? ` → ${lines} lines` : "");
     case "ls":
       return `Ls(${arg}) → ${lines} entries`;
     case "find":
@@ -156,7 +156,7 @@ function toolSummary(name: string, args: string, output: string, isError: boolea
     case "grep":
       return `Grep(${arg}) → ${lines} matches`;
     default:
-      return `${name}(${arg})` + (isError ? " → 错误" : lines > 1 ? ` → ${lines} lines` : "");
+      return `${name}(${arg})` + (isError ? " → error" : lines > 1 ? ` → ${lines} lines` : "");
   }
 }
 
@@ -167,11 +167,11 @@ export type FilterMode = "default" | "no-tools" | "user-only" | "labeled-only" |
 export const FILTER_CYCLE: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 
 export const FILTER_LABELS: Record<FilterMode, string> = {
-  default: "默认",
-  "no-tools": "无工具",
-  "user-only": "仅用户",
-  "labeled-only": "仅标签",
-  all: "全部",
+  default: "Default",
+  "no-tools": "No tools",
+  "user-only": "User only",
+  "labeled-only": "Labeled",
+  all: "All",
 };
 
 function ToolRow({
@@ -199,15 +199,15 @@ function ToolRow({
       <button
         className="tool-line"
         onClick={() => setOpen(!open)}
-        title={output && !hideResult ? "点击展开/收起输出" : undefined}
+        title={output && !hideResult ? "Click to expand/collapse output" : undefined}
       >
         <span className={`tdot ${isError ? "red" : running ? "pulse" : "green"}`}>●</span>
         <span className="tool-summary">{hideResult ? callOnly(name, arg) : summary}</span>
-        {running && <span className="tool-running">运行中…</span>}
+        {running && <span className="tool-running">running…</span>}
         {!running && !hideResult && outputLen > 0 && (
-          <span className="tool-expand">{open ? "▾" : "▸"} {open ? "收起" : "展开"}</span>
+          <span className="tool-expand">{open ? "▾" : "▸"} {open ? "Collapse" : "Expand"}</span>
         )}
-        {hideResult && <span className="tool-expand muted">(输出已隐藏)</span>}
+        {hideResult && <span className="tool-expand muted">(output hidden)</span>}
       </button>
       {open && output && !hideResult && (
         <pre className="tool-output" onClick={(e) => e.stopPropagation()}>
@@ -255,7 +255,7 @@ export function Thread({
     const entries = detail.entries;
     const active = detail.active.map((i) => entries[i]);
     const skip = new Set<number>();
-    const items: { entry: Entry; inlineResults: Entry[] }[] = [];
+    const items: { entry: Entry; inlineResults: Entry[]; activeIdx: number }[] = [];
 
     // ids of entries that carry a label (label entries point at them)
     const labeledIds = new Set(
@@ -268,7 +268,7 @@ export function Thread({
       // mode-level filtering
       if (filter === "user-only") {
         if (entry.role === "user") {
-          items.push({ entry, inlineResults: [] });
+          items.push({ entry, inlineResults: [], activeIdx: idx });
         } else {
           skip.add(idx);
         }
@@ -287,7 +287,7 @@ export function Thread({
       const toolCalls =
         entry.role === "assistant" ? entry.content.filter((c) => c.kind === "toolCall") : [];
       if (toolCalls.length === 0) {
-        items.push({ entry, inlineResults: [] });
+        items.push({ entry, inlineResults: [], activeIdx: idx });
         return;
       }
       const results: Entry[] = [];
@@ -300,7 +300,7 @@ export function Thread({
           break;
         }
       }
-      items.push({ entry, inlineResults: results });
+      items.push({ entry, inlineResults: results, activeIdx: idx });
       results.forEach((r) => {
         const ri = active.indexOf(r);
         if (ri >= 0) skip.add(ri);
@@ -319,15 +319,17 @@ export function Thread({
   };
 
   return (
-    <div className="thread" onScroll={onScroll}>
-      <div className="thread-inner">
-        <div className="session-head">
-          <div className="session-head-title">{detail.stats.model ?? "pi session"}</div>
-          <div className="session-head-meta">
-            {detail.stats.messageCount} 条消息 · {fmtTokens(detail.stats.tokenCount)} · $
-            {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+    <div className="thread">
+      <div className="thread-top">
+        <div className="thread-top-inner">
+          <div className="session-head">
+            <div className="session-head-title">{detail.stats.model ?? "pi session"}</div>
+            <div className="session-head-meta">
+              {detail.stats.messageCount} messages · {fmtTokens(detail.stats.tokenCount)} · $
+              {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+            </div>
           </div>
-          <div className="filter-bar" title="Ctrl+O 循环切换">
+          <div className="filter-bar" title="Ctrl+O cycles modes">
             {FILTER_CYCLE.map((m) => (
               <button
                 key={m}
@@ -339,18 +341,20 @@ export function Thread({
             ))}
           </div>
         </div>
-
-        {renderItems.items.map(({ entry, inlineResults }, idx) => {
-          if (renderItems.skip.has(detail.active[idx])) return null;
-          return (
-            <EntryView
-              key={entry.id + idx}
-              entry={entry}
-              inlineResults={inlineResults}
-              hideToolOutput={renderItems.hideToolOutput}
-            />
-          );
-        })}
+      </div>
+      <div className="thread-scroll" onScroll={onScroll}>
+        <div className="thread-inner">
+          {renderItems.items.map(({ entry, inlineResults, activeIdx }, idx) => {
+            if (renderItems.skip.has(activeIdx)) return null;
+            return (
+              <EntryView
+                key={entry.id + idx}
+                entry={entry}
+                inlineResults={inlineResults}
+                hideToolOutput={renderItems.hideToolOutput}
+              />
+            );
+          })}
 
         {/* live conversation */}
         {liveBlocks.map((b, i) => {
@@ -388,8 +392,9 @@ export function Thread({
           );
         })}
 
-        {running && <div className="running-bar">⏳ pi 正在工作…</div>}
+        {running && <div className="running-bar">⏳ pi is working…</div>}
         <div ref={bottomRef} />
+        </div>
       </div>
     </div>
   );
@@ -400,7 +405,7 @@ function ThinkingLine({ text }: { text: string }) {
   return (
     <div className="thinking">
       <button className="thinking-head" onClick={() => setOpen(!open)}>
-        <span>▸ {open ? "思考中" : "Thinking…"}</span>
+        <span>▸ {open ? "Thinking…" : "Thinking…"}</span>
         {text.length > 0 && <span className="thinking-len">{text.length} chars</span>}
       </button>
       {open && <pre className="thinking-body">{text}</pre>}
@@ -421,28 +426,28 @@ function EntryView({
     case "model_change":
       return (
         <div className="meta-line">
-          ⚙️ 模型 → <b>{entry.model}</b>
+          ⚙️ Model → <b>{entry.model}</b>
           <TimeStamp ts={entry.ts} />
         </div>
       );
     case "thinking_level_change":
       return (
         <div className="meta-line">
-          🧠 思考级别 → <b>{entry.name}</b>
+          🧠 Thinking → <b>{entry.name}</b>
           <TimeStamp ts={entry.ts} />
         </div>
       );
     case "compaction":
       return (
         <div className="meta-line compact">
-          📦 上下文压缩{entry.name && <>（{fmtTokens(Number(entry.name))} tokens）</>}
+          📦 Context compacted{entry.name && <>（{fmtTokens(Number(entry.name))} tokens）</>}
           {entry.summary && <p>{entry.summary}</p>}
         </div>
       );
     case "branch_summary":
       return (
         <div className="meta-line branch">
-          🌿 分支摘要{entry.summary && <p>{entry.summary}</p>}
+          🌿 Branch summary{entry.summary && <p>{entry.summary}</p>}
         </div>
       );
     case "session_info":

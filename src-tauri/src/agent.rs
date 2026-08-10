@@ -31,10 +31,10 @@ pub fn send_message(
     message: String,
     on_event: tauri::ipc::Channel<Value>,
 ) -> Result<(), String> {
-    let pi_bin = crate::sessions::resolve_pi_bin().ok_or("未找到 pi 可执行文件")?;
+    let pi_bin = crate::sessions::resolve_pi_bin().ok_or("pi executable not found")?;
 
     if state.children.lock().unwrap().contains_key(&session_path) {
-        return Err("该会话已有任务在运行,请等待完成或先中止".into());
+        return Err("A task is already running for this session; wait or abort it first".into());
     }
 
     let mut child = Command::new(&pi_bin)
@@ -47,7 +47,7 @@ pub fn send_message(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("启动 pi 失败: {e}"))?;
+        .map_err(|e| format!("Failed to launch pi: {e}"))?;
 
     mark_running(&session_path);
     let stdout = child.stdout.take().expect("stdout piped");

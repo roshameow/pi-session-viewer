@@ -72,8 +72,8 @@ export default function App() {
     });
     api
       .piBinPath()
-      .then((p) => api.piVersion().then((v) => setPiInfo(`${p} (v${v})`)).catch(() => setPiInfo(p ?? "pi 未找到")))
-      .catch(() => setPiInfo("pi 未找到"));
+      .then((p) => api.piVersion().then((v) => setPiInfo(`${p} (v${v})`)).catch(() => setPiInfo(p ?? "pi not found")))
+      .catch(() => setPiInfo("pi not found"));
   }, [refreshProjects]);
 
   useEffect(() => {
@@ -207,7 +207,7 @@ export default function App() {
         ) : (
           <div className="empty-main">
             <h2>Pi Desktop</h2>
-            <p>选择一个会话查看 / 继续对话</p>
+            <p>Select a session to view or continue</p>
             {piInfo && <p className="pi-info">{piInfo}</p>}
           </div>
         )}

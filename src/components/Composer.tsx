@@ -33,7 +33,7 @@ export function Composer({
       )}
       <textarea
         className="composer-input"
-        placeholder={running ? "pi 正在工作,发送后将排队…" : "继续对话,Enter 发送,Shift+Enter 换行"}
+        placeholder={running ? "pi is working; message will queue…" : "Continue the conversation. Enter to send, Shift+Enter for newline"}
         value={value}
         disabled={disabled}
         onChange={(e) => setValue(e.target.value)}
@@ -44,7 +44,7 @@ export function Composer({
           }
         }}
       />
-      <span className="composer-hint">{running ? "⏳ 运行中" : "Enter ↵"}</span>
+      <span className="composer-hint">{running ? "⏳ running" : "Enter ↵"}</span>
     </div>
   );
 }
