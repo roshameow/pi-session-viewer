@@ -41,9 +41,18 @@ function SessionItem({
   onToggleSubs?: () => void;
 }) {
   const title = s.name || s.firstMessage || "(empty)";
+  const statusClass = s.running
+    ? "status-running"
+    : s.isSubagent
+      ? s.sleeping
+        ? "status-sleeping"
+        : s.interrupted
+          ? "status-interrupted"
+          : ""
+      : "";
   return (
     <button
-      className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"} ${s.running ? "running" : ""}`}
+      className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"} ${statusClass}`}
       style={{ paddingLeft: 8 + depth * 14 }}
       onClick={() => onSelect(s)}
       onContextMenu={(e) => {
@@ -81,15 +90,15 @@ function SessionItem({
             {s.id.slice(0, 13)}…
           </span>
         )}
-        {s.isSubagent && s.running && <span className="sub-running-chip">running</span>}
+        {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
         {s.isSubagent && s.sleeping && (
           <span className="sub-sleeping-chip" title="Process alive, waiting on a sleep — will auto-continue">
-            sleeping
+            ◐ sleeping
           </span>
         )}
         {s.isSubagent && s.interrupted && (
           <span className="sub-interrupted-chip" title="Process dead, no terminal event — resumable via subagent_reload">
-            interrupted
+            ✕ interrupted
           </span>
         )}
       </div>
@@ -274,13 +283,17 @@ export function Sidebar({
               >
 
                 <span className="project-name">{projectName(p.cwd)}</span>
-                <span className="project-count">{p.sessionCount}</span>
+                <span
+                  className="project-count"
+                  title={`${p.sessionCount} sessions · ${p.subagentCount} subagents`}
+                >
+                  {p.sessionCount}
+                </span>
                 {p.runningCount > 0 && (
                   <span className="project-running" title={`${p.runningCount} session(s) running`}>
                     ● {p.runningCount}
                   </span>
                 )}
-                {p.subagentCount > 0 && <span className="project-sub">sub {p.subagentCount}</span>}
               </button>
             ))}
             {projects.length === 0 && <div className="empty">No pi sessions found</div>}
