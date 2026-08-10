@@ -206,23 +206,51 @@ fn open_terminal_window(cmd: &str) -> Result<(), String> {
         } else {
             "Terminal"
         };
-    let script = format!(
-        r#"tell application "{app}" to do script "{cmd}""#,
-        app = app,
-        cmd = apple_escape(cmd)
-    );
-    let out = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("Failed to open terminal: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "osascript failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-        Ok(())
+        let run = |script: &str| -> Result<(), String> {
+            let out = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .output()
+                .map_err(|e| format!("Failed to open terminal: {e}"))?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+            }
+            Ok(())
+        };
+        let esc = apple_escape(cmd);
+        if app == "iTerm" {
+            let script = format!(
+                r#"tell application "iTerm2"
+  activate
+  if (count of windows) = 0 then create window with default profile
+  tell current window
+    create tab with default profile
+    tell current session to write text "{esc}"
+  end tell
+end tell"#
+            );
+            return run(&script);
+        }
+        // Terminal.app: Cmd+T opens a new tab (handled by the app itself, so it
+        // is safe even when the front tab runs the pi TUI in raw mode); then the
+        // command runs in that fresh idle tab. Needs Accessibility for the
+        // keystroke; falls back to a plain new window when unavailable.
+        let tab_script = format!(
+            r#"tell application "Terminal"
+  activate
+  delay 0.3
+end tell
+tell application "System Events" to keystroke "t" using command down
+delay 0.6
+tell application "Terminal" to do script "{esc}" in front window"#
+        );
+        match run(&tab_script) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let fallback = format!(r#"tell application "Terminal" to do script "{esc}""#);
+                run(&fallback)
+            }
+        }
     }
 }
 
