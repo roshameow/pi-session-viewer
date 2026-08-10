@@ -305,8 +305,21 @@ export function Sidebar({
             <circle cx="7" cy="17" r="2.4" fill="var(--bg2)" />
           </svg>
         </button>
-        <button className="icon-btn" title="Refresh" onClick={onRefresh}>
-          ⟳
+        <button className="icon-btn" title="Refresh now (auto-refresh: 10s)" onClick={onRefresh}>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
         </button>
       </div>
 
