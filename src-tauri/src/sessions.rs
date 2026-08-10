@@ -87,7 +87,7 @@ pub fn resolve_pi_bin() -> Option<String> {
 // Data model (serialized to the frontend)
 // ---------------------------------------------------------------------------
 
-const RUNNING_FRESH_SECS: u64 = 90;
+const RUNNING_FRESH_SECS: u64 = 60;
 
 /// A main pi session is running if it was written recently (pi appends to the
 /// session JSONL while a turn executes in the terminal).

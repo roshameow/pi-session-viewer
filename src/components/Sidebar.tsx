@@ -104,10 +104,11 @@ function SessionItem({
         {status === "interrupted" && (
           <span className="sub-interrupted-chip" title="interrupted — resumable via reload">interrupted</span>
         )}
-        {status === "finished" && s.isSubagent && (
-          <span className={`sub-finished-chip ${justFinished ? "fresh" : ""}`}>
-            {justFinished ? "just finished" : "finished"}
-          </span>
+        {status === "finished" && justFinished && (
+          <span className="sub-finished-chip fresh">just finished</span>
+        )}
+        {status === "finished" && !justFinished && s.isSubagent && (
+          <span className="sub-finished-chip">finished</span>
         )}
       </div>
     </button>
