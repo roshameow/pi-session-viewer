@@ -202,7 +202,7 @@ pub struct SessionDetail {
 // ---------------------------------------------------------------------------
 
 pub fn decode_dir_name(dir: &str) -> String {
-    // "--Users-wenliu--" -> "/Users/wenliu" (best effort; header cwd is authoritative)
+    // "--Users-<user>--" -> "/Users/<user>" (best effort; header cwd is authoritative)
     let inner = dir.trim_start_matches('-').trim_end_matches('-');
     if inner.is_empty() {
         return String::new();
@@ -1991,24 +1991,3 @@ fn dbg_rt() {
     }
 }
 
-#[cfg(test)]
-mod rmux_tests {
-    use super::*;
-    #[test]
-    fn dbg_rmux_map() {
-        let map = rmux_runtime_map();
-        for (k, v) in map.iter() {
-            if k.contains("019fe979") || k.contains("019fe98d") || k.contains("msmsnt8i") {
-                println!("RMUXDBG path={} target={} attached={}", k, v.target, v.attached);
-            }
-        }
-        let sess = list_sessions("--Users-wenliu-Code-python-quantnight--");
-        for m in sess.iter().filter(|m| m.id.starts_with("019fe979") || m.id.starts_with("019fe98d")) {
-            println!(
-                "SESSDBG id={} name={:?} running={} inRmux={} target={:?} attached={} dead={} termAlive={}",
-                m.id, m.name, m.running, m.in_rmux, m.rmux_target, m.rmux_attached, m.rmux_dead, m.term_alive
-            );
-        }
-        println!("SESSDBG total={}", sess.len());
-    }
-}
