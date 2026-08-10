@@ -82,19 +82,11 @@ function SessionItem({
           </span>
         )}
         <span className="session-title">{title}</span>
-        {!s.isSubagent && runningSubs > 0 && (
-          <span className="subs-running-badge" title={`${runningSubs} subagent(s) running`}>
-            {runningSubs} running
-          </span>
-        )}
-        {!s.isSubagent && sleepingSubs > 0 && (
-          <span className="subs-sleeping-badge" title={`${sleepingSubs} subagent(s) sleeping`}>
-            {sleepingSubs} sleeping
-          </span>
-        )}
-        {!s.isSubagent && interruptedSubs > 0 && (
-          <span className="subs-interrupted-badge" title={`${interruptedSubs} subagent(s) interrupted`}>
-            {interruptedSubs} interrupted
+        {!s.isSubagent && (runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
+          <span className="subs-summary" title="subagents: running / sleeping / interrupted">
+            {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}
+            {sleepingSubs > 0 && <span className="sum sleep">◐{sleepingSubs}</span>}
+            {interruptedSubs > 0 && <span className="sum intr">✕{interruptedSubs}</span>}
           </span>
         )}
       </div>
@@ -105,21 +97,16 @@ function SessionItem({
             {s.id.slice(0, 13)}…
           </span>
         )}
-        {status === "running" && (
-          <span className="st running" title="running">●</span>
-        )}
+        {status === "running" && <span className="sub-running-chip">running</span>}
         {status === "sleeping" && (
-          <span className="st sleeping" title="sleeping — will auto-continue">zzz</span>
+          <span className="sub-sleeping-chip" title="sleeping — will auto-continue">sleeping</span>
         )}
         {status === "interrupted" && (
-          <span className="st interrupted" title="interrupted — resumable via reload">✕</span>
+          <span className="sub-interrupted-chip" title="interrupted — resumable via reload">interrupted</span>
         )}
-        {status === "finished" && (
-          <span
-            className={`st finished ${justFinished ? "fresh" : ""}`}
-            title={justFinished ? "just finished" : "finished"}
-          >
-            ✓
+        {status === "finished" && s.isSubagent && (
+          <span className={`sub-finished-chip ${justFinished ? "fresh" : ""}`}>
+            {justFinished ? "just finished" : "finished"}
           </span>
         )}
       </div>

@@ -1063,3 +1063,32 @@ body {
   cursor: pointer;
 }
 .toast-clear-all:hover { color: var(--cyan); border-color: var(--cyan); }
+.subs-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.subs-summary .sum {
+  font-size: 10px;
+  font-weight: 800;
+  border-radius: 6px;
+  padding: 0 5px;
+  line-height: 1.5;
+}
+.sum.run { color: var(--green); background: rgba(181, 189, 104, 0.12); }
+.sum.sleep { color: var(--amber); background: rgba(212, 167, 44, 0.1); }
+.sum.intr { color: var(--red); background: rgba(204, 102, 102, 0.1); }
+.sub-finished-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--fg-dim);
+  background: var(--bg3);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+.sub-finished-chip.fresh {
+  color: var(--cyan);
+  background: rgba(0, 215, 255, 0.12);
+  border: 1px solid rgba(0, 215, 255, 0.6);
+}
