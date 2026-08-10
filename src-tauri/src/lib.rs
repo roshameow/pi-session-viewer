@@ -146,14 +146,12 @@ fn delete_session(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Shell name for a project's pi rmux session: pi-<basename>.
+/// Unique rmux session name derived from the FULL project path (avoids
+/// collisions between same-named projects in different directories):
+/// /Users/a/Code/python/quantnight -> pi-Users-a-Code-python-quantnight
 fn rmux_session_name(cwd: &str) -> String {
-    let base = cwd
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or("default");
-    let clean: String = base
+    let encoded = cwd.trim_start_matches('/').replace('/', "-");
+    let clean: String = encoded
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect();
@@ -226,35 +224,41 @@ fn open_terminal_window(cmd: &str) -> Result<(), String> {
     }
 }
 
-/// Open the session in a terminal. With rmux installed, the pi process runs in
-/// a persistent rmux session (`pi-<project>`), so the tab can be closed anytime
-/// and the agent keeps running; reattach via `pim` or the Attach button.
-/// Without rmux, falls back to a plain `pi --session` window.
-#[tauri::command]
-fn open_in_terminal(session_path: String) -> Result<(), String> {
-    let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
-    let cwd = sessions::session_detail(&session_path)
-        .map(|d| d.cwd)
-        .unwrap_or_default();
-    let id = sessions::session_id(&session_path).unwrap_or_default();
-    let short: String = id.chars().take(8).collect();
-    let cmd = format!(
-        "cd {} && {} --session {}",
-        shell_quote(&cwd),
-        shell_quote(&bin),
-        shell_quote(&session_path)
-    );
-    if rmux_available() && !cwd.is_empty() {
-        let rmux = rmux_bin().unwrap();
-        let sess = rmux_session_name(&cwd);
-        let win = format!("s{short}");
-        // create the window (session first if needed), then attach in a terminal
-        let created = std::process::Command::new(&rmux)
-            .args(["has-session", "-t", &sess])
+/// Ensure a pi session runs in an rmux window named `s<id8>` of the project
+/// session. Creates the session/window when missing; reuses when present.
+/// Returns the rmux session name. None if rmux is unavailable.
+fn ensure_rmux_window(
+    cwd: &str,
+    id: &str,
+    cmd: &str,
+) -> Result<Option<String>, String> {
+    if !rmux_available() || cwd.is_empty() {
+        return Ok(None);
+    }
+    let rmux = rmux_bin().unwrap();
+    let sess = rmux_session_name(cwd);
+    let win = format!("s{}", &id.chars().take(8).collect::<String>());
+    let session_exists = std::process::Command::new(&rmux)
+        .args(["has-session", "-t", &sess])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    // does the window already exist? (session already running -> just attach)
+    let win_exists = if session_exists {
+        std::process::Command::new(&rmux)
+            .args(["list-windows", "-t", &sess])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        let args: Vec<String> = if created {
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l.contains(&win))
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if !win_exists {
+        let args: Vec<String> = if session_exists {
             vec![
                 "new-window".into(),
                 "-d".into(),
@@ -262,7 +266,7 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
                 sess.clone(),
                 "-n".into(),
                 win,
-                cmd.clone(),
+                cmd.to_string(),
             ]
         } else {
             vec![
@@ -272,7 +276,7 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
                 sess.clone(),
                 "-n".into(),
                 win,
-                cmd.clone(),
+                cmd.to_string(),
             ]
         };
         let out = std::process::Command::new(&rmux)
@@ -285,6 +289,28 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+    }
+    Ok(Some(sess))
+}
+
+/// Open the session in a terminal. With rmux installed, the pi process runs in
+/// a persistent rmux session (`pi-<encoded-cwd>`), so the tab can be closed
+/// anytime and the agent keeps running; reattach via `pim` or the Attach button.
+/// Without rmux, falls back to a plain `pi --session` window.
+#[tauri::command]
+fn open_in_terminal(session_path: String) -> Result<(), String> {
+    let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
+    let cwd = sessions::session_detail(&session_path)
+        .map(|d| d.cwd)
+        .unwrap_or_default();
+    let id = sessions::session_id(&session_path).unwrap_or_default();
+    let cmd = format!(
+        "cd {} && {} --session {}",
+        shell_quote(&cwd),
+        shell_quote(&bin),
+        shell_quote(&session_path)
+    );
+    if let Some(sess) = ensure_rmux_window(&cwd, &id, &cmd)? {
         return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
     open_terminal_window(&cmd)
@@ -294,20 +320,29 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
 /// pi-<project> for main sessions).
 #[tauri::command]
 fn attach_session(session_path: String) -> Result<(), String> {
-    let _rmux = rmux_bin().ok_or("rmux is not installed")?;
+    let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
-    let is_sub = sessions::session_id(&session_path)
-        .map(|id| sessions::is_subagent_uuid(&id))
-        .unwrap_or(false);
+    let id = sessions::session_id(&session_path).unwrap_or_default();
+    let is_sub = sessions::is_subagent_uuid(&id);
     let sess = if is_sub {
+        // subagents live in pi-agents; attach directly (may not exist)
         "pi-agents".to_string()
-    } else if !cwd.is_empty() {
-        rmux_session_name(&cwd)
     } else {
-        "pi-agents".to_string()
+        // main sessions: ensure the rmux window (create if not running), then attach
+        let cmd = format!(
+            "cd {} && {} --session {}",
+            shell_quote(&cwd),
+            shell_quote(&sessions::resolve_pi_bin().unwrap_or_else(|| "pi".into())),
+            shell_quote(&session_path)
+        );
+        match ensure_rmux_window(&cwd, &id, &cmd)? {
+            Some(s) => s,
+            None => "pi-agents".to_string(),
+        }
     };
+    let _ = &rmux;
     open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))
 }
 
