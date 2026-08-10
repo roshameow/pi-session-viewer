@@ -58,6 +58,10 @@ export interface Stats {
   tokenCount: number;
   messageCount: number;
   model: string | null;
+  provider: string | null;
+  thinkingLevel: string | null;
+  contextTokens: number | null;
+  contextLimit: number | null;
   costTotal: number;
 }
 

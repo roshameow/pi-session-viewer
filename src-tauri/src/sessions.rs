@@ -142,6 +142,10 @@ pub struct Stats {
     pub token_count: u64,
     pub message_count: usize,
     pub model: Option<String>,
+    pub provider: Option<String>,
+    pub thinking_level: Option<String>,
+    pub context_tokens: Option<u64>,
+    pub context_limit: Option<u64>,
     pub cost_total: f64,
 }
 
@@ -353,6 +357,53 @@ fn first_line(p: &Path) -> Option<String> {
             let s = String::from_utf8_lossy(&bytes);
             s.lines().next().map(|l| l.to_string())
         })
+}
+
+/// Look up a model's context window from `~/.pi/agent/models.json`
+/// (provider catalog). Result is cached per process.
+fn model_context_window(model_id: &str) -> Option<u64> {
+    static CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    if let Some(v) = cache.get(model_id) {
+        return Some(*v);
+    }
+    let found = (|| {
+        let Ok(data) = fs::read_to_string(pi_agent_dir().join("models.json")) else {
+            return None;
+        };
+        let Ok(root) = serde_json::from_str::<Value>(&data) else {
+            return None;
+        };
+        fn find(v: &Value, id: &str) -> Option<u64> {
+            match v {
+                Value::Object(map) => {
+                    if map.get("id").and_then(|x| x.as_str()) == Some(id) {
+                        if let Some(w) = map
+                            .get("contextWindow")
+                            .and_then(|x| x.as_u64())
+                        {
+                            return Some(w);
+                        }
+                    }
+                    for val in map.values() {
+                        if let Some(w) = find(val, id) {
+                            return Some(w);
+                        }
+                    }
+                    None
+                }
+                Value::Array(arr) => arr.iter().find_map(|x| find(x, id)),
+                _ => None,
+            }
+        }
+        find(&root, model_id)
+    })();
+    if let Some(w) = found {
+        cache.insert(model_id.to_string(), w);
+        Some(w)
+    } else {
+        None
+    }
 }
 
 /// Read the session uuid from a session file's header (first line only).
@@ -1184,6 +1235,9 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
     let mut tokens: u64 = 0;
     let mut msg_count = 0usize;
     let mut model: Option<String> = None;
+    let mut provider: Option<String> = None;
+    let mut thinking_level: Option<String> = None;
+    let mut context_tokens: Option<u64> = None;
     let mut cost_total = 0.0f64;
 
     for line in text.lines() {
@@ -1210,20 +1264,44 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
             continue;
         }
         let mut entry = entry.unwrap();
-        // accumulate stats
+        // accumulate stats (last occurrence wins for model/provider/thinking)
         if let Some(m) = &entry.model {
-            if model.is_none() {
-                model = Some(m.clone());
+            model = Some(m.clone());
+        }
+        if t == "model_change" {
+            if let Some(p) = v.get("provider").and_then(|x| x.as_str()) {
+                provider = Some(p.to_string());
+            }
+        }
+        if t == "thinking_level_change" {
+            if let Some(lv) = v.get("thinkingLevel").and_then(|x| x.as_str()) {
+                thinking_level = Some(lv.to_string());
             }
         }
         if t == "message" {
             msg_count += 1;
-            if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
-                if let Some(tot) = u.get("totalTokens").and_then(|x| x.as_u64()) {
-                    tokens += tot;
+            if let Some(m) = v.get("message") {
+                if let Some(p) = m.get("provider").and_then(|x| x.as_str()) {
+                    provider = Some(p.to_string());
                 }
-                if let Some(c) = u.get("cost").and_then(|c| c.get("total")).and_then(|x| x.as_f64()) {
-                    cost_total += c;
+                // context size = input + cacheRead of the latest assistant reply
+                if m.get("role").and_then(|x| x.as_str()) == Some("assistant") {
+                    if let Some(u) = m.get("usage") {
+                        let input = u.get("input").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let cache = u.get("cacheRead").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let total = input + cache;
+                        if total > 0 {
+                            context_tokens = Some(total);
+                        }
+                    }
+                }
+                if let Some(u) = m.get("usage") {
+                    if let Some(tot) = u.get("totalTokens").and_then(|x| x.as_u64()) {
+                        tokens += tot;
+                    }
+                    if let Some(c) = u.get("cost").and_then(|c| c.get("total")).and_then(|x| x.as_f64()) {
+                        cost_total += c;
+                    }
                 }
             }
             if let Some(u) = v.get("usage").and_then(|u| u.get("totalTokens")).and_then(|x| x.as_u64()) {
@@ -1258,7 +1336,11 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
     let stats = Stats {
         token_count: tokens,
         message_count: msg_count,
-        model,
+        model: model.clone(),
+        provider,
+        thinking_level,
+        context_tokens,
+        context_limit: model.as_deref().and_then(model_context_window),
         cost_total,
     };
     Ok(SessionDetail {

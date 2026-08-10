@@ -403,10 +403,29 @@ export function Thread({
           <div className="session-head">
             <div className="session-head-row">
               <div className="session-head-main">
-                <div className="session-head-title">{detail.stats.model ?? "pi session"}</div>
+                <div className="session-head-title">
+                  <span className="session-provider">{detail.stats.provider ? `(${detail.stats.provider}) ` : ""}</span>
+                  {detail.stats.model ?? "pi session"}
+                </div>
                 <div className="session-head-meta">
                   {detail.stats.messageCount} messages · {fmtTokens(detail.stats.tokenCount)} · $
                   {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+                </div>
+                <div className="session-head-meta">
+                  {detail.stats.contextTokens != null && detail.stats.contextLimit != null && (
+                    <span
+                      className={`ctx-badge ${
+                        (detail.stats.contextTokens / detail.stats.contextLimit) * 100 > 70 ? "warn" : ""
+                      }`}
+                      title="context usage"
+                    >
+                      ctx {((detail.stats.contextTokens / detail.stats.contextLimit) * 100).toFixed(1)}%
+                      / {fmtContext(detail.stats.contextLimit)} (auto)
+                    </span>
+                  )}
+                  {detail.stats.thinkingLevel && (
+                    <span className="thinking-badge">🧠 {detail.stats.thinkingLevel}</span>
+                  )}
                 </div>
                 <div className="session-head-id" title="Click to copy session id">
                   <span className="session-id-label">id:</span>
@@ -693,4 +712,10 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M tokens";
   if (n >= 1000) return (n / 1000).toFixed(1) + "k tokens";
   return n + " tokens";
+}
+
+/// pi-style context limit formatting: 1000000 -> 1000.0k
+function fmtContext(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
 }

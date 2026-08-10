@@ -394,7 +394,25 @@ body {
   word-break: break-all;
 }
 .session-head-title { font-size: 15px; font-weight: 700; }
-.session-head-meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+.session-head-meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ctx-badge {
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  border: 1px solid rgba(181, 189, 104, 0.4);
+  border-radius: 5px;
+  padding: 0 6px;
+  background: rgba(181, 189, 104, 0.08);
+}
+.ctx-badge.warn { color: var(--yellow); border-color: rgba(255, 255, 0, 0.5); background: rgba(255, 255, 0, 0.08); }
+.thinking-badge {
+  color: var(--gray);
+  font-size: 10.5px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 5px;
+  padding: 0 6px;
+}
+.session-provider { color: var(--fg-dim); font-weight: 500; }
 .session-head-id {
   display: flex;
   align-items: center;
