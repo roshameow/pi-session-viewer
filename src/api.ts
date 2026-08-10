@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { PiEvent, Project, SessionDetail, SessionMeta } from "./types";
+import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta } from "./types";
 
 export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
@@ -10,6 +10,8 @@ export const api = {
   piSessionsDir: () => invoke<string>("pi_sessions_dir"),
   piVersion: () => invoke<string>("pi_version"),
   fileExists: (path: string) => invoke<boolean>("file_exists", { path }),
+  exportSession: (path: string) => invoke<string>("export_session_html", { sessionPath: path }),
+  listRunning: () => invoke<RunningSession[]>("list_running"),
   sendMessage: (sessionPath: string, message: string, channel: Channel<PiEvent>) =>
     invoke<void>("send_message", { sessionPath, message, onEvent: channel }),
   abortMessage: (sessionPath: string) => invoke<void>("abort_message", { sessionPath }),

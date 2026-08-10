@@ -69,6 +69,14 @@ export interface SessionDetail {
   active: number[];
 }
 
+export interface RunningSession {
+  path: string;
+  title: string;
+  isSubagent: boolean;
+  taskId: string | null;
+  projectKey: string;
+}
+
 // --- pi `--mode json` wire events (subset we render) ---
 
 export interface PiEvent {

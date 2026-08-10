@@ -340,6 +340,32 @@ body {
 .thread-inner { max-width: 900px; margin: 0 auto; padding: 16px 20px 40px; }
 
 .session-head { margin-bottom: 8px; }
+.session-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.session-head-main { min-width: 0; }
+.export-btn {
+  flex-shrink: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.export-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+.export-btn.busy { opacity: 0.6; cursor: wait; }
+.export-msg {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--green);
+  word-break: break-all;
+}
 .session-head-title { font-size: 15px; font-weight: 700; }
 .session-head-meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
 
@@ -610,7 +636,55 @@ body {
 .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
-/* composer */
+/* toasts (finished sessions) */
+.toast-stack {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--green);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  animation: toast-in 0.25s ease;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.toast:hover { border-color: var(--cyan); }
+.toast-icon { font-size: 15px; flex-shrink: 0; }
+.toast-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.toast-title { font-size: 11px; font-weight: 700; color: var(--green); }
+.toast-text {
+  font-size: 11.5px;
+  color: var(--fg);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.toast-close {
+  color: var(--fg-dim);
+  font-size: 14px;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.toast-close:hover { color: var(--red); }
 .composer-wrap {
   flex-shrink: 0;
   background: var(--bg2);

@@ -2,10 +2,18 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
-import type { PiEvent, Project, SessionDetail, SessionMeta } from "./types";
+import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { Thread, buildLiveBlocks, type LiveBlock } from "./components/Thread";
 import { Composer } from "./components/Composer";
+
+interface Toast {
+  id: number;
+  path: string;
+  projectKey: string;
+  title: string;
+  isSubagent: boolean;
+}
 
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -22,6 +30,32 @@ export default function App() {
 
   const channelRef = useRef<Channel<PiEvent> | null>(null);
   const activePathRef = useRef<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastIdRef = useRef(0);
+  // running snapshot from the previous poll (null = not seeded yet)
+  const prevRunningRef = useRef<
+    Map<string, { title: string; isSubagent: boolean; projectKey: string }> | null
+  >(null);
+
+  const addToast = useCallback(
+    (path: string, projectKey: string, title: string, isSubagent: boolean) => {
+      const id = ++toastIdRef.current;
+      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent }]);
+      setTimeout(() => {
+        setToasts((ts) => ts.filter((t) => t.id !== id));
+      }, 8000);
+    },
+    []
+  );
+
+  const openToastSession = (t: Toast) => {
+    setToasts((ts) => ts.filter((x) => x.id !== t.id));
+    if (t.projectKey && t.projectKey !== selectedProject) {
+      setSelectedProject(t.projectKey);
+      refreshSessions(t.projectKey);
+    }
+    loadDetail({ path: t.path } as SessionMeta);
+  };
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -100,12 +134,28 @@ export default function App() {
             }
           }
         }
+        // notify when a previously-running session finished
+        const running = await api.listRunning();
+        const prev = prevRunningRef.current;
+        if (prev) {
+          for (const [path, info] of prev) {
+            if (!running.some((r) => r.path === path)) {
+              addToast(path, info.projectKey, info.title, info.isSubagent);
+            }
+          }
+        }
+        prevRunningRef.current = new Map(
+          running.map((r) => [
+            r.path,
+            { title: r.title, isSubagent: r.isSubagent, projectKey: r.projectKey },
+          ])
+        );
       } catch {
         // ignore transient polling errors
       }
     }, 10000);
     return () => clearInterval(t);
-  }, [selectedProject, detail?.path]);
+  }, [selectedProject, detail?.path, addToast]);
 
   // auto-open the most recent session on first load (like `pi -c`)
   const autoOpened = useRef(false);
@@ -188,6 +238,19 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* finished-session toasts */}
+      <div className="toast-stack">
+        {toasts.map((t) => (
+          <button key={t.id} className="toast" onClick={() => openToastSession(t)}>
+            <span className="toast-icon">{t.isSubagent ? "🕸️" : "💬"}</span>
+            <span className="toast-body">
+              <span className="toast-title">{t.isSubagent ? "Subagent finished" : "Session finished"}</span>
+              <span className="toast-text">{t.title}</span>
+            </span>
+            <span className="toast-close" onClick={(e) => { e.stopPropagation(); setToasts((ts) => ts.filter((x) => x.id !== t.id)); }}>×</span>
+          </button>
+        ))}
+      </div>
       <Sidebar
         projects={projects}
         sessions={sessions}

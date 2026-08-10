@@ -352,6 +352,15 @@ fn first_line(p: &Path) -> Option<String> {
         })
 }
 
+/// Read the session uuid from a session file's header (first line only).
+pub fn session_id(path: &str) -> Option<String> {
+    first_line(Path::new(path)).and_then(|l| {
+        serde_json::from_str::<Value>(&l)
+            .ok()
+            .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Subagent detection: a session is a subagent if its uuid appears in any
 // agent-logs/task-*.jsonl first line, or in a *subagent-task-* mirror header,
@@ -536,6 +545,73 @@ fn task_running(task_id: &str) -> bool {
     };
     let Ok(mtime) = mt.duration_since(std::time::UNIX_EPOCH) else { return false };
     now.saturating_sub(mtime).as_secs() < 180
+}
+
+/// A lightweight snapshot of currently running sessions across ALL projects
+/// (used by the frontend to notify when a running session finishes).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningSession {
+    pub path: String,
+    pub title: String,
+    pub is_subagent: bool,
+    pub task_id: Option<String>,
+    pub project_key: String,
+}
+
+#[tauri::command]
+pub fn list_running() -> Vec<RunningSession> {
+    let mut out = Vec::new();
+    let root = sessions_dir();
+    let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
+    let (_, task_by_uuid, _) = subagent_index();
+    let mut seen: HashSet<String> = HashSet::new();
+    if let Ok(rd) = fs::read_dir(&root) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let project_key = e.file_name().to_string_lossy().to_string();
+            if let Ok(fd) = fs::read_dir(&dir) {
+                for f in fd.flatten() {
+                    let path = f.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let fname = f.file_name().to_string_lossy().to_string();
+                    if !fname.ends_with(".jsonl") {
+                        continue;
+                    }
+                    let spath = path.to_string_lossy().to_string();
+                    let (id, _, _, _, first_msg, _) = scan_head(&path);
+                    if id.is_empty() || !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    let is_sub = fname.contains("subagent-task-") || task_by_uuid.contains_key(&id);
+                    let is_running = if is_sub {
+                        task_by_uuid
+                            .get(&id)
+                            .map(|t| task_running(t))
+                            .unwrap_or(false)
+                    } else {
+                        session_file_running(&path)
+                    };
+                    if !is_running && !running.contains(&spath) {
+                        continue;
+                    }
+                    out.push(RunningSession {
+                        title: first_msg.unwrap_or_else(|| "(empty)".into()),
+                        path: spath,
+                        is_subagent: is_sub,
+                        task_id: task_by_uuid.get(&id).cloned(),
+                        project_key: project_key.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {

@@ -238,6 +238,24 @@ export function Thread({
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterMode>("default");
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+
+  const doExport = async () => {
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const { api } = await import("../api");
+      const out = await api.exportSession(detail.path);
+      setExportMsg("✓ Exported → " + out);
+      setTimeout(() => setExportMsg(null), 6000);
+    } catch (e) {
+      setExportMsg("✗ Export failed: " + String(e));
+      setTimeout(() => setExportMsg(null), 6000);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Ctrl+O cycles filter modes (same as pi /tree)
   useEffect(() => {
@@ -323,11 +341,24 @@ export function Thread({
       <div className="thread-top">
         <div className="thread-top-inner">
           <div className="session-head">
-            <div className="session-head-title">{detail.stats.model ?? "pi session"}</div>
-            <div className="session-head-meta">
-              {detail.stats.messageCount} messages · {fmtTokens(detail.stats.tokenCount)} · $
-              {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+            <div className="session-head-row">
+              <div className="session-head-main">
+                <div className="session-head-title">{detail.stats.model ?? "pi session"}</div>
+                <div className="session-head-meta">
+                  {detail.stats.messageCount} messages · {fmtTokens(detail.stats.tokenCount)} · $
+                  {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+                </div>
+              </div>
+              <button
+                className={`export-btn ${exporting ? "busy" : ""}`}
+                onClick={doExport}
+                disabled={exporting}
+                title="Export this session to HTML (pi --export) and open it"
+              >
+                {exporting ? "Exporting…" : "⬇ Export HTML"}
+              </button>
             </div>
+            {exportMsg && <div className="export-msg">{exportMsg}</div>}
           </div>
           <div className="filter-bar" title="Ctrl+O cycles modes">
             {FILTER_CYCLE.map((m) => (
