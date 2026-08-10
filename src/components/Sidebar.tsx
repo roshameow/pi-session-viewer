@@ -86,7 +86,7 @@ function SessionItem({
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
-        {(s.running || s.inRmux) && (
+        {(s.running || s.inRmux || s.termAlive) && (
           <span
             className={`runtime-chip ${s.inRmux ? "rmux" : "term"} ${
               s.inRmux ? (s.rmuxDead ? "dead" : s.rmuxAttached ? "attached" : "detached") : ""
@@ -98,7 +98,7 @@ function SessionItem({
                   : s.rmuxAttached
                     ? `rmux · attached (${s.rmuxTarget ?? ""}) — detach: Ctrl+G or close the tab · id: ${s.id}`
                     : `rmux · detached (${s.rmuxTarget ?? ""}) — running in background, attach to view · id: ${s.id}`
-                : `terminal window · attached (closing the tab kills pi) · id: ${s.id}`
+                : `terminal window · pi process alive (closing the tab kills pi) · id: ${s.id}`
             }
           >
             {s.inRmux
@@ -368,9 +368,9 @@ export function Sidebar({
                     rmux {mainSessions.filter((x) => x.inRmux && !x.rmuxDead).length}
                   </span>
                 )}
-                {mainSessions.filter((x) => x.running && !x.inRmux).length > 0 && (
+                {mainSessions.filter((x) => (x.running || x.termAlive) && !x.inRmux).length > 0 && (
                   <span className="mini-chip term">
-                    term {mainSessions.filter((x) => x.running && !x.inRmux).length}
+                    term {mainSessions.filter((x) => (x.running || x.termAlive) && !x.inRmux).length}
                   </span>
                 )}
               </div>

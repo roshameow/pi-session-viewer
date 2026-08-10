@@ -139,6 +139,7 @@ pub struct SessionMeta {
     pub rmux_target: Option<String>, // e.g. "pi-Users-...:s019fe979"
     pub rmux_attached: bool, // a terminal client is attached to the rmux session
     pub rmux_dead: bool,     // rmux window kept by remain-on-exit, pane process exited
+    pub term_alive: bool,    // an alive pi process runs this session in a terminal window
     pub size: u64,
 }
 
@@ -282,7 +283,6 @@ pub fn list_projects() -> Vec<Project> {
             let mut updated = 0i64;
             let mut running_count = 0usize;
             let mut rmux_count = 0usize;
-            let mut term_count = 0usize;
             let mut seen_uuids: HashSet<String> = HashSet::new();
             let mut best_cwd: Option<(i64, String)> = None;
             let cwd = decode_dir_name(&name);
@@ -315,17 +315,13 @@ pub fn list_projects() -> Vec<Project> {
                                     }
                                 } else {
                                     // main session
-                                    let is_running = session_file_running(&f.path());
-                                    if is_running {
+                                    if session_file_running(&f.path()) {
                                         running_count += 1;
                                     }
                                     let spath = f.path().to_string_lossy().into_owned();
-                                    match rmux_map.get(&spath) {
-                                        Some(rt) if !rt.dead => rmux_count += 1,
-                                        _ => {
-                                            if is_running {
-                                                term_count += 1;
-                                            }
+                                    if let Some(rt) = rmux_map.get(&spath) {
+                                        if !rt.dead {
+                                            rmux_count += 1;
                                         }
                                     }
                                 }
@@ -357,6 +353,12 @@ pub fn list_projects() -> Vec<Project> {
                     }
                 }
             }
+            // term sessions = alive terminal pi processes running in this project
+            let term_count = alive_terminal_pis()
+                .iter()
+                .filter(|(_, c)| *c == cwd)
+                .count();
+
             if count == 0 {
                 continue;
             }
@@ -873,6 +875,61 @@ pub struct RmuxRuntime {
 ///   * Open TUI mains: window `s<id8>` (first 8 hex chars of the session id)
 ///   * subagents:      window `<agent>-<taskId>` in the `pi-agents` session
 /// attached state comes from `rmux list-clients -t <session>`.
+/// Alive pi processes running in terminal windows (not inside any rmux pane).
+/// pi scrubs its argv to just "pi", so we identify them by process name and
+/// exclude anything attached to an rmux pane pty. Returns (pid, cwd).
+pub fn alive_terminal_pis() -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    // tty devices owned by rmux panes (normalized to "ttysNNN")
+    let mut pane_ttys: HashSet<String> = HashSet::new();
+    if let Ok(res) = std::process::Command::new("rmux")
+        .args(["list-panes", "-a", "-F", "#{pane_tty}"])
+        .env("PATH", full_path())
+        .output()
+    {
+        for line in String::from_utf8_lossy(&res.stdout).lines() {
+            let t = line.trim().trim_start_matches("/dev/");
+            if !t.is_empty() {
+                pane_ttys.insert(t.to_string());
+            }
+        }
+    }
+    let Ok(ps_out) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,tty=,comm="])
+        .env("PATH", full_path())
+        .output()
+    else {
+        return out;
+    };
+    for line in String::from_utf8_lossy(&ps_out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(pid_s), Some(tty), Some(comm)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        if comm != "pi" || tty == "??" || pane_ttys.contains(tty) {
+            continue;
+        }
+        let Ok(pid) = pid_s.parse::<u32>() else { continue };
+        // cwd of the pi process = the project it runs in
+        let cwd = std::process::Command::new("lsof")
+            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+            .env("PATH", full_path())
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .find(|l| l.starts_with('n'))
+                    .map(|l| l[1..].to_string())
+            })
+            .unwrap_or_default();
+        if !cwd.is_empty() {
+            out.push((pid, cwd));
+        }
+    }
+    out
+}
+
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
@@ -1040,6 +1097,23 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             }
         }
     }
+    // alive terminal pis in this project -> mark the freshest main sessions
+    // that aren't in rmux as term_alive (chip shows even when the pi is idle)
+    let term_n = alive_terminal_pis()
+        .iter()
+        .filter(|(_, c)| *c == decode_dir_name(project_key))
+        .count();
+    if term_n > 0 {
+        let mut cands: Vec<&mut SessionMeta> = out
+            .iter_mut()
+            .filter(|m| !m.is_subagent && !m.in_rmux)
+            .collect();
+        cands.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        for m in cands.into_iter().take(term_n) {
+            m.term_alive = true;
+        }
+    }
+
     // dedupe: same uuid can have a mirror (subagent-task-*) and a real session
     // file (normal name). Prefer the real one (fuller history).
     let mut by_id: HashMap<String, SessionMeta> = HashMap::new();
@@ -1130,6 +1204,7 @@ fn parse_meta(
         rmux_target: None,
         rmux_attached: false,
         rmux_dead: false,
+        term_alive: false,
         size,
     })
 }
@@ -1883,10 +1958,10 @@ mod rmux_tests {
             }
         }
         let sess = list_sessions("--Users-wenliu-Code-python-quantnight--");
-        for m in sess.iter().filter(|m| m.id.starts_with("019fe979")) {
+        for m in sess.iter().filter(|m| m.id.starts_with("019fe979") || m.id.starts_with("019fe98d")) {
             println!(
-                "SESSDBG id={} name={:?} running={} inRmux={} target={:?} attached={} dead={}",
-                m.id, m.name, m.running, m.in_rmux, m.rmux_target, m.rmux_attached, m.rmux_dead
+                "SESSDBG id={} name={:?} running={} inRmux={} target={:?} attached={} dead={} termAlive={}",
+                m.id, m.name, m.running, m.in_rmux, m.rmux_target, m.rmux_attached, m.rmux_dead, m.term_alive
             );
         }
         println!("SESSDBG total={}", sess.len());
