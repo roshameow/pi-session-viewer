@@ -96,10 +96,10 @@ function SessionItem({
                 ? s.rmuxAttached
                   ? `rmux · attached (terminal attached: ${s.rmuxTarget ?? ""}) · id: ${s.id}`
                   : `rmux · detached (running in background, no terminal — attach to view) · id: ${s.id}`
-                : `terminal window · id: ${s.id}`
+                : `terminal window · attached (closing the tab kills pi) · id: ${s.id}`
             }
           >
-            {s.inRmux ? (s.rmuxAttached ? "● rmux" : "○ rmux") : "term"}
+            {s.inRmux ? (s.rmuxAttached ? "● rmux" : "○ rmux") : "● term"}
           </span>
         )}
         {status === "running" && <span className="sub-running-chip">running</span>}

@@ -351,8 +351,9 @@ body {
   background: rgba(0, 215, 255, 0.1);
 }
 .runtime-chip.term {
-  color: var(--fg-dim);
-  background: var(--bg3);
+  color: #ff9e64;
+  background: rgba(255, 158, 100, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 158, 100, 0.3);
 }
 .runtime-chip.rmux.detached {
   color: #00d7ff;
