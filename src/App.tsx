@@ -15,6 +15,7 @@ interface Toast {
   title: string;
   isSubagent: boolean;
   paused: boolean;
+  interrupted: boolean;
 }
 
 export default function App() {
@@ -41,9 +42,9 @@ export default function App() {
   >(null);
 
   const addToast = useCallback(
-    (path: string, projectKey: string, title: string, isSubagent: boolean, paused = false) => {
+    (path: string, projectKey: string, title: string, isSubagent: boolean, paused = false, interrupted = false) => {
       const id = ++toastIdRef.current;
-      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent, paused }]);
+      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent, paused, interrupted }]);
       setTimeout(() => {
         setToasts((ts) => ts.filter((t) => t.id !== id));
       }, 8000);
@@ -155,7 +156,8 @@ export default function App() {
                 info.projectKey,
                 info.title,
                 info.isSubagent,
-                status === "sleeping"
+                status === "sleeping",
+                status === "interrupted"
               );
             }
           }
@@ -263,17 +265,21 @@ export default function App() {
       {/* finished-session toasts */}
       <div className="toast-stack">
         {toasts.map((t) => (
-          <button key={t.id} className={`toast ${t.paused ? "paused" : ""}`} onClick={() => openToastSession(t)}>
-            <span className="toast-icon">{t.paused ? "💤" : t.isSubagent ? "🕸️" : "💬"}</span>
+          <button key={t.id} className={`toast ${t.paused ? "paused" : ""} ${t.interrupted ? "interrupted" : ""}`} onClick={() => openToastSession(t)}>
+            <span className="toast-icon">{t.interrupted ? "⏸" : t.paused ? "💤" : t.isSubagent ? "🕸️" : "💬"}</span>
             <span className="toast-body">
               <span className="toast-title">
-                {t.paused
+                {t.interrupted
                   ? t.isSubagent
-                    ? "Subagent paused"
-                    : "Session paused"
-                  : t.isSubagent
-                    ? "Subagent finished"
-                    : "Session finished"}
+                    ? "Subagent interrupted"
+                    : "Session interrupted"
+                  : t.paused
+                    ? t.isSubagent
+                      ? "Subagent paused"
+                      : "Session paused"
+                    : t.isSubagent
+                      ? "Subagent finished"
+                      : "Session finished"}
               </span>
               <span className="toast-text">{t.title}</span>
             </span>

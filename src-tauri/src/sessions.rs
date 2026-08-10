@@ -131,7 +131,8 @@ pub struct SessionMeta {
     pub parent_session_path: Option<String>, // linked parent session file (text/timing match)
     pub message_count: usize,
     pub running: bool,
-    pub sleeping: bool, // subagent killed/paused mid-work, resumable
+    pub sleeping: bool,   // process alive, waiting on a bash sleep
+    pub interrupted: bool, // process dead + no terminal event, resumable
     pub size: u64,
 }
 
@@ -253,6 +254,7 @@ pub fn list_projects() -> Vec<Project> {
     let root = sessions_dir();
     let mut out = Vec::new();
     let (_, task_by_uuid, _) = subagent_index();
+    let alive = alive_task_ids();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let path = e.path();
@@ -291,7 +293,7 @@ pub fn list_projects() -> Vec<Project> {
                         if let Some(u) = h.get("id").and_then(|x| x.as_str()) {
                             if seen_uuids.insert(u.to_string()) {
                                 let is_running = if let Some(tid) = task_by_uuid.get(u) {
-                                    task_running(tid)
+                                    alive.contains(tid)
                                 } else {
                                     session_file_running(&f.path())
                                 };
@@ -518,56 +520,120 @@ fn build_subagent_index() -> SubIdx {
     (uuids, by_uuid, match_text_by_uuid)
 }
 
-/// Task lifecycle from the agent-logs file:
-/// - Running:  no terminal event (agent_end/agent_settled) + written recently
-/// - Sleeping: no terminal event + stale -> killed/paused mid-work, resumable
-/// - Finished: last line is a terminal event
-#[derive(PartialEq, Clone, Copy)]
+/// Task lifecycle, process-alive aware:
+/// - Running:     process alive, last event is not a long sleep
+/// - Sleeping:    process alive, currently executing a bash `sleep` (will auto-continue)
+/// - Interrupted: process dead + no terminal event (killed, resumable via reload)
+/// - Finished:    last line is a terminal event (agent_end/agent_settled)
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum TaskStatus {
     Running,
     Sleeping,
+    Interrupted,
     Finished,
     Unknown,
 }
 
-fn task_status(task_id: &str) -> TaskStatus {
+/// Subagent pi processes are visible in `ps` with the agent-logs path
+/// `task-<id>.jsonl` (or the `pi-task-<id>.md` system-prompt arg) in the
+/// command line. One ps call covers every task.
+fn alive_task_ids() -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Ok(res) = std::process::Command::new("ps")
+        .args(["-axo", "command"])
+        .output()
+    else {
+        return out;
+    };
+    let text = String::from_utf8_lossy(&res.stdout);
+    for line in text.lines() {
+        // task ids appear as path suffixes, e.g. .../agent-logs/task-<id>.jsonl
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        while i + 5 <= bytes.len() {
+            if &bytes[i..i + 5] == b"task-" {
+                let rest = &line[i + 5..];
+                if let Some(idx) = rest.find(".jsonl") {
+                    let id = &rest[..idx];
+                    if !id.is_empty()
+                        && id.len() <= 48
+                        && id
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    {
+                        out.insert(id.to_string());
+                        i += 5 + idx + 6;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Last agent-log event is a bash `sleep N` (the agent waiting, will continue).
+fn last_is_sleep(data: &str) -> bool {
+    let last = data.lines().rev().find(|l| !l.trim().is_empty());
+    let Some(last) = last else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(last) else {
+        return false;
+    };
+    let is_bash_tool = v.get("toolName").and_then(|x| x.as_str()) == Some("bash");
+    if !is_bash_tool {
+        return false;
+    }
+    let cmd = v
+        .get("args")
+        .and_then(|a| a.get("command"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    // "sleep 1500" / "sleep 2900; cd ..."
+    let trimmed = cmd.trim_start();
+    trimmed.starts_with("sleep ") || trimmed.starts_with("sleep\\t")
+}
+
+fn last_is_terminal(data: &str) -> bool {
+    let last = data.lines().rev().find(|l| !l.trim().is_empty());
+    let Some(last) = last else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(last) else {
+        return false;
+    };
+    matches!(
+        v.get("type").and_then(|x| x.as_str()),
+        Some("agent_end") | Some("agent_settled")
+    )
+}
+
+fn task_status(task_id: &str, alive: &HashSet<String>) -> TaskStatus {
     let p = pi_agent_dir()
         .join("agent-logs")
         .join(format!("task-{task_id}.jsonl"));
     let Ok(data) = fs::read(&p) else {
-        return TaskStatus::Unknown;
+        return if alive.contains(task_id) {
+            TaskStatus::Running
+        } else {
+            TaskStatus::Unknown
+        };
     };
     let text = String::from_utf8_lossy(&data);
-    let last = text.lines().rev().find(|l| !l.trim().is_empty());
-    let Some(last) = last else { return TaskStatus::Unknown };
-    if let Ok(v) = serde_json::from_str::<Value>(last) {
-        match v.get("type").and_then(|x| x.as_str()) {
-            Some("agent_end") | Some("agent_settled") => return TaskStatus::Finished,
-            _ => {}
+    if alive.contains(task_id) {
+        // process alive: sleeping only while a bash sleep is running
+        if last_is_sleep(&text) {
+            TaskStatus::Sleeping
+        } else {
+            TaskStatus::Running
         }
-    }
-    // no terminal event yet: running if written within the last 3 minutes
-    let Ok(md) = fs::metadata(&p) else { return TaskStatus::Sleeping };
-    let Ok(mt) = md.modified() else { return TaskStatus::Sleeping };
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return TaskStatus::Sleeping;
-    };
-    let Ok(mtime) = mt.duration_since(std::time::UNIX_EPOCH) else {
-        return TaskStatus::Sleeping;
-    };
-    if now.saturating_sub(mtime).as_secs() < 180 {
-        TaskStatus::Running
+    } else if last_is_terminal(&text) {
+        TaskStatus::Finished
     } else {
-        TaskStatus::Sleeping
+        TaskStatus::Interrupted
     }
 }
 
-fn task_running(task_id: &str) -> bool {
-    task_status(task_id) == TaskStatus::Running
-}
-
-fn task_sleeping(task_id: &str) -> bool {
-    task_status(task_id) == TaskStatus::Sleeping
+fn task_running(task_id: &str, alive: &HashSet<String>) -> bool {
+    task_status(task_id, alive) == TaskStatus::Running
 }
 
 /// A lightweight snapshot of currently running sessions across ALL projects
@@ -589,9 +655,11 @@ pub fn session_status(path: String) -> String {
     let id = session_id(&path).unwrap_or_default();
     let (_, task_by_uuid, _) = subagent_index();
     if let Some(tid) = task_by_uuid.get(&id) {
-        return match task_status(tid) {
+        let alive = alive_task_ids();
+        return match task_status(tid, &alive) {
             TaskStatus::Running => "running".into(),
             TaskStatus::Sleeping => "sleeping".into(),
+            TaskStatus::Interrupted => "interrupted".into(),
             TaskStatus::Finished => "finished".into(),
             TaskStatus::Unknown => "unknown".into(),
         };
@@ -609,6 +677,7 @@ pub fn list_running() -> Vec<RunningSession> {
     let root = sessions_dir();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
     let (_, task_by_uuid, _) = subagent_index();
+    let alive = alive_task_ids();
     let mut seen: HashSet<String> = HashSet::new();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
@@ -634,10 +703,7 @@ pub fn list_running() -> Vec<RunningSession> {
                     }
                     let is_sub = fname.contains("subagent-task-") || task_by_uuid.contains_key(&id);
                     let is_running = if is_sub {
-                        task_by_uuid
-                            .get(&id)
-                            .map(|t| task_running(t))
-                            .unwrap_or(false)
+                        task_by_uuid.get(&id).map(|t| alive.contains(t)).unwrap_or(false)
                     } else {
                         session_file_running(&path)
                     };
@@ -663,6 +729,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let dir = root.join(project_key);
     let mut out = Vec::new();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
+    let alive = alive_task_ids();
     let (sub_uuids, task_by_uuid, match_text_by_uuid) = subagent_index();
 
     if let Ok(fd) = fs::read_dir(&dir) {
@@ -675,9 +742,10 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid) {
                 if m.is_subagent {
                     if let Some(tid) = &m.task_id {
-                        match task_status(tid) {
+                        match task_status(tid, &alive) {
                             TaskStatus::Running => m.running = true,
                             TaskStatus::Sleeping => m.sleeping = true,
+                            TaskStatus::Interrupted => m.interrupted = true,
                             _ => {}
                         }
                     }
@@ -774,6 +842,7 @@ fn parse_meta(
         message_count: 0,
         running: running.contains(&spath),
         sleeping: false,
+        interrupted: false,
         size,
     })
 }

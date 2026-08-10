@@ -786,6 +786,8 @@ body {
 }
 .toast.paused { border-left-color: var(--yellow); }
 .toast.paused .toast-title { color: var(--yellow); }
+.toast.interrupted { border-left-color: var(--gray); }
+.toast.interrupted .toast-title { color: var(--gray); }
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(-8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -927,3 +929,12 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #35405f; }
 ::-webkit-scrollbar-track { background: transparent; }
+.sub-interrupted-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--gray);
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 8px;
+  padding: 0 6px;
+}

@@ -27,6 +27,7 @@ export interface SessionMeta {
   messageCount: number;
   running: boolean;
   sleeping: boolean;
+  interrupted: boolean;
   size: number;
 }
 

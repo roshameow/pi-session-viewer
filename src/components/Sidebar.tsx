@@ -86,8 +86,13 @@ function SessionItem({
         {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
         {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
         {s.isSubagent && s.sleeping && (
-          <span className="sub-sleeping-chip" title="Killed/paused mid-work — resumable with full context">
+          <span className="sub-sleeping-chip" title="Process alive, waiting on a sleep — will auto-continue">
             💤 sleeping
+          </span>
+        )}
+        {s.isSubagent && s.interrupted && (
+          <span className="sub-interrupted-chip" title="Process dead, no terminal event — resumable via subagent_reload">
+            ⏸ interrupted
           </span>
         )}
       </div>
