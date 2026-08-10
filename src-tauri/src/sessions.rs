@@ -809,8 +809,38 @@ pub fn list_running() -> Vec<RunningSession> {
     out
 }
 
+/// A task id looks like `msmsnt8i-sebj` (8 lowercase alnum + "-" + 4 alnum).
+fn is_task_id_token(s: &str, i: usize) -> bool {
+    let b = s.as_bytes();
+    if i + 13 > b.len() {
+        return false;
+    }
+    if b[i + 8] != b'-' {
+        return false;
+    }
+    let alnum_lc = |k: usize| b[k].is_ascii_digit() || b[k].is_ascii_lowercase();
+    (0..8).all(|k| alnum_lc(i + k)) && (9..13).all(|k| alnum_lc(i + k))
+}
+
+fn extract_task_id(s: &str) -> Option<String> {
+    let mut i = 0;
+    while i + 13 <= s.len() {
+        if is_task_id_token(s, i) {
+            return Some(s[i..i + 13].to_string());
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Map of session file path -> rmux target (e.g. "pi-xxx:s019fe979") for
-/// sessions running inside rmux panes. Scans all panes' processes once.
+/// sessions running inside rmux panes.
+///
+/// rmux pane processes are pi itself, whose argv is scrubbed down to just
+/// `pi` (the --session args are gone), so `ps -o command=` can never reveal
+/// the session path. Instead we map by **window name**:
+///   * Open TUI mains: window `s<id8>` (first 8 hex chars of the session id)
+///   * subagents:      window `<agent>-<taskId>` in the `pi-agents` session
 pub fn rmux_runtime_map() -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
@@ -820,23 +850,87 @@ pub fn rmux_runtime_map() -> HashMap<String, String> {
     else {
         return out;
     };
+    let pid_alive = |pid: u32| -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    // Build id8 -> path and taskId -> path indexes from one scan of the session dirs.
+    let mut id8_map: HashMap<String, String> = HashMap::new();
+    let mut task_map: HashMap<String, String> = HashMap::new();
+    if let Ok(root) = fs::read_dir(sessions_dir()) {
+        for dir in root.flatten() {
+            if let Ok(entries) = fs::read_dir(dir.path()) {
+                for f in entries.flatten() {
+                    let name = f.file_name().to_string_lossy().to_string();
+                    if !name.ends_with(".jsonl") {
+                        continue;
+                    }
+                    let p = f.path().to_string_lossy().into_owned();
+                    if name.contains("subagent-") {
+                        // <ts>_subagent-task-<taskId>.jsonl (or _subagent-<taskId>)
+                        let tail = &name[name.rfind("subagent-").unwrap() + "subagent-".len()..];
+                        if let Some(tid) = extract_task_id(tail) {
+                            task_map.entry(tid).or_insert_with(|| p.clone());
+                        }
+                    } else if let Some(pos) = name.find('_') {
+                        // main session: <ts>_<uuid>.jsonl -> id8 from the uuid part
+                        let id_part = &name[pos + 1..];
+                        if id_part.len() >= 9 && id_part.as_bytes()[8] == b'-' {
+                            let id8 = &id_part[..8];
+                            if id8.chars().all(|c| c.is_ascii_hexdigit()) {
+                                id8_map.entry(id8.to_string()).or_insert_with(|| p.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for line in String::from_utf8_lossy(&res.stdout).lines() {
         let mut parts = line.splitn(2, ' ');
         let (target, pid_s) = (parts.next().unwrap_or("").trim(), parts.next().unwrap_or("").trim());
         let Ok(pid) = pid_s.parse::<u32>() else { continue };
-        let Ok(ps) = std::process::Command::new("ps")
+        if !pid_alive(pid) {
+            continue;
+        }
+        let win = target.split(':').nth(1).unwrap_or("").to_string();
+        // Open TUI main: window s<id8>
+        if let Some(id8) = win.strip_prefix('s') {
+            if id8.len() >= 8 && id8[..8].chars().all(|c| c.is_ascii_hexdigit()) {
+                if let Some(p) = id8_map.get(&id8[..8]) {
+                    out.insert(p.clone(), target.to_string());
+                }
+                continue;
+            }
+        }
+        // subagent: window <agent>-<taskId>
+        if let Some(tid) = extract_task_id(&win) {
+            if let Some(p) = task_map.get(&tid) {
+                out.insert(p.clone(), target.to_string());
+                continue;
+            }
+        }
+        // fallback: pane command line contains the session jsonl path
+        if let Ok(ps_out) = std::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "command="])
             .env("PATH", full_path())
             .output()
-        else { continue };
-        let cmd = String::from_utf8_lossy(&ps.stdout);
-        // main sessions: command contains "--session <path>"
-        for tok in cmd.split_whitespace() {
-            if tok == "--session" { continue; }
-            let clean = tok.trim_matches('\'');
-            if clean.ends_with(".jsonl") && clean.contains("sessions/") {
-                out.insert(clean.to_string(), target.to_string());
-                break;
+        {
+            let cmd = String::from_utf8_lossy(&ps_out.stdout);
+            for tok in cmd.split_whitespace() {
+                if tok == "--session" {
+                    continue;
+                }
+                let clean = tok.trim_matches('\'');
+                if clean.ends_with(".jsonl") && clean.contains("sessions/") {
+                    out.insert(clean.to_string(), target.to_string());
+                    break;
+                }
             }
         }
     }
@@ -879,8 +973,9 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                                 .unwrap_or_else(|| "pi-agents".to_string()),
                         );
                     }
-                } else if session_file_running(&path) {
-                    // main session actively written (pi running)
+                } else if session_file_running(&path) || rmux_map.contains_key(&m.path) {
+                    // main session running: actively written, or alive in an rmux
+                    // pane (idle rmux pis don't touch the jsonl, but still run)
                     m.running = true;
                     if let Some(t) = rmux_map.get(&m.path) {
                         m.in_rmux = true;
@@ -1716,6 +1811,27 @@ fn dbg_rt() {
             if s.running {
                 println!("RUNNING: {} rmux={} target={:?} last={}", s.path.split('/').last().unwrap_or(""), s.in_rmux, s.rmux_target, s.last_message.clone().map(|m| m.chars().take(20).collect::<String>()).unwrap_or_default());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rmux_tests {
+    use super::*;
+    #[test]
+    fn dbg_rmux_map() {
+        let map = rmux_runtime_map();
+        for (k, v) in map.iter() {
+            if k.contains("019fe979") || k.contains("019fe98d") || k.contains("msmsnt8i") {
+                println!("RMUXDBG path={} target={}", k, v);
+            }
+        }
+        let sess = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        for m in sess.iter().filter(|m| m.running) {
+            println!(
+                "SESSDBG id={} name={:?} running={} inRmux={} target={:?}",
+                m.id, m.name, m.running, m.in_rmux, m.rmux_target
+            );
         }
     }
 }
