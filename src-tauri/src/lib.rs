@@ -2,7 +2,6 @@ mod agent;
 mod config;
 mod sessions;
 
-use std::path::Path;
 use std::sync::Arc;
 
 #[tauri::command]
@@ -23,11 +22,6 @@ fn session_detail(path: String) -> Result<sessions::SessionDetail, String> {
 #[tauri::command]
 fn pi_bin_path() -> Option<String> {
     sessions::resolve_pi_bin()
-}
-
-#[tauri::command]
-fn pi_sessions_dir() -> String {
-    sessions::sessions_dir().to_string_lossy().to_string()
 }
 
 #[tauri::command]
@@ -267,7 +261,7 @@ fn ensure_rmux_window(
     }
     let rmux = rmux_bin().unwrap();
     let sess = rmux_session_name(cwd);
-    let win = format!("s{}", &id.chars().take(8).collect::<String>());
+    let win = format!("s{}", id.chars().take(8).collect::<String>());
     let session_exists = std::process::Command::new(&rmux)
         .args(["has-session", "-t", &sess]).env("PATH", sessions::full_path())
         .output()
@@ -291,7 +285,7 @@ fn ensure_rmux_window(
             .unwrap_or(false)
     };
     let win_alive = if session_exists {
-        pane_pid(&rmux, &sess, &win).map(|p| pid_alive(p)).unwrap_or(false)
+        pane_pid(&rmux, &sess, &win).map(pid_alive).unwrap_or(false)
     } else {
         false
     };
@@ -453,11 +447,6 @@ fn apple_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-#[tauri::command]
-fn file_exists(path: String) -> bool {
-    Path::new(&path).is_file()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -467,9 +456,7 @@ pub fn run() {
             list_sessions,
             session_detail,
             pi_bin_path,
-            pi_sessions_dir,
             pi_version,
-            file_exists,
             export_session_html,
             open_in_terminal,
             attach_session,

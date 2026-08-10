@@ -375,7 +375,7 @@ pub fn list_projects() -> Vec<Project> {
             });
         }
     }
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     out
 }
 
@@ -743,10 +743,6 @@ fn task_status(task_id: &str, alive: &HashSet<String>) -> TaskStatus {
     }
 }
 
-fn task_running(task_id: &str, alive: &HashSet<String>) -> bool {
-    task_status(task_id, alive) == TaskStatus::Running
-}
-
 /// A lightweight snapshot of currently running sessions across ALL projects
 /// (used by the frontend to notify when a running session finishes).
 #[derive(Serialize, Clone)]
@@ -872,9 +868,11 @@ pub struct RmuxRuntime {
 /// rmux pane processes are pi itself, whose argv is scrubbed down to just
 /// `pi` (the --session args are gone), so `ps -o command=` can never reveal
 /// the session path. Instead we map by **window name**:
-///   * Open TUI mains: window `s<id8>` (first 8 hex chars of the session id)
-///   * subagents:      window `<agent>-<taskId>` in the `pi-agents` session
-/// attached state comes from `rmux list-clients -t <session>`.
+///
+/// - Open TUI mains: window `s<id8>` (first 8 hex chars of the session id)
+/// - subagents: window `<agent>-<taskId>` in the `pi-agents` session
+///
+/// Attached state comes from `rmux list-clients -t <session>`.
 /// Alive pi processes running in terminal windows (not inside any rmux pane).
 /// pi scrubs its argv to just "pi", so we identify them by process name and
 /// exclude anything attached to an rmux pane pty. Returns (pid, cwd).
@@ -971,7 +969,7 @@ pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
             mains.push((mt, spath));
         }
     }
-    mains.sort_by(|a, b| b.0.cmp(&a.0));
+    mains.sort_by_key(|a| std::cmp::Reverse(a.0));
     mains.iter().take(term_n).any(|(_, p)| p == session_path)
 }
 
@@ -1027,7 +1025,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
 
     // session name -> has attached client (queried once per session)
     let mut attached_cache: HashMap<String, bool> = HashMap::new();
-    let mut add = |path: String, target: String, sess: &str, dead: bool, out: &mut HashMap<String, RmuxRuntime>, attached_cache: &mut HashMap<String, bool>| {
+    let add = |path: String, target: String, sess: &str, dead: bool, out: &mut HashMap<String, RmuxRuntime>, attached_cache: &mut HashMap<String, bool>| {
         let attached = *attached_cache.entry(sess.to_string()).or_insert_with(|| {
             std::process::Command::new("rmux")
                 .args(["list-clients", "-t", sess])
@@ -1153,7 +1151,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             .iter_mut()
             .filter(|m| !m.is_subagent && !m.in_rmux)
             .collect();
-        cands.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        cands.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
         for m in cands.into_iter().take(term_n) {
             m.term_alive = true;
         }
@@ -1199,7 +1197,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
         }
     }
 
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     out
 }
 
@@ -1281,7 +1279,8 @@ fn normalize_text(s: &str) -> String {
 }
 
 fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
-    static CACHE: OnceLock<Mutex<Option<(String, u64, Vec<ParentCall>)>>> = OnceLock::new();
+    type ParentCache = Option<(String, u64, Vec<ParentCall>)>;
+    static CACHE: OnceLock<Mutex<ParentCache>> = OnceLock::new();
     let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     let key = newest_mtime_secs(&sessions_dir().join(project_key));
     if let Some((pk, k, calls)) = cache.as_ref() {
@@ -1408,8 +1407,8 @@ fn extract_alpha_id(s: &str) -> Option<String> {
     let lower = s.to_lowercase();
     for (i, m) in lower.match_indices("alpha") {
         let rest = &s[i + m.len()..];
-        let rest = rest.trim_start_matches(|c: char| c == ':' || c == ' ' || c == '　');
-        let rest = rest.trim_start_matches(|c: char| c.is_whitespace());
+        let rest = rest.trim_start_matches([':', ' ', '　']);
+        let rest = rest.trim_start();
         let token: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
         if token.len() >= 8 && token.len() <= 12 {
             return Some(token);
@@ -1491,10 +1490,8 @@ fn scan_head(path: &Path) -> (String, String, String, Option<String>, Option<Str
                     }
                 }
             }
-            "model_change" => {
-                if model.is_none() {
-                    model = v.get("modelId").and_then(|x| x.as_str()).map(|s| s.to_string());
-                }
+            "model_change" if model.is_none() => {
+                model = v.get("modelId").and_then(|x| x.as_str()).map(|s| s.to_string());
             }
             _ => {}
         }
@@ -1905,7 +1902,8 @@ mod tests {
         assert!(!projects.is_empty(), "expected sessions on this machine");
         let mut saw_main = false;
         let mut saw_sub = false;
-        for p in projects {
+        // one project is enough for a smoke test
+        if let Some(p) = projects.first() {
             let sessions = list_sessions(&p.key);
             assert!(!sessions.is_empty());
             for s in &sessions {
@@ -1930,7 +1928,6 @@ mod tests {
                 }
                 assert!(has_user, "active branch should contain a user message");
             }
-            break; // one project is enough for a smoke test
         }
         assert!(saw_main && saw_sub, "expected both main and subagent sessions");
     }
@@ -1980,14 +1977,4 @@ mod tests {
 
 }
 
-#[test]
-fn dbg_rt() {
-    for p in list_projects() {
-        for s in list_sessions(&p.key) {
-            if s.running {
-                println!("RUNNING: {} rmux={} target={:?} last={}", s.path.split('/').last().unwrap_or(""), s.in_rmux, s.rmux_target, s.last_message.clone().map(|m| m.chars().take(20).collect::<String>()).unwrap_or_default());
-            }
-        }
-    }
-}
 
