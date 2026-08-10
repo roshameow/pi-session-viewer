@@ -372,11 +372,6 @@ body {
   padding-left: 18px;
 }
 .session-model { color: var(--cyan); opacity: 0.8; }
-.session-id {
-  font-family: var(--mono);
-  font-size: 9.5px;
-  color: var(--gray);
-}
 .session-task { color: var(--yellow); opacity: 0.8; }
 
 .pulse-dot {

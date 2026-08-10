@@ -83,24 +83,19 @@ function SessionItem({
             {interruptedSubs > 0 && <span className="sum intr">✕{interruptedSubs}</span>}
           </span>
         )}
+      </div>
+      <div className="session-item-line2">
+        <span className="session-time">{relTime(s.updatedAt)}</span>
         {s.running && (
           <span
             className={`runtime-chip ${s.inRmux ? "rmux" : "term"}`}
             title={
               s.inRmux
-                ? `in rmux: ${s.rmuxTarget ?? ""} (closable tab)`
-                : "in terminal window"
+                ? `in rmux: ${s.rmuxTarget ?? ""} (closable tab) · id: ${s.id}`
+                : `in terminal window · id: ${s.id}`
             }
           >
             {s.inRmux ? "rmux" : "term"}
-          </span>
-        )}
-      </div>
-      <div className="session-item-line2">
-        <span className="session-time">{relTime(s.updatedAt)}</span>
-        {!s.isSubagent && (
-          <span className="session-id" title={`session id: ${s.id}`}>
-            {s.id.slice(0, 13)}…
           </span>
         )}
         {status === "running" && <span className="sub-running-chip">running</span>}
@@ -470,6 +465,19 @@ export function Sidebar({
             }}
           >
             <span>⛭</span> Open in pi TUI (terminal)
+          </button>
+          <button
+            className="ctx-item"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(ctxMenu.s.id);
+              } catch {
+                /* clipboard may be unavailable */
+              }
+              setCtxMenu(null);
+            }}
+          >
+            <span>⧉</span> Copy session id
           </button>
           <button
             className={`ctx-item danger ${confirmingDelete ? "confirm" : ""}`}
