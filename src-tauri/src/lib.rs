@@ -160,12 +160,35 @@ fn rmux_session_name(cwd: &str) -> String {
     format!("pi-{}", if clean.is_empty() { "default" } else { &clean })
 }
 
+fn rmux_bin() -> Option<String> {
+    if let Ok(b) = std::env::var("RMUX_BIN") {
+        if !b.is_empty() {
+            return Some(b);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    for cand in [
+        "/opt/homebrew/bin/rmux",
+        "/usr/local/bin/rmux",
+        &format!("{home}/.local/bin/rmux"),
+    ] {
+        if std::path::Path::new(cand).is_file() {
+            return Some(cand.to_string());
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            let p = std::path::Path::new(dir).join("rmux");
+            if p.is_file() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn rmux_available() -> bool {
-    std::process::Command::new("rmux")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    rmux_bin().is_some()
 }
 
 /// Run a Terminal (or iTerm) window executing `cmd` via AppleScript (new window).
@@ -222,10 +245,11 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
         shell_quote(&session_path)
     );
     if rmux_available() && !cwd.is_empty() {
+        let rmux = rmux_bin().unwrap();
         let sess = rmux_session_name(&cwd);
         let win = format!("s{short}");
         // create the window (session first if needed), then attach in a terminal
-        let created = std::process::Command::new("rmux")
+        let created = std::process::Command::new(&rmux)
             .args(["has-session", "-t", &sess])
             .output()
             .map(|o| o.status.success())
@@ -251,7 +275,7 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
                 cmd.clone(),
             ]
         };
-        let out = std::process::Command::new("rmux")
+        let out = std::process::Command::new(&rmux)
             .args(&args)
             .output()
             .map_err(|e| format!("Failed to start rmux session: {e}"))?;
@@ -270,9 +294,7 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
 /// pi-<project> for main sessions).
 #[tauri::command]
 fn attach_session(session_path: String) -> Result<(), String> {
-    if !rmux_available() {
-        return Err("rmux is not installed".into());
-    }
+    let _rmux = rmux_bin().ok_or("rmux is not installed")?;
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
