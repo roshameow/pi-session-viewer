@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentBlock, Entry, SessionDetail } from "../types";
 import { Markdown } from "./Markdown";
+import { api } from "../api";
 
 // ---------- Live conversation blocks (assembled from pi json events) ----------
 
@@ -261,7 +262,6 @@ export function Thread({
     setExporting(true);
     setExportMsg(null);
     try {
-      const { api } = await import("../api");
       const out = await api.exportSession(detail.path);
       setExportMsg("✓ Exported → " + out);
       setTimeout(() => setExportMsg(null), 6000);
@@ -270,6 +270,15 @@ export function Thread({
       setTimeout(() => setExportMsg(null), 6000);
     } finally {
       setExporting(false);
+    }
+  };
+
+  const doOpenTerminal = async () => {
+    try {
+      await api.openInTerminal(detail.path);
+    } catch (e) {
+      setExportMsg("✗ Failed to open terminal: " + String(e));
+      setTimeout(() => setExportMsg(null), 6000);
     }
   };
 
@@ -382,14 +391,23 @@ export function Thread({
                   {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
                 </div>
               </div>
-              <button
-                className={`export-btn ${exporting ? "busy" : ""}`}
-                onClick={doExport}
-                disabled={exporting}
-                title="Export this session to HTML (pi --export) and open it"
-              >
-                {exporting ? "Exporting…" : "⬇ Export HTML"}
-              </button>
+              <div className="session-head-actions">
+                <button
+                  className="export-btn"
+                  onClick={doOpenTerminal}
+                  title="Open this session in pi TUI in a terminal window"
+                >
+                  ⛭ Open TUI
+                </button>
+                <button
+                  className={`export-btn ${exporting ? "busy" : ""}`}
+                  onClick={doExport}
+                  disabled={exporting}
+                  title="Export this session to HTML (pi --export) and open it"
+                >
+                  {exporting ? "Exporting…" : "⬇ Export HTML"}
+                </button>
+              </div>
             </div>
             {exportMsg && <div className="export-msg">{exportMsg}</div>}
           </div>

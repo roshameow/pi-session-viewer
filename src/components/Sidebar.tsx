@@ -121,7 +121,7 @@ export function Sidebar({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; s: SessionMeta } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  // close the context menu on outside click / Escape
+  // close the context menu on outside left-click / Escape
   useEffect(() => {
     if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
@@ -129,11 +129,9 @@ export function Sidebar({
       if (e.key === "Escape") setCtxMenu(null);
     };
     window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
       window.removeEventListener("keydown", onKey);
     };
   }, [ctxMenu]);

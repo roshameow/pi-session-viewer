@@ -360,6 +360,11 @@ body {
   gap: 12px;
 }
 .session-head-main { min-width: 0; }
+.session-head-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
 .export-btn {
   flex-shrink: 0;
   background: var(--bg2);
