@@ -245,21 +245,42 @@ fn ensure_rmux_window(
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    // does the window already exist? (session already running -> just attach)
-    let win_exists = if session_exists {
-        std::process::Command::new(&rmux)
-            .args(["list-windows", "-t", &sess]).env("PATH", sessions::full_path())
+    // does the window already exist AND is its pane process actually alive?
+    // (reuse only live windows; a stale window from an old pi gets recreated)
+    let pane_pid = |r: &str, s: &str, w: &str| -> Option<u32> {
+        std::process::Command::new(r)
+            .args(["list-panes", "-t", &format!("{s}:{w}"), "-F", "#{pane_pid}"])
+            .env("PATH", sessions::full_path())
             .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .any(|l| l.contains(&win))
-            })
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+    };
+    let pid_alive = |pid: u32| -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false)
+    };
+    let win_alive = if session_exists {
+        pane_pid(&rmux, &sess, &win).map(|p| pid_alive(p)).unwrap_or(false)
     } else {
         false
     };
-    if !win_exists {
+    if !win_alive {
+        // stale window (old pi) -> remove it so the next block starts fresh
+        if session_exists {
+            let _ = std::process::Command::new(&rmux)
+                .args(["kill-window", "-t", &format!("{sess}:{win}")])
+                .env("PATH", sessions::full_path())
+                .output();
+        }
+        let session_exists = std::process::Command::new(&rmux)
+            .args(["has-session", "-t", &sess])
+            .env("PATH", sessions::full_path())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         let args: Vec<String> = if session_exists {
             vec![
                 "new-window".into(),
