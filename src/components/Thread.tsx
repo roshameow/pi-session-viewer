@@ -162,6 +162,18 @@ function toolSummary(name: string, args: string, output: string, isError: boolea
 
 // ---------- single-line tool row (click to expand output) ----------
 
+export type FilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+
+export const FILTER_CYCLE: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
+
+export const FILTER_LABELS: Record<FilterMode, string> = {
+  default: "默认",
+  "no-tools": "无工具",
+  "user-only": "仅用户",
+  "labeled-only": "仅标签",
+  all: "全部",
+};
+
 function ToolRow({
   name,
   arg,
@@ -169,6 +181,7 @@ function ToolRow({
   isError,
   running,
   defaultOpen,
+  hideResult,
 }: {
   name: string;
   arg: string;
@@ -176,6 +189,7 @@ function ToolRow({
   isError: boolean;
   running?: boolean;
   defaultOpen?: boolean;
+  hideResult?: boolean;
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const summary = toolSummary(name, arg, output, isError);
@@ -185,22 +199,29 @@ function ToolRow({
       <button
         className="tool-line"
         onClick={() => setOpen(!open)}
-        title={output ? "点击展开/收起输出" : undefined}
+        title={output && !hideResult ? "点击展开/收起输出" : undefined}
       >
         <span className={`tdot ${isError ? "red" : running ? "pulse" : "green"}`}>●</span>
-        <span className="tool-summary">{summary}</span>
+        <span className="tool-summary">{hideResult ? callOnly(name, arg) : summary}</span>
         {running && <span className="tool-running">运行中…</span>}
-        {!running && outputLen > 0 && (
+        {!running && !hideResult && outputLen > 0 && (
           <span className="tool-expand">{open ? "▾" : "▸"} {open ? "收起" : "展开"}</span>
         )}
+        {hideResult && <span className="tool-expand muted">(输出已隐藏)</span>}
       </button>
-      {open && output && (
+      {open && output && !hideResult && (
         <pre className="tool-output" onClick={(e) => e.stopPropagation()}>
           {output}
         </pre>
       )}
     </div>
   );
+}
+
+function callOnly(name: string, args: string): string {
+  const arg = argLine(name, args);
+  if (name === "bash") return `$ ${arg}`;
+  return `${name}(${arg})`;
 }
 
 // ---------- thread ----------
@@ -216,6 +237,19 @@ export function Thread({
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [filter, setFilter] = useState<FilterMode>("default");
+
+  // Ctrl+O cycles filter modes (same as pi /tree)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        setFilter((f) => FILTER_CYCLE[(FILTER_CYCLE.indexOf(f) + 1) % FILTER_CYCLE.length]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const renderItems = useMemo(() => {
     const entries = detail.entries;
@@ -223,7 +257,29 @@ export function Thread({
     const skip = new Set<number>();
     const items: { entry: Entry; inlineResults: Entry[] }[] = [];
 
+    // ids of entries that carry a label (label entries point at them)
+    const labeledIds = new Set(
+      entries.filter((e) => e.kind === "label" && e.name).map((e) => e.name as string)
+    );
+    const isSettings = (e: Entry) =>
+      ["label", "custom", "model_change", "thinking_level_change", "session_info"].includes(e.kind);
+
     active.forEach((entry, idx) => {
+      // mode-level filtering
+      if (filter === "user-only") {
+        if (entry.role !== "user") skip.add(idx);
+        return;
+      }
+      if (filter === "labeled-only") {
+        const isLabelMarker = entry.kind === "label";
+        if (!isLabelMarker && !labeledIds.has(entry.id)) skip.add(idx);
+      } else if (filter === "no-tools") {
+        if (isSettings(entry) || entry.role === "toolResult") skip.add(idx);
+      } else if (filter === "default") {
+        if (isSettings(entry)) skip.add(idx);
+      }
+      // "all": keep everything
+
       const toolCalls =
         entry.role === "assistant" ? entry.content.filter((c) => c.kind === "toolCall") : [];
       if (toolCalls.length === 0) {
@@ -246,8 +302,8 @@ export function Thread({
         if (ri >= 0) skip.add(ri);
       });
     });
-    return { items, skip };
-  }, [detail]);
+    return { items, skip, hideToolOutput: filter === "no-tools" };
+  }, [detail, filter]);
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -264,13 +320,32 @@ export function Thread({
         <div className="session-head">
           <div className="session-head-title">{detail.stats.model ?? "pi session"}</div>
           <div className="session-head-meta">
-            {detail.stats.messageCount} 条消息 · {fmtTokens(detail.stats.tokenCount)} · ${detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+            {detail.stats.messageCount} 条消息 · {fmtTokens(detail.stats.tokenCount)} · $
+            {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+          </div>
+          <div className="filter-bar" title="Ctrl+O 循环切换">
+            {FILTER_CYCLE.map((m) => (
+              <button
+                key={m}
+                className={`filter-btn ${filter === m ? "active" : ""}`}
+                onClick={() => setFilter(m)}
+              >
+                {FILTER_LABELS[m]}
+              </button>
+            ))}
           </div>
         </div>
 
         {renderItems.items.map(({ entry, inlineResults }, idx) => {
           if (renderItems.skip.has(detail.active[idx])) return null;
-          return <EntryView key={entry.id + idx} entry={entry} inlineResults={inlineResults} />;
+          return (
+            <EntryView
+              key={entry.id + idx}
+              entry={entry}
+              inlineResults={inlineResults}
+              hideToolOutput={renderItems.hideToolOutput}
+            />
+          );
         })}
 
         {/* live conversation */}
@@ -332,9 +407,11 @@ function ThinkingLine({ text }: { text: string }) {
 function EntryView({
   entry,
   inlineResults,
+  hideToolOutput,
 }: {
   entry: Entry;
   inlineResults: Entry[];
+  hideToolOutput?: boolean;
 }) {
   switch (entry.kind) {
     case "model_change":
@@ -418,6 +495,7 @@ function EntryView({
               output={output ?? ""}
               isError={result?.isError ?? false}
               defaultOpen={!!result?.isError}
+              hideResult={hideToolOutput}
             />
           );
         })}

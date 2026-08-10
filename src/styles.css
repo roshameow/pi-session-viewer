@@ -306,6 +306,29 @@ body {
 .session-head-title { font-size: 15px; font-weight: 700; }
 .session-head-meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
 
+/* filter bar (default / no-tools / user-only / labeled-only / all) */
+.filter-bar {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.filter-btn {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.filter-btn:hover { color: var(--fg); border-color: var(--cyan); }
+.filter-btn.active {
+  background: rgba(0, 215, 255, 0.12);
+  border-color: var(--cyan);
+  color: var(--cyan);
+  font-weight: 600;
+}
+
 .msg {
   margin-bottom: 6px;
 }
