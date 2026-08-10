@@ -210,6 +210,11 @@ pub fn decode_dir_name(dir: &str) -> String {
     format!("/{}", inner.replace('-', "/"))
 }
 
+/// "/Users/a/b" -> "--Users-a-b--" (mirror of decode; pi's session dir naming).
+pub fn encode_dir_name(cwd: &str) -> String {
+    format!("--{}--", cwd.trim_start_matches('/').replace('/', "-"))
+}
+
 /// Parse `YYYY-MM-DDTHH:MM:SS(.mmm)Z` -> epoch secs (std only).
 fn parse_iso_ts(s: &str) -> Option<i64> {
     let s = s.trim().trim_end_matches('Z');
@@ -955,6 +960,22 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
     out
 }
 
+/// cwd of a live process via lsof (single targeted call).
+fn lsof_cwd(pid: u32) -> Option<String> {
+    std::process::Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .env("PATH", full_path())
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .find(|l| l.starts_with('n'))
+                .map(|l| l[1..].to_string())
+        })
+        .filter(|c| !c.is_empty())
+}
+
 /// True when a pi process is currently running this session in a terminal
 /// window — actively writing (fresh mtime) or alive-but-idle. Mirrors the
 /// term_alive rule in list_sessions: the session must be among the N freshest
@@ -1100,13 +1121,22 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 continue;
             }
         }
-        // fallback: pane command line contains the session jsonl path
+        // fallback: pi scrubs its argv to just "pi", so pane command lines can
+        // not reveal the session. For a bare `pi` pane (e.g. the `pim` helper
+        // creates sessions named pi-<proj> with a generic window name), map by
+        // the pane's cwd -> the freshest main session of that project.
         if let Ok(ps_out) = std::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "command="])
             .env("PATH", full_path())
             .output()
         {
             let cmd = String::from_utf8_lossy(&ps_out.stdout);
+            if cmd.trim() == "pi" {
+                if let Some(p) = pane_cwd_session(&pid, &out) {
+                    add(p, target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+                    continue;
+                }
+            }
             for tok in cmd.split_whitespace() {
                 if tok == "--session" {
                     continue;
@@ -1122,6 +1152,72 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
         Some((std::time::Instant::now(), out.clone()));
     out
+}
+
+/// Map a bare `pi` pane (cwd known, session not discoverable from argv or the
+/// window name) to a main session of its project that is not already claimed
+/// by another rmux pane.
+///
+/// pi resumes the latest session as of launch, so we pick the session whose
+/// mtime is closest to the pane pi's start time. A plain "current freshest"
+/// rule breaks when a DIFFERENT pi (e.g. a terminal one) is actively writing
+/// its own session right now: that session would win by mtime but is not the
+/// one this pane is running.
+fn pane_cwd_session(pid: &u32, already: &HashMap<String, RmuxRuntime>) -> Option<String> {
+    let cwd = lsof_cwd(*pid)?;
+    let dir = sessions_dir().join(encode_dir_name(&cwd));
+    let start = process_start_epoch(*pid)?;
+    let mut best: Option<(i64, String)> = None; // (|mtime - start|, path)
+    if let Ok(fd) = fs::read_dir(&dir) {
+        for f in fd.flatten() {
+            let name = f.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".jsonl") || name.contains("subagent-") {
+                continue;
+            }
+            let p = f.path().to_string_lossy().into_owned();
+            if already.contains_key(&p) {
+                continue;
+            }
+            let mt = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
+            let dist = (mt - start).abs();
+            if best.as_ref().map(|(b, _)| dist < *b).unwrap_or(true) {
+                best = Some((dist, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Epoch seconds when the process started. macOS `ps` has no `etimes`, so we
+/// parse `etime` (formats: MM:SS, HH:MM:SS, D-HH:MM:SS).
+fn process_start_epoch(pid: u32) -> Option<i64> {
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "etime="])
+        .env("PATH", full_path())
+        .output()
+        .ok()?;
+    let etime = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let mut days = 0i64;
+    let time_part = if let Some((d, t)) = etime.split_once('-') {
+        days = d.parse::<i64>().ok()?;
+        t
+    } else {
+        &etime
+    };
+    let parts: Vec<i64> = time_part
+        .split(':')
+        .map(|p| p.parse::<i64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let secs = match parts.as_slice() {
+        [m, s] => m * 60 + s,
+        [h, m, s] => h * 3600 + m * 60 + s,
+        _ => return None,
+    } + days * 86400;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(now - secs)
 }
 
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
