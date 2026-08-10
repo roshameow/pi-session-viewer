@@ -268,6 +268,8 @@ pub fn list_projects() -> Vec<Project> {
     let (_, task_by_uuid, _) = subagent_index();
     let alive = alive_task_ids();
     let rmux_map = rmux_runtime_map();
+    // alive_terminal_pis() spawns ps+lsof; compute once, not per project
+    let term_alive = alive_terminal_pis();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let path = e.path();
@@ -354,7 +356,7 @@ pub fn list_projects() -> Vec<Project> {
                 }
             }
             // term sessions = alive terminal pi processes running in this project
-            let term_count = alive_terminal_pis()
+            let term_count = term_alive
                 .iter()
                 .filter(|(_, c)| *c == cwd)
                 .count();
@@ -380,12 +382,12 @@ pub fn list_projects() -> Vec<Project> {
 }
 
 fn first_line(p: &Path) -> Option<String> {
-    fs::read(p)
-        .ok()
-        .and_then(|bytes| {
-            let s = String::from_utf8_lossy(&bytes);
-            s.lines().next().map(|l| l.to_string())
-        })
+    use std::io::Read;
+    let mut f = fs::File::open(p).ok()?;
+    let mut buf = vec![0u8; 16 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    let s = String::from_utf8_lossy(&buf[..n]);
+    s.lines().next().map(|l| l.to_string())
 }
 
 /// Look up a model's context window from `~/.pi/agent/models.json`
@@ -877,7 +879,20 @@ pub struct RmuxRuntime {
 /// pi scrubs its argv to just "pi", so we identify them by process name and
 /// exclude anything attached to an rmux pane pty. Returns (pid, cwd).
 pub fn alive_terminal_pis() -> Vec<(u32, String)> {
+    // lsof/ps are ~150ms; a 2s TTL dedupes the list_projects + list_sessions
+    // calls inside one refresh cycle. Attach flows stay fresh (they take >2s).
+    type TermCache = Option<(std::time::Instant, Vec<(u32, String)>)>;
+    static CACHE: OnceLock<Mutex<TermCache>> = OnceLock::new();
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        if let Some((at, res)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(2) {
+                return res.clone();
+            }
+        }
+    }
     let mut out = Vec::new();
+    let mut pending: Vec<u32> = Vec::new();
     // tty devices owned by rmux panes (normalized to "ttysNNN")
     let mut pane_ttys: HashSet<String> = HashSet::new();
     if let Ok(res) = std::process::Command::new("rmux")
@@ -908,23 +923,35 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
             continue;
         }
         let Ok(pid) = pid_s.parse::<u32>() else { continue };
-        // cwd of the pi process = the project it runs in
-        let cwd = std::process::Command::new("lsof")
-            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        // cwd of the pi process = the project it runs in; one batched lsof
+        // call for all candidate pids (lsof startup dominates the cost)
+        pending.push(pid);
+    }
+    if !pending.is_empty() {
+        let pid_list = pending
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Ok(res) = std::process::Command::new("lsof")
+            .args(["-a", "-p", &pid_list, "-d", "cwd", "-Fn"])
             .env("PATH", full_path())
             .output()
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .find(|l| l.starts_with('n'))
-                    .map(|l| l[1..].to_string())
-            })
-            .unwrap_or_default();
-        if !cwd.is_empty() {
-            out.push((pid, cwd));
+        {
+            let mut cur: Option<u32> = None;
+            for line in String::from_utf8_lossy(&res.stdout).lines() {
+                if let Some(rest) = line.strip_prefix('p') {
+                    cur = rest.parse::<u32>().ok();
+                } else if let Some(rest) = line.strip_prefix('n') {
+                    if let Some(pid) = cur {
+                        out.push((pid, rest.to_string()));
+                    }
+                }
+            }
         }
     }
+    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+        Some((std::time::Instant::now(), out.clone()));
     out
 }
 
@@ -974,6 +1001,16 @@ pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
 }
 
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
+    type RmuxCache = Option<(std::time::Instant, HashMap<String, RmuxRuntime>)>;
+    static CACHE: OnceLock<Mutex<RmuxCache>> = OnceLock::new();
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        if let Some((at, res)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(2) {
+                return res.clone();
+            }
+        }
+    }
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
         .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead}"])
@@ -1082,6 +1119,8 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             }
         }
     }
+    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+        Some((std::time::Instant::now(), out.clone()));
     out
 }
 
@@ -1208,6 +1247,24 @@ fn parse_meta(
     sub_uuids: &HashSet<String>,
     task_by_uuid: &HashMap<String, String>,
 ) -> Option<SessionMeta> {
+    // per-file cache keyed on (mtime, size): steady-state refreshes re-read
+    // only the files that actually changed
+    type MetaCache = HashMap<String, (i64, u64, SessionMeta)>;
+    static META_CACHE: OnceLock<Mutex<MetaCache>> = OnceLock::new();
+    let pstr = path.to_string_lossy().into_owned();
+    {
+        let cache = META_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        if let Some((mt, sz, m)) = cache.get(&pstr) {
+            if let Some(md) = fmetadata(path) {
+                if md.mtime == *mt && md.size == *sz {
+                    return Some(m.clone());
+                }
+            }
+        }
+    }
     let (id, cwd, created_iso, name, first_msg, model) = scan_head(path);
     if id.is_empty() {
         // not a valid pi session file; skip
@@ -1224,7 +1281,7 @@ fn parse_meta(
     } else {
         None
     };
-    Some(SessionMeta {
+    let meta = SessionMeta {
         path: spath.clone(),
         id: id.clone(),
         cwd,
@@ -1248,8 +1305,20 @@ fn parse_meta(
         rmux_attached: false,
         rmux_dead: false,
         term_alive: false,
-        size,
-    })
+        size,};
+    META_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(
+            pstr,
+            (
+                md.as_ref().map(|m| m.mtime).unwrap_or(mtime),
+                md.as_ref().map(|m| m.size).unwrap_or(size),
+                meta.clone(),
+            ),
+        );
+    Some(meta)
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,59 +1348,88 @@ fn normalize_text(s: &str) -> String {
 }
 
 fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
-    type ParentCache = Option<(String, u64, Vec<ParentCall>)>;
+    // Incremental per-file cache: keyed on the (mtime,size) map of every main
+    // session. When nothing changed we reuse everything; when a session grows
+    // (an active run), only that file is rescanned.
+    type ParentCache = Option<(String, HashMap<String, (i64, u64)>, Vec<ParentCall>)>;
     static CACHE: OnceLock<Mutex<ParentCache>> = OnceLock::new();
     let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-    let key = newest_mtime_secs(&sessions_dir().join(project_key));
-    if let Some((pk, k, calls)) = cache.as_ref() {
-        if pk == project_key && *k == key {
+    let dir = sessions_dir().join(project_key);
+
+    let mut cur: HashMap<String, (i64, u64)> = HashMap::new();
+    if let Ok(fd) = fs::read_dir(&dir) {
+        for f in fd.flatten() {
+            let fname = f.file_name().to_string_lossy().to_string();
+            if !fname.ends_with(".jsonl") || fname.contains("subagent-task-") {
+                continue;
+            }
+            if let Some(md) = fmetadata(&f.path()) {
+                cur.insert(f.path().to_string_lossy().into_owned(), (md.mtime, md.size));
+            }
+        }
+    }
+    if let Some((pk, prev, calls)) = cache.as_ref() {
+        if pk == project_key && *prev == cur {
             return calls.clone();
         }
     }
-    let mut out = Vec::new();
-    let root = sessions_dir();
-    let dir = root.join(project_key);
-    let Ok(fd) = fs::read_dir(&dir) else {
-        return out;
-    };
-    for f in fd.flatten() {
-        let path = f.path();
-        let fname = f.file_name().to_string_lossy().to_string();
-        if !fname.ends_with(".jsonl") || fname.contains("subagent-task-") {
-            continue;
-        }
-        let Ok(data) = fs::read(&path) else { continue };
-        let text = String::from_utf8_lossy(&data);
-        for line in text.lines() {
-            if !line.contains("subagent") {
-                continue;
-            }
-            let v: Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let Some(m) = v.get("message") else { continue };
-            if m.get("role").and_then(|x| x.as_str()) != Some("assistant") {
-                continue;
-            }
-            let Some(content) = m.get("content").and_then(|x| x.as_array()) else {
-                continue;
-            };
-            for c in content {
-                if c.get("type").and_then(|x| x.as_str()) != Some("toolCall") {
-                    continue;
-                }
-                if c.get("name").and_then(|x| x.as_str()) != Some("subagent") {
-                    continue;
-                }
-                let args = c.get("arguments").cloned().unwrap_or(Value::Null);
-                extract_tasks(&args, &mut out, &path);
-            }
+    // keep cached calls for files whose (mtime,size) is unchanged, drop stale
+    // ones (changed or deleted), rescan the rest
+    let prev_map: HashMap<String, (i64, u64)> = cache
+        .as_ref()
+        .filter(|(pk, _, _)| pk == project_key)
+        .map(|(_, m, _)| m.clone())
+        .unwrap_or_default();
+    let mut out: Vec<ParentCall> = cache
+        .as_ref()
+        .filter(|(pk, _, _)| pk == project_key)
+        .map(|(_, _, calls)| {
+            calls
+                .iter()
+                .filter(|pc| prev_map.get(&pc.path) == cur.get(&pc.path))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for (path, md) in &cur {
+        if prev_map.get(path) != Some(md) {
+            scan_file_for_parent_calls(Path::new(path), &mut out);
         }
     }
     let cached = out.clone();
-    *cache = Some((project_key.to_string(), key, cached));
+    *cache = Some((project_key.to_string(), cur, cached));
     out
+}
+
+fn scan_file_for_parent_calls(path: &Path, out: &mut Vec<ParentCall>) {
+    let Ok(data) = fs::read(path) else { return };
+    let text = String::from_utf8_lossy(&data);
+    for line in text.lines() {
+        if !line.contains("subagent") {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(m) = v.get("message") else { continue };
+        if m.get("role").and_then(|x| x.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = m.get("content").and_then(|x| x.as_array()) else {
+            continue;
+        };
+        for c in content {
+            if c.get("type").and_then(|x| x.as_str()) != Some("toolCall") {
+                continue;
+            }
+            if c.get("name").and_then(|x| x.as_str()) != Some("subagent") {
+                continue;
+            }
+            let args = c.get("arguments").cloned().unwrap_or(Value::Null);
+            extract_tasks(&args, out, path);
+        }
+    }
 }
 
 fn extract_tasks(args: &Value, out: &mut Vec<ParentCall>, path: &Path) {
@@ -1449,13 +1547,21 @@ fn scan_head(path: &Path) -> (String, String, String, Option<String>, Option<Str
     let mut first_msg = None;
     let mut model = None;
 
-    let data = match fs::read(path) {
+    // bounded read: session headers live in the first few lines; reading the
+    // whole file here made list_sessions O(file-size) for every session
+    use std::io::Read;
+    let data = match fs::File::open(path).and_then(|mut f| {
+        let mut buf = vec![0u8; 256 * 1024];
+        let n = f.read(&mut buf)?;
+        Ok(buf[..n].to_vec())
+    }) {
         Ok(d) => d,
         Err(_) => return (id, cwd, created, name, first_msg, model),
     };
     let text = String::from_utf8_lossy(&data);
     for (i, line) in text.lines().enumerate() {
-        if i > 150 {
+        // stop early once we have the essentials: headers are the first lines
+        if i > 40 || (!id.is_empty() && !cwd.is_empty() && !created.is_empty() && first_msg.is_some()) {
             break;
         }
         if line.trim().is_empty() {
@@ -1575,6 +1681,24 @@ fn tail_preview(path: &Path, max_chars: usize) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
+    // cache by (mtime, size): re-parsing a multi-MB session on every switch is
+    // the dominant cost; idle files only change when a new message lands
+    type DetailCache = HashMap<String, (i64, u64, SessionDetail)>;
+    static DETAIL_CACHE: OnceLock<Mutex<DetailCache>> = OnceLock::new();
+    let key = path.to_string();
+    {
+        let cache = DETAIL_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        if let Some((mt, sz, d)) = cache.get(&key) {
+            if let Some(md) = fmetadata(Path::new(path)) {
+                if md.mtime == *mt && md.size == *sz {
+                    return Ok(d.clone());
+                }
+            }
+        }
+    }
     let data = fs::read(path).map_err(|e| format!("Failed to read session file: {e}"))?;
     let text = String::from_utf8_lossy(&data);
 
@@ -1698,7 +1822,7 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         context_limit: model.as_deref().and_then(model_context_window),
         cost_total,
     };
-    Ok(SessionDetail {
+    let detail = SessionDetail {
         id: header_id,
         cwd,
         created_iso: created,
@@ -1707,7 +1831,16 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         stats,
         entries,
         active,
-    })
+    };
+    let (mtime, size) = fmetadata(Path::new(path))
+        .map(|m| (m.mtime, m.size))
+        .unwrap_or((0, 0));
+    DETAIL_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(key, (mtime, size, detail.clone()));
+    Ok(detail)
 }
 
 fn dummy_entry() -> Entry {
@@ -1976,5 +2109,3 @@ mod tests {
     }
 
 }
-
-
