@@ -107,6 +107,7 @@ export interface AgentInfo {
   description: string;
   tools: string | null;
   file: string;
+  source: string;
 }
 
 export interface SkillInfo {

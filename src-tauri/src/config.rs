@@ -1,5 +1,6 @@
 //! Read pi configuration resources: MCP servers (mcp.json), agents
-//! (~/.pi/agent/agents/*.md) and skills (global + per-project SKILL.md).
+//! (global ~/.pi/agent/agents + per-project .pi/agents) and skills
+//! (global + per-project SKILL.md).
 
 use serde::Serialize;
 use serde_json::Value;
@@ -27,6 +28,7 @@ pub struct AgentInfo {
     pub description: String,
     pub tools: Option<String>,
     pub file: String,
+    pub source: String, // "global" or a project path
 }
 
 #[derive(Serialize, Clone)]
@@ -153,9 +155,39 @@ fn read_mcp() -> Vec<McpServer> {
 }
 
 fn read_agents() -> Vec<AgentInfo> {
-    let mut out = Vec::new();
-    let dir = pi_agent_dir().join("agents");
-    if let Ok(fd) = std::fs::read_dir(&dir) {
+    use std::collections::HashMap;
+    // Mirrors pi-subagent-durable discovery: user dir first, then per-project
+    // .pi/agents; on a name conflict the project agent wins (same as the
+    // extension's scope "both" merge).
+    let mut by_name: HashMap<String, AgentInfo> = HashMap::new();
+    scan_agent_dir(&pi_agent_dir().join("agents"), "global", &mut by_name);
+    if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with("--") {
+                continue;
+            }
+            let real = crate::sessions::decode_dir_name(&name);
+            if real.is_empty() {
+                continue;
+            }
+            scan_agent_dir(&Path::new(&real).join(".pi").join("agents"), &real, &mut by_name);
+        }
+    }
+    let mut out: Vec<AgentInfo> = by_name.into_values().collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+fn scan_agent_dir(dir: &Path, source: &str, out: &mut std::collections::HashMap<String, AgentInfo>) {
+    if !dir.is_dir() {
+        return;
+    }
+    if let Ok(fd) = std::fs::read_dir(dir) {
         for f in fd.flatten() {
             let p = f.path();
             if !p.is_file() || !p.extension().map(|e| e == "md").unwrap_or(false) {
@@ -169,16 +201,18 @@ fn read_agents() -> Vec<AgentInfo> {
                 .get("name")
                 .cloned()
                 .unwrap_or_else(|| f.file_name().to_string_lossy().replace(".md", ""));
-            out.push(AgentInfo {
-                name,
-                description: fm.get("description").cloned().unwrap_or_default(),
-                tools: fm.get("tools").cloned(),
-                file: p.to_string_lossy().to_string(),
-            });
+            out.insert(
+                name.clone(),
+                AgentInfo {
+                    name,
+                    description: fm.get("description").cloned().unwrap_or_default(),
+                    tools: fm.get("tools").cloned(),
+                    file: p.to_string_lossy().to_string(),
+                    source: source.to_string(),
+                },
+            );
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
 }
 
 fn scan_skill_dir(dir: &Path, source: &str, out: &mut Vec<SkillInfo>) {

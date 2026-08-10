@@ -53,11 +53,14 @@ function McpCard({ s }: { s: McpServer }) {
 }
 
 function AgentCard({ a }: { a: AgentInfo }) {
+  const source =
+    a.source === "global" ? "global" : a.source.split("/").filter(Boolean).slice(-2).join("/");
   return (
     <div className="cfg-card">
       <div className="cfg-card-line1">
         <span className="cfg-icon">🤖</span>
         <span className="cfg-name">{a.name}</span>
+        <span className="cfg-source">{source}</span>
         {a.tools && <span className="cfg-tools" title="allowed tools">{a.tools}</span>}
       </div>
       {a.description && <div className="cfg-desc">{a.description}</div>}
