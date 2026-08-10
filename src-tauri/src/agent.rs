@@ -43,6 +43,7 @@ pub fn send_message(
         .arg("--mode")
         .arg("json")
         .arg(&message)
+        .env("PATH", crate::sessions::full_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

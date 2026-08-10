@@ -35,6 +35,7 @@ fn pi_version() -> Result<String, String> {
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
     let out = std::process::Command::new(bin)
         .arg("--version")
+        .env("PATH", sessions::full_path())
         .output()
         .map_err(|e| format!("{e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -58,6 +59,7 @@ fn export_session_html(session_path: String) -> Result<String, String> {
         .arg("--export")
         .arg(&session_path)
         .arg(&out)
+        .env("PATH", sessions::full_path())
         .output()
         .map_err(|e| format!("Failed to run pi --export: {e}"))?;
     if !result.status.success() {
@@ -239,14 +241,14 @@ fn ensure_rmux_window(
     let sess = rmux_session_name(cwd);
     let win = format!("s{}", &id.chars().take(8).collect::<String>());
     let session_exists = std::process::Command::new(&rmux)
-        .args(["has-session", "-t", &sess])
+        .args(["has-session", "-t", &sess]).env("PATH", sessions::full_path())
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     // does the window already exist? (session already running -> just attach)
     let win_exists = if session_exists {
         std::process::Command::new(&rmux)
-            .args(["list-windows", "-t", &sess])
+            .args(["list-windows", "-t", &sess]).env("PATH", sessions::full_path())
             .output()
             .map(|o| {
                 String::from_utf8_lossy(&o.stdout)
@@ -281,6 +283,7 @@ fn ensure_rmux_window(
         };
         let out = std::process::Command::new(&rmux)
             .args(&args)
+            .env("PATH", sessions::full_path())
             .output()
             .map_err(|e| format!("Failed to start rmux session: {e}"))?;
         if !out.status.success() {
@@ -344,7 +347,7 @@ fn attach_session(session_path: String) -> Result<String, String> {
     };
     // don't spawn another terminal if someone is already attached
     let clients = std::process::Command::new(&rmux)
-        .args(["list-clients", "-t", &sess])
+        .args(["list-clients", "-t", &sess]).env("PATH", sessions::full_path())
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();

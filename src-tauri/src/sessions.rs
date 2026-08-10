@@ -407,6 +407,31 @@ fn model_context_window(model_id: &str) -> Option<u64> {
     }
 }
 
+/// A PATH that includes common Homebrew/local bins. GUI-launched apps have a
+/// minimal PATH; child pi/rmux processes need /opt/homebrew/bin etc. so the
+/// pi-subagent-durable extension can find rmux (execSync("rmux -V")).
+pub fn full_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<String> = Vec::new();
+    for p in [
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+        format!("{home}/.local/bin"),
+        format!("{home}/.pi/agent/bin"),
+    ] {
+        if !parts.iter().any(|x| x == &p) {
+            parts.push(p);
+        }
+    }
+    for p in existing.split(':') {
+        if !p.is_empty() && !parts.iter().any(|x| x == p) {
+            parts.push(p.to_string());
+        }
+    }
+    parts.join(":")
+}
+
 /// Is this session uuid one of the subagent uuids (from mirrors / agent-logs)?
 pub fn is_subagent_uuid(id: &str) -> bool {
     let (uuids, _, _) = subagent_index();
