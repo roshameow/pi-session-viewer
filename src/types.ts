@@ -31,6 +31,7 @@ export interface SessionMeta {
   inRmux: boolean;
   rmuxTarget: string | null;
   rmuxAttached: boolean;
+  rmuxDead: boolean;
   size: number;
 }
 

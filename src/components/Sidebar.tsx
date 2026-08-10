@@ -86,20 +86,28 @@ function SessionItem({
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
-        {s.running && (
+        {(s.running || s.inRmux) && (
           <span
             className={`runtime-chip ${s.inRmux ? "rmux" : "term"} ${
-              s.inRmux ? (s.rmuxAttached ? "attached" : "detached") : ""
+              s.inRmux ? (s.rmuxDead ? "dead" : s.rmuxAttached ? "attached" : "detached") : ""
             }`}
             title={
               s.inRmux
-                ? s.rmuxAttached
-                  ? `rmux · attached (terminal attached: ${s.rmuxTarget ?? ""}) · id: ${s.id}`
-                  : `rmux · detached (running in background, no terminal — attach to view) · id: ${s.id}`
+                ? s.rmuxDead
+                  ? `rmux · exited (pi was killed here; window kept) — Attach/Open TUI to restart · id: ${s.id}`
+                  : s.rmuxAttached
+                    ? `rmux · attached (${s.rmuxTarget ?? ""}) — detach: close the tab or Ctrl+Space d · id: ${s.id}`
+                    : `rmux · detached (${s.rmuxTarget ?? ""}) — running in background, attach to view · id: ${s.id}`
                 : `terminal window · attached (closing the tab kills pi) · id: ${s.id}`
             }
           >
-            {s.inRmux ? (s.rmuxAttached ? "● rmux" : "○ rmux") : "● term"}
+            {s.inRmux
+              ? s.rmuxDead
+                ? "✕ rmux"
+                : s.rmuxAttached
+                  ? "● rmux"
+                  : "○ rmux"
+              : "● term"}
           </span>
         )}
         {status === "running" && <span className="sub-running-chip">running</span>}

@@ -361,6 +361,11 @@ body {
   opacity: 0.65;
   box-shadow: inset 0 0 0 1px rgba(0, 215, 255, 0.25);
 }
+.runtime-chip.rmux.dead {
+  color: #8a94a6;
+  background: rgba(138, 148, 166, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(138, 148, 166, 0.3);
+}
 .session-title {
   flex: 1;
   min-width: 0; /* let long titles shrink so trailing chips stay visible */

@@ -136,6 +136,7 @@ pub struct SessionMeta {
     pub in_rmux: bool,
     pub rmux_target: Option<String>, // e.g. "pi-Users-...:s019fe979"
     pub rmux_attached: bool, // a terminal client is attached to the rmux session
+    pub rmux_dead: bool,     // rmux window kept by remain-on-exit, pane process exited
     pub size: u64,
 }
 
@@ -838,6 +839,7 @@ fn extract_task_id(s: &str) -> Option<String> {
 pub struct RmuxRuntime {
     pub target: String, // e.g. "pi-Users-...:s019fe979"
     pub attached: bool, // a terminal client is currently attached (has UI)
+    pub dead: bool,     // the pane process has exited (window kept by remain-on-exit)
 }
 
 /// Map of session file path -> rmux runtime info for sessions running inside
@@ -852,7 +854,7 @@ pub struct RmuxRuntime {
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
-        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid}"])
+        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead}"])
         .env("PATH", full_path())
         .output()
     else {
@@ -901,7 +903,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
 
     // session name -> has attached client (queried once per session)
     let mut attached_cache: HashMap<String, bool> = HashMap::new();
-    let mut add = |path: String, target: String, sess: &str, out: &mut HashMap<String, RmuxRuntime>, attached_cache: &mut HashMap<String, bool>| {
+    let mut add = |path: String, target: String, sess: &str, dead: bool, out: &mut HashMap<String, RmuxRuntime>, attached_cache: &mut HashMap<String, bool>| {
         let attached = *attached_cache.entry(sess.to_string()).or_insert_with(|| {
             std::process::Command::new("rmux")
                 .args(["list-clients", "-t", sess])
@@ -910,14 +912,15 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 .map(|o| !o.stdout.is_empty() && o.status.success())
                 .unwrap_or(false)
         });
-        out.insert(path, RmuxRuntime { target, attached });
+        out.insert(path, RmuxRuntime { target, attached, dead });
     };
 
     for line in String::from_utf8_lossy(&res.stdout).lines() {
-        let mut parts = line.splitn(2, ' ');
+        let mut parts = line.splitn(3, ' ');
         let (target, pid_s) = (parts.next().unwrap_or("").trim(), parts.next().unwrap_or("").trim());
+        let dead = parts.next().unwrap_or("").trim() == "1";
         let Ok(pid) = pid_s.parse::<u32>() else { continue };
-        if !pid_alive(pid) {
+        if !dead && !pid_alive(pid) {
             continue;
         }
         let sess = target.split(':').next().unwrap_or("").to_string();
@@ -926,7 +929,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         if let Some(id8) = win.strip_prefix('s') {
             if id8.len() >= 8 && id8[..8].chars().all(|c| c.is_ascii_hexdigit()) {
                 if let Some(p) = id8_map.get(&id8[..8]) {
-                    add(p.clone(), target.to_string(), &sess, &mut out, &mut attached_cache);
+                    add(p.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
                 }
                 continue;
             }
@@ -934,7 +937,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // subagent: window <agent>-<taskId>
         if let Some(tid) = extract_task_id(&win) {
             if let Some(p) = task_map.get(&tid) {
-                add(p.clone(), target.to_string(), &sess, &mut out, &mut attached_cache);
+                add(p.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
                 continue;
             }
         }
@@ -951,7 +954,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 }
                 let clean = tok.trim_matches('\'');
                 if clean.ends_with(".jsonl") && clean.contains("sessions/") {
-                    add(clean.to_string(), target.to_string(), &sess, &mut out, &mut attached_cache);
+                    add(clean.to_string(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
                     break;
                 }
             }
@@ -996,15 +999,20 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                             m.rmux_target = Some("pi-agents".to_string());
                         }
                     }
-                } else if session_file_running(&path) || rmux_map.contains_key(&m.path) {
-                    // main session running: actively written, or alive in an rmux
-                    // pane (idle rmux pis don't touch the jsonl, but still run)
-                    m.running = true;
-                    if let Some(rt) = rmux_map.get(&m.path) {
-                        m.in_rmux = true;
-                        m.rmux_target = Some(rt.target.clone());
-                        m.rmux_attached = rt.attached;
+                } else if let Some(rt) = rmux_map.get(&m.path) {
+                    // runtime location is independent of the task state: an idle
+                    // pi parked in an rmux window is not "running" but is in rmux
+                    m.in_rmux = true;
+                    m.rmux_target = Some(rt.target.clone());
+                    m.rmux_attached = rt.attached;
+                    m.rmux_dead = rt.dead;
+                    if !rt.dead {
+                        // running = pi actively writing (mtime fresh)
+                        m.running = session_file_running(&path);
                     }
+                } else {
+                    // not in rmux: running = pi actively writing in a terminal
+                    m.running = session_file_running(&path);
                 }
                 out.push(m);
             }
@@ -1099,6 +1107,7 @@ fn parse_meta(
         in_rmux: false,
         rmux_target: None,
         rmux_attached: false,
+        rmux_dead: false,
         size,
     })
 }
@@ -1852,11 +1861,12 @@ mod rmux_tests {
             }
         }
         let sess = list_sessions("--Users-wenliu-Code-python-quantnight--");
-        for m in sess.iter().filter(|m| m.running) {
+        for m in sess.iter().filter(|m| m.id.starts_with("019fe979")) {
             println!(
-                "SESSDBG id={} name={:?} running={} inRmux={} target={:?}",
-                m.id, m.name, m.running, m.in_rmux, m.rmux_target
+                "SESSDBG id={} name={:?} running={} inRmux={} target={:?} attached={} dead={}",
+                m.id, m.name, m.running, m.in_rmux, m.rmux_target, m.rmux_attached, m.rmux_dead
             );
         }
+        println!("SESSDBG total={}", sess.len());
     }
 }
