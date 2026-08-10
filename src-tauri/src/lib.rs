@@ -162,17 +162,29 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
     );
     #[cfg(target_os = "macos")]
     {
-        // prefer iTerm2 if installed, otherwise Terminal
+        // prefer iTerm2 if installed, otherwise Terminal — open a NEW TAB in
+        // the frontmost window instead of spawning a whole new window.
         let iterm = std::path::Path::new(
             "/Applications/iTerm.app/Contents/MacOS/iTerm2",
         )
         .is_file();
-        let app = if iterm { "iTerm" } else { "Terminal" };
-        let script = format!(
-            r#"tell application "{app}" to do script "{cmd}""#,
-            app = app,
-            cmd = apple_escape(&cmd)
-        );
+        let script = if iterm {
+            format!(
+                r#"tell application "iTerm"
+  tell current window
+    create tab with default profile command "{cmd}"
+  end tell
+end tell"#,
+                cmd = apple_escape(&cmd)
+            )
+        } else {
+            format!(
+                r#"tell application "Terminal"
+  do script "{cmd}" in front window
+end tell"#,
+                cmd = apple_escape(&cmd)
+            )
+        };
         let out = std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)
