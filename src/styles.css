@@ -339,6 +339,7 @@ body {
 .session-icon { font-size: 11px; }
 .session-title {
   flex: 1;
+  min-width: 0; /* let long titles shrink so trailing chips stay visible */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
