@@ -47,7 +47,7 @@ export default function App() {
       setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent, paused, interrupted }]);
       setTimeout(() => {
         setToasts((ts) => ts.filter((t) => t.id !== id));
-      }, 8000);
+      }, 10000);
     },
     []
   );

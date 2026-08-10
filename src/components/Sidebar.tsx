@@ -26,6 +26,8 @@ function SessionItem({
   onSelect,
   onContextMenu,
   runningSubs = 0,
+  sleepingSubs = 0,
+  interruptedSubs = 0,
   hasSubs = false,
   subsCollapsed = false,
   onToggleSubs,
@@ -36,6 +38,8 @@ function SessionItem({
   onSelect: (s: SessionMeta) => void;
   onContextMenu?: (s: SessionMeta, x: number, y: number) => void;
   runningSubs?: number;
+  sleepingSubs?: number;
+  interruptedSubs?: number;
   hasSubs?: boolean;
   subsCollapsed?: boolean;
   onToggleSubs?: () => void;
@@ -80,6 +84,16 @@ function SessionItem({
         {!s.isSubagent && runningSubs > 0 && (
           <span className="subs-running-badge" title={`${runningSubs} subagent(s) running`}>
             {runningSubs} running
+          </span>
+        )}
+        {!s.isSubagent && sleepingSubs > 0 && (
+          <span className="subs-sleeping-badge" title={`${sleepingSubs} subagent(s) sleeping`}>
+            {sleepingSubs} sleeping
+          </span>
+        )}
+        {!s.isSubagent && interruptedSubs > 0 && (
+          <span className="subs-interrupted-badge" title={`${interruptedSubs} subagent(s) interrupted`}>
+            {interruptedSubs} interrupted
           </span>
         )}
       </div>
@@ -327,6 +341,8 @@ export function Sidebar({
                 mainSessions.map((s) => {
                   const subs = childrenMap.get(s.path) ?? [];
                   const runningSubs = subs.filter((x) => x.running).length;
+                  const sleepingSubs = subs.filter((x) => x.sleeping).length;
+                  const interruptedSubs = subs.filter((x) => x.interrupted).length;
                   const groupCollapsed = collapsedGroups.has(s.path);
                   return (
                     <React.Fragment key={s.path}>
@@ -339,6 +355,8 @@ export function Sidebar({
                         hasSubs={subs.length > 0}
                         subsCollapsed={groupCollapsed}
                         onToggleSubs={() => toggleGroup(s.path)}
+                        sleepingSubs={sleepingSubs}
+                        interruptedSubs={interruptedSubs}
                         onContextMenu={(s, x, y) => {
                           setConfirmingDelete(false);
                           setCtxMenu({ x, y, s });

@@ -999,3 +999,25 @@ body {
   border-radius: 8px;
   padding: 0 6px;
 }
+.subs-sleeping-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--amber);
+  border: 1px solid rgba(212, 167, 44, 0.55);
+  background: rgba(212, 167, 44, 0.1);
+  border-radius: 8px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.subs-interrupted-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--red);
+  border: 1px solid rgba(204, 102, 102, 0.55);
+  background: rgba(204, 102, 102, 0.1);
+  border-radius: 8px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
