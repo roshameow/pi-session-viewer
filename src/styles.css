@@ -581,13 +581,30 @@ body {
 @keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 /* composer */
+.composer-wrap {
+  flex-shrink: 0;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+.composer-target {
+  max-width: 932px;
+  margin: 0 auto;
+  padding: 8px 16px 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-target-name {
+  color: var(--cyan);
+  font-weight: 600;
+}
 .composer {
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--bg2);
+  padding: 10px 16px 14px;
   max-width: 932px;
   margin: 0 auto;
   width: 100%;

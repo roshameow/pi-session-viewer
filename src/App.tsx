@@ -17,6 +17,8 @@ export default function App() {
   const [liveEvents, setLiveEvents] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [piInfo, setPiInfo] = useState<string>("");
+  // per-session draft: draft text bound to each session path
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   const channelRef = useRef<Channel<PiEvent> | null>(null);
   const activePathRef = useRef<string | null>(null);
@@ -160,6 +162,13 @@ export default function App() {
     if (selectedProject) refreshSessions(selectedProject);
   };
 
+  const sessionTitle = (path: string): string => {
+    const s = sessions.find((x) => x.path === path);
+    if (!s) return path.split("/").pop() ?? path;
+    const t = s.name || s.firstMessage || "(empty)";
+    return t.length > 40 ? t.slice(0, 40) + "…" : t;
+  };
+
   const abort = async () => {
     const p = activePathRef.current;
     if (!p) return;
@@ -202,7 +211,24 @@ export default function App() {
         {detail ? (
           <>
             <Thread detail={detail} liveBlocks={liveBlocks} running={running} />
-            <Composer running={running} onSend={send} onAbort={abort} />
+            <Composer
+              value={drafts[detail.path] ?? ""}
+              onChange={(v) =>
+                setDrafts((d) => ({ ...d, [detail.path]: v }))
+              }
+              running={running}
+              targetName={sessionTitle(detail.path)}
+              onSend={async (msg) => {
+                try {
+                  await send(msg);
+                  // clear draft only after the send was accepted
+                  setDrafts((d) => ({ ...d, [detail.path]: "" }));
+                } catch {
+                  /* keep draft on failure */
+                }
+              }}
+              onAbort={abort}
+            />
           </>
         ) : (
           <div className="empty-main">
