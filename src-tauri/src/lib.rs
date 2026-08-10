@@ -267,20 +267,54 @@ end tell"#
         let before = count_of("count of tabs of front window");
         let mut ok = false;
         let mut keystroke_err: Option<String> = None;
-        for _ in 0..3 {
-            let k = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            if count_of("count of tabs of front window") > before {
-                ok = true;
-                break;
+        // Prefer the stable tab-open-helper binary: it is never rebuilt, so its
+        // macOS Accessibility grant (recorded against the binary hash) survives
+        // app rebuilds forever. Falls back to the in-process osascript.
+        // runtime: <exe>/../Resources/resources/tab-open-helper; dev: source dir
+        let helper = std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()
+                    .map(|p| p.join("../Resources/resources/tab-open-helper"))
+            })
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources")
+                    .join("tab-open-helper")
+            });
+        if helper.is_file() {
+            match std::process::Command::new(&helper).output() {
+                Ok(o) if o.status.success() => {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    if count_of("count of tabs of front window") > before {
+                        ok = true;
+                    } else {
+                        keystroke_err = Some(
+                            "helper ran but no new tab appeared (grant it in Accessibility)"
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok(o) => {
+                    keystroke_err = Some(String::from_utf8_lossy(&o.stderr).trim().to_string());
+                }
+                Err(e) => keystroke_err = Some(format!("helper failed: {e}")),
             }
-            if let Err(e) = k {
-                keystroke_err = Some(e);
-                break;
+        }
+        if !ok && keystroke_err.is_none() {
+            for _ in 0..2 {
+                let k = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if count_of("count of tabs of front window") > before {
+                    ok = true;
+                    break;
+                }
+                if let Err(e) = k {
+                    keystroke_err = Some(e);
+                    break;
+                }
             }
-            // keystroke posted but no tab appeared yet: re-activate and retry
-            let _ = run_term(r#"tell application "Terminal" to activate"#);
-            std::thread::sleep(std::time::Duration::from_millis(400));
         }
         if ok {
             // fresh idle tab from Cmd+T is now the front tab; run the command there
