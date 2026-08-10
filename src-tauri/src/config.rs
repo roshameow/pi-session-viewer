@@ -15,6 +15,9 @@ pub struct McpServer {
     pub args: Vec<String>,
     pub env: Vec<String>,
     pub enabled: Option<bool>,
+    pub socket: Option<String>,
+    pub url: Option<String>,
+    pub source: String, // "global" or a project path
 }
 
 #[derive(Serialize, Clone)]
@@ -64,20 +67,18 @@ fn parse_frontmatter(text: &str) -> std::collections::HashMap<String, String> {
     out
 }
 
-fn read_mcp() -> Vec<McpServer> {
-    let mut out = Vec::new();
-    let path = pi_agent_dir().join("mcp.json");
-    let Ok(data) = std::fs::read_to_string(&path) else {
-        return out;
+fn read_mcp_file(path: &Path, source: &str, out: &mut Vec<McpServer>) {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return;
     };
     let Ok(v) = serde_json::from_str::<Value>(&data) else {
-        return out;
+        return;
     };
     let servers = v
         .get("mcpServers")
         .and_then(|x| x.as_object())
         .or_else(|| v.as_object());
-    let Some(servers) = servers else { return out };
+    let Some(servers) = servers else { return };
     for (name, conf) in servers {
         if !conf.is_object() {
             continue;
@@ -106,15 +107,48 @@ fn read_mcp() -> Vec<McpServer> {
             })
             .unwrap_or_default();
         let enabled = conf.get("enabled").and_then(|x| x.as_bool());
+        let socket = conf.get("socket").and_then(|x| x.as_str()).map(|s| s.to_string());
+        let url = conf.get("url").and_then(|x| x.as_str()).map(|s| s.to_string());
         out.push(McpServer {
             name: name.clone(),
             command,
             args,
             env,
             enabled,
+            socket,
+            url,
+            source: source.to_string(),
         });
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+fn read_mcp() -> Vec<McpServer> {
+    let mut out = Vec::new();
+    // global config
+    read_mcp_file(&pi_agent_dir().join("mcp.json"), "global", &mut out);
+    // per-project .mcp.json (decode the encoded dir name to the real path)
+    if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.starts_with("--") {
+                continue;
+            }
+            let real = crate::sessions::decode_dir_name(&name);
+            if real.is_empty() {
+                continue;
+            }
+            read_mcp_file(&Path::new(&real).join(".mcp.json"), &real, &mut out);
+        }
+    }
+    out.sort_by(|a, b| {
+        a.source
+            .cmp(&b.source)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out
 }
 

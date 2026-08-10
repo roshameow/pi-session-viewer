@@ -83,6 +83,9 @@ export interface McpServer {
   args: string[];
   env: string[];
   enabled: boolean | null;
+  socket: string | null;
+  url: string | null;
+  source: string;
 }
 
 export interface AgentInfo {

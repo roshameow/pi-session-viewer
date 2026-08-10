@@ -29,17 +29,22 @@ function CollapseGroup({
 }
 
 function McpCard({ s }: { s: McpServer }) {
+  const source =
+    s.source === "global" ? "global" : s.source.split("/").filter(Boolean).slice(-2).join("/");
   return (
     <div className="cfg-card">
       <div className="cfg-card-line1">
         <span className="cfg-icon">🔌</span>
         <span className="cfg-name">{s.name}</span>
         {s.enabled === false && <span className="badge err">disabled</span>}
+        <span className="cfg-source">{source}</span>
       </div>
-      <div className="cfg-card-meta mono">{s.command}</div>
+      {s.command && <div className="cfg-card-meta mono">{s.command}</div>}
       {s.args.length > 0 && (
         <div className="cfg-card-meta mono dim">{s.args.join(" ")}</div>
       )}
+      {s.socket && <div className="cfg-card-meta mono dim">socket: {s.socket}</div>}
+      {s.url && <div className="cfg-card-meta mono dim">url: {s.url}</div>}
       {s.env.length > 0 && (
         <div className="cfg-card-meta mono dim">{s.env.join("  ")}</div>
       )}
