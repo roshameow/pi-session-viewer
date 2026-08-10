@@ -70,6 +70,15 @@ export default function App() {
     if (selectedProject) refreshSessions(selectedProject);
   }, [selectedProject, refreshSessions]);
 
+  // auto-open the most recent session on first load (like `pi -c`)
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (!autoOpened.current && sessions.length > 0 && !detail) {
+      autoOpened.current = true;
+      loadDetail(sessions[0]);
+    }
+  }, [sessions, detail, loadDetail]);
+
   const selectProject = (p: Project) => {
     setSelectedProject(p.key);
     setDetail(null);

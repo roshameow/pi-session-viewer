@@ -28,11 +28,11 @@ export interface SessionMeta {
 }
 
 export type ContentBlock =
-  | { kind: "Text"; text: string }
-  | { kind: "Thinking"; thinking: string }
-  | { kind: "ToolCall"; id: string; name: string; arguments: string }
-  | { kind: "Bash"; command: string; output: string; exitCode: number | null; truncated: boolean }
-  | { kind: "Image"; mimeType: string };
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; thinking: string }
+  | { kind: "toolCall"; id: string; name: string; arguments: string }
+  | { kind: "bash"; command: string; output: string; exitCode: number | null; truncated: boolean }
+  | { kind: "image"; mimeType: string };
 
 export interface Entry {
   kind: string;

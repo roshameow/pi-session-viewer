@@ -30,8 +30,8 @@ function SessionItem({
   const title = s.name || s.firstMessage || "(空会话)";
   return (
     <button
-      className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : ""}`}
-      style={{ paddingLeft: 10 + depth * 18 }}
+      className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"}`}
+      style={{ paddingLeft: 8 + depth * 14 }}
       onClick={() => onSelect(s)}
       title={`${s.cwd}\n${s.path}`}
     >
@@ -39,13 +39,12 @@ function SessionItem({
         {s.running && <span className="pulse-dot" />}
         <span className="session-icon">{s.isSubagent ? "🕸️" : "💬"}</span>
         <span className="session-title">{title}</span>
+        {s.isSubagent && <span className="sub-chip">SUB</span>}
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
         {s.model && <span className="session-model">{s.model}</span>}
-        {s.isSubagent && s.taskId && (
-          <span className="session-task">task:{s.taskId}</span>
-        )}
+        {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
       </div>
     </button>
   );
@@ -122,20 +121,32 @@ export function Sidebar({
           <div className="session-list-head">
             {loadingSessions ? "加载中…" : `${mainSessions.length + orphans.length} 个会话`}
           </div>
-          {mainSessions.map((s) => (
-            <React.Fragment key={s.path}>
-              <SessionItem s={s} depth={0} selected={selectedSession?.path === s.path} onSelect={onSelectSession} />
-              {(childrenMap.get(s.id) ?? []).map((sub) => (
-                <SessionItem
-                  key={sub.path}
-                  s={sub}
-                  depth={1}
-                  selected={selectedSession?.path === sub.path}
-                  onSelect={onSelectSession}
-                />
-              ))}
-            </React.Fragment>
-          ))}
+          {mainSessions.map((s) => {
+            const subs = childrenMap.get(s.id) ?? [];
+            return (
+              <React.Fragment key={s.path}>
+                <SessionItem s={s} depth={0} selected={selectedSession?.path === s.path} onSelect={onSelectSession} />
+                {subs.length > 0 && (
+                  <div className="subagent-group">
+                    <div className="subagent-group-head">
+                      <span>🕸️ 子代理</span>
+                      <span className="subagent-count">{subs.length}</span>
+                      {subs.some((x) => x.running) && <span className="subagent-running">● 运行中</span>}
+                    </div>
+                    {subs.map((sub) => (
+                      <SessionItem
+                        key={sub.path}
+                        s={sub}
+                        depth={0}
+                        selected={selectedSession?.path === sub.path}
+                        onSelect={onSelectSession}
+                      />
+                    ))}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
           {orphans.map((s) => (
             <SessionItem key={s.path} s={s} depth={0} selected={selectedSession?.path === s.path} onSelect={onSelectSession} />
           ))}
