@@ -66,7 +66,13 @@ function SessionItem({
         e.preventDefault();
         onContextMenu?.(s, e.clientX, e.clientY);
       }}
-      title={`${s.cwd}\n${s.path}\n(right-click for options)`}
+      title={`${s.cwd}\n${s.path}\n${
+        s.running
+          ? s.inRmux
+            ? `⛭ in rmux: ${s.rmuxTarget ?? ""} (closable tab)`
+            : "in terminal window"
+          : "not running"
+      }\n(right-click for options)`}
     >
       <div className="session-item-line1">
         {!s.isSubagent && hasSubs && (
@@ -82,16 +88,6 @@ function SessionItem({
           </span>
         )}
         <span className="session-title">{title}</span>
-        {s.running && s.inRmux && (
-          <span className="runtime-chip rmux" title={`rmux: ${s.rmuxTarget ?? ""} — closable tab`}>
-            rmux
-          </span>
-        )}
-        {s.running && !s.inRmux && (
-          <span className="runtime-chip term" title="running in a terminal window">
-            term
-          </span>
-        )}
         {!s.isSubagent && (runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
           <span className="subs-summary" title="subagents: running / sleeping / interrupted">
             {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}
