@@ -319,7 +319,7 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
 /// Attach to the rmux session a session belongs to (pi-agents for subagents,
 /// pi-<project> for main sessions).
 #[tauri::command]
-fn attach_session(session_path: String) -> Result<(), String> {
+fn attach_session(session_path: String) -> Result<String, String> {
     let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
@@ -342,8 +342,17 @@ fn attach_session(session_path: String) -> Result<(), String> {
             None => "pi-agents".to_string(),
         }
     };
-    let _ = &rmux;
-    open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))
+    // don't spawn another terminal if someone is already attached
+    let clients = std::process::Command::new(&rmux)
+        .args(["list-clients", "-t", &sess])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if !clients.is_empty() {
+        return Ok(format!("already attached (session {sess}) — no new window"));
+    }
+    open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))?;
+    Ok(format!("attached to {sess}"))
 }
 
 /// shell single-quote a string (paths with spaces/special chars)

@@ -284,7 +284,9 @@ export function Thread({
 
   const doAttach = async () => {
     try {
-      await api.attachSession(detail.path);
+      const msg = await api.attachSession(detail.path);
+      setExportMsg("✓ " + msg);
+      setTimeout(() => setExportMsg(null), 6000);
     } catch (e) {
       setExportMsg("✗ Failed to attach: " + String(e));
       setTimeout(() => setExportMsg(null), 6000);
