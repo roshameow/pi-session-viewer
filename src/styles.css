@@ -354,6 +354,12 @@ body {
   color: var(--fg-dim);
   background: var(--bg3);
 }
+.runtime-chip.rmux.detached {
+  color: #00d7ff;
+  background: rgba(0, 215, 255, 0.1);
+  opacity: 0.65;
+  box-shadow: inset 0 0 0 1px rgba(0, 215, 255, 0.25);
+}
 .session-title {
   flex: 1;
   min-width: 0; /* let long titles shrink so trailing chips stay visible */

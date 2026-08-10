@@ -30,6 +30,7 @@ export interface SessionMeta {
   interrupted: boolean;
   inRmux: boolean;
   rmuxTarget: string | null;
+  rmuxAttached: boolean;
   size: number;
 }
 

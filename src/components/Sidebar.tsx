@@ -88,14 +88,18 @@ function SessionItem({
         <span className="session-time">{relTime(s.updatedAt)}</span>
         {s.running && (
           <span
-            className={`runtime-chip ${s.inRmux ? "rmux" : "term"}`}
+            className={`runtime-chip ${s.inRmux ? "rmux" : "term"} ${
+              s.inRmux ? (s.rmuxAttached ? "attached" : "detached") : ""
+            }`}
             title={
               s.inRmux
-                ? `in rmux: ${s.rmuxTarget ?? ""} (closable tab) · id: ${s.id}`
-                : `in terminal window · id: ${s.id}`
+                ? s.rmuxAttached
+                  ? `rmux · attached (terminal attached: ${s.rmuxTarget ?? ""}) · id: ${s.id}`
+                  : `rmux · detached (running in background, no terminal — attach to view) · id: ${s.id}`
+                : `terminal window · id: ${s.id}`
             }
           >
-            {s.inRmux ? "rmux" : "term"}
+            {s.inRmux ? (s.rmuxAttached ? "● rmux" : "○ rmux") : "term"}
           </span>
         )}
         {status === "running" && <span className="sub-running-chip">running</span>}

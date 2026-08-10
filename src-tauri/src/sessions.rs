@@ -135,6 +135,7 @@ pub struct SessionMeta {
     pub interrupted: bool, // process dead + no terminal event, resumable
     pub in_rmux: bool,
     pub rmux_target: Option<String>, // e.g. "pi-Users-...:s019fe979"
+    pub rmux_attached: bool, // a terminal client is attached to the rmux session
     pub size: u64,
 }
 
@@ -833,15 +834,22 @@ fn extract_task_id(s: &str) -> Option<String> {
     None
 }
 
-/// Map of session file path -> rmux target (e.g. "pi-xxx:s019fe979") for
-/// sessions running inside rmux panes.
+#[derive(Clone)]
+pub struct RmuxRuntime {
+    pub target: String, // e.g. "pi-Users-...:s019fe979"
+    pub attached: bool, // a terminal client is currently attached (has UI)
+}
+
+/// Map of session file path -> rmux runtime info for sessions running inside
+/// rmux panes.
 ///
 /// rmux pane processes are pi itself, whose argv is scrubbed down to just
 /// `pi` (the --session args are gone), so `ps -o command=` can never reveal
 /// the session path. Instead we map by **window name**:
 ///   * Open TUI mains: window `s<id8>` (first 8 hex chars of the session id)
 ///   * subagents:      window `<agent>-<taskId>` in the `pi-agents` session
-pub fn rmux_runtime_map() -> HashMap<String, String> {
+/// attached state comes from `rmux list-clients -t <session>`.
+pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
         .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid}"])
@@ -891,6 +899,20 @@ pub fn rmux_runtime_map() -> HashMap<String, String> {
         }
     }
 
+    // session name -> has attached client (queried once per session)
+    let mut attached_cache: HashMap<String, bool> = HashMap::new();
+    let mut add = |path: String, target: String, sess: &str, out: &mut HashMap<String, RmuxRuntime>, attached_cache: &mut HashMap<String, bool>| {
+        let attached = *attached_cache.entry(sess.to_string()).or_insert_with(|| {
+            std::process::Command::new("rmux")
+                .args(["list-clients", "-t", sess])
+                .env("PATH", full_path())
+                .output()
+                .map(|o| !o.stdout.is_empty() && o.status.success())
+                .unwrap_or(false)
+        });
+        out.insert(path, RmuxRuntime { target, attached });
+    };
+
     for line in String::from_utf8_lossy(&res.stdout).lines() {
         let mut parts = line.splitn(2, ' ');
         let (target, pid_s) = (parts.next().unwrap_or("").trim(), parts.next().unwrap_or("").trim());
@@ -898,12 +920,13 @@ pub fn rmux_runtime_map() -> HashMap<String, String> {
         if !pid_alive(pid) {
             continue;
         }
+        let sess = target.split(':').next().unwrap_or("").to_string();
         let win = target.split(':').nth(1).unwrap_or("").to_string();
         // Open TUI main: window s<id8>
         if let Some(id8) = win.strip_prefix('s') {
             if id8.len() >= 8 && id8[..8].chars().all(|c| c.is_ascii_hexdigit()) {
                 if let Some(p) = id8_map.get(&id8[..8]) {
-                    out.insert(p.clone(), target.to_string());
+                    add(p.clone(), target.to_string(), &sess, &mut out, &mut attached_cache);
                 }
                 continue;
             }
@@ -911,7 +934,7 @@ pub fn rmux_runtime_map() -> HashMap<String, String> {
         // subagent: window <agent>-<taskId>
         if let Some(tid) = extract_task_id(&win) {
             if let Some(p) = task_map.get(&tid) {
-                out.insert(p.clone(), target.to_string());
+                add(p.clone(), target.to_string(), &sess, &mut out, &mut attached_cache);
                 continue;
             }
         }
@@ -928,7 +951,7 @@ pub fn rmux_runtime_map() -> HashMap<String, String> {
                 }
                 let clean = tok.trim_matches('\'');
                 if clean.ends_with(".jsonl") && clean.contains("sessions/") {
-                    out.insert(clean.to_string(), target.to_string());
+                    add(clean.to_string(), target.to_string(), &sess, &mut out, &mut attached_cache);
                     break;
                 }
             }
@@ -966,20 +989,21 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                     // subagents live in rmux pi-agents when running
                     if m.running {
                         m.in_rmux = true;
-                        m.rmux_target = Some(
-                            rmux_map
-                                .get(&m.path)
-                                .cloned()
-                                .unwrap_or_else(|| "pi-agents".to_string()),
-                        );
+                        if let Some(rt) = rmux_map.get(&m.path) {
+                            m.rmux_target = Some(rt.target.clone());
+                            m.rmux_attached = rt.attached;
+                        } else {
+                            m.rmux_target = Some("pi-agents".to_string());
+                        }
                     }
                 } else if session_file_running(&path) || rmux_map.contains_key(&m.path) {
                     // main session running: actively written, or alive in an rmux
                     // pane (idle rmux pis don't touch the jsonl, but still run)
                     m.running = true;
-                    if let Some(t) = rmux_map.get(&m.path) {
+                    if let Some(rt) = rmux_map.get(&m.path) {
                         m.in_rmux = true;
-                        m.rmux_target = Some(t.clone());
+                        m.rmux_target = Some(rt.target.clone());
+                        m.rmux_attached = rt.attached;
                     }
                 }
                 out.push(m);
@@ -1074,6 +1098,7 @@ fn parse_meta(
         interrupted: false,
         in_rmux: false,
         rmux_target: None,
+        rmux_attached: false,
         size,
     })
 }
@@ -1823,7 +1848,7 @@ mod rmux_tests {
         let map = rmux_runtime_map();
         for (k, v) in map.iter() {
             if k.contains("019fe979") || k.contains("019fe98d") || k.contains("msmsnt8i") {
-                println!("RMUXDBG path={} target={}", k, v);
+                println!("RMUXDBG path={} target={} attached={}", k, v.target, v.attached);
             }
         }
         let sess = list_sessions("--Users-wenliu-Code-python-quantnight--");
