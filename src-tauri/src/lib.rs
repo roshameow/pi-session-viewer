@@ -186,12 +186,12 @@ fn rmux_available() -> bool {
 }
 
 /// Run a Terminal (or iTerm) window executing `cmd` via AppleScript (new window).
-fn open_terminal_window(cmd: &str) -> Result<(), String> {
+fn open_terminal_window(cmd: &str) -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = std::process::Command::new("sh").args(["-c", cmd]).spawn()
+        std::process::Command::new("sh").args(["-c", cmd]).spawn()
             .map_err(|e| format!("Failed to open terminal: {e}"))?;
-        return Ok(());
+        return Ok("spawned".to_string());
     }
     #[cfg(target_os = "macos")]
     {
@@ -223,27 +223,65 @@ fn open_terminal_window(cmd: &str) -> Result<(), String> {
   end tell
 end tell"#
             );
-            return run(&script);
+            run(&script)?;
+            return Ok("opened in a new tab".to_string());
         }
         // Terminal.app: Cmd+T opens a new tab (handled by the app itself, so it
         // is safe even when the front tab runs the pi TUI in raw mode); then the
         // command runs in that fresh idle tab. Needs Accessibility for the
         // keystroke; falls back to a plain new window when unavailable.
-        let tab_script = format!(
-            r#"tell application "Terminal"
-  activate
-  delay 0.3
-end tell
-tell application "System Events" to keystroke "t" using command down
-delay 0.6
-tell application "Terminal" to do script "{esc}" in front window"#
-        );
-        match run(&tab_script) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                let fallback = format!(r#"tell application "Terminal" to do script "{esc}""#);
-                run(&fallback)
+        //
+        // IMPORTANT: activate + keystroke + do script must run as SEPARATE
+        // osascript invocations — in one script the keystroke lands before
+        // Terminal is frontmost and silently does nothing (observed: it fell
+        // back to a new window every time).
+        let run_term = |script: &str| -> Result<(), String> {
+            let out = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .output()
+                .map_err(|e| format!("osascript failed: {e}"))?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
             }
+            Ok(())
+        };
+        let count_of = |expr: &str| -> u32 {
+            std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(format!("tell application \"Terminal\" to return {expr}"))
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+                .unwrap_or(0)
+        };
+        // if Terminal has no window at all, there is nothing to tab into
+        let has_window = count_of("count of windows") > 0;
+        if !has_window {
+            // no existing window -> open one (a tab is impossible)
+            run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
+            return Ok("opened a new window (Terminal had no window to tab into)".to_string());
+        }
+        let _ = run_term(r#"tell application "Terminal" to activate"#);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let before = count_of("count of tabs of front window");
+        let mut ok = false;
+        for _ in 0..2 {
+            let _ = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if count_of("count of tabs of front window") > before {
+                ok = true;
+                break;
+            }
+        }
+        if ok {
+            // fresh idle tab from Cmd+T is now the front tab; run the command there
+            run_term(&format!(r#"tell application "Terminal" to do script "{esc}" in front window"#))?;
+            Ok("opened in a new tab".to_string())
+        } else {
+            // no Accessibility (or keystroke swallowed) -> plain new window
+            run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
+            Ok("opened a new window — enable Accessibility for pi-session-viewer (System Settings → Privacy & Security → Accessibility) to open tabs instead".to_string())
         }
     }
 }
@@ -374,7 +412,7 @@ fn detach_from_rmux(session_path: String) -> Result<(), String> {
 /// anytime and the agent keeps running; reattach via `pim` or the Attach button.
 /// Without rmux, falls back to a plain `pi --session` window.
 #[tauri::command]
-fn open_in_terminal(session_path: String) -> Result<(), String> {
+fn open_in_terminal(session_path: String) -> Result<String, String> {
     // already alive in an rmux pane (incl. pim sessions with short names)?
     // attach to that pane's session — never spawn a second pi.
     if let Some(sess) = existing_rmux_session(&session_path) {
@@ -459,8 +497,8 @@ fn attach_session(session_path: String) -> Result<String, String> {
     if !clients.is_empty() {
         return Ok(format!("already attached (session {sess}) — no new window"));
     }
-    open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))?;
-    Ok(format!("attached to {sess}"))
+    let msg = open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))?;
+    Ok(format!("attached to {sess} ({msg})"))
 }
 
 /// shell single-quote a string (paths with spaces/special chars)

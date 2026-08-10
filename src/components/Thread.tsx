@@ -282,7 +282,9 @@ export function Thread({
 
   const doOpenTerminal = async () => {
     try {
-      await api.openInTerminal(detail.path);
+      const msg = await api.openInTerminal(detail.path);
+      setExportMsg("✓ " + msg);
+      setTimeout(() => setExportMsg(null), 8000);
     } catch (e) {
       setExportMsg("✗ Failed to open terminal: " + String(e));
       setTimeout(() => setExportMsg(null), 6000);
