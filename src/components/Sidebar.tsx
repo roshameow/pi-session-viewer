@@ -166,6 +166,11 @@ export function Sidebar({
                 <span className="project-icon">📁</span>
                 <span className="project-name">{projectName(p.cwd)}</span>
                 <span className="project-count">{p.sessionCount}</span>
+                {p.runningCount > 0 && (
+                  <span className="project-running" title={`${p.runningCount} 个会话运行中`}>
+                    ● {p.runningCount}
+                  </span>
+                )}
                 {p.subagentCount > 0 && <span className="project-sub">🕸️{p.subagentCount}</span>}
               </button>
             ))}

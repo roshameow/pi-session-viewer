@@ -87,6 +87,20 @@ pub fn resolve_pi_bin() -> Option<String> {
 // Data model (serialized to the frontend)
 // ---------------------------------------------------------------------------
 
+const RUNNING_FRESH_SECS: u64 = 120;
+
+/// A main pi session is running if it was written recently (pi appends to the
+/// session JSONL while a turn executes in the terminal).
+fn session_file_running(path: &Path) -> bool {
+    let Ok(md) = fs::metadata(path) else { return false };
+    let Ok(mt) = md.modified() else { return false };
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    let Ok(mtime) = mt.duration_since(std::time::UNIX_EPOCH) else { return false };
+    now.saturating_sub(mtime).as_secs() < RUNNING_FRESH_SECS
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -95,6 +109,7 @@ pub struct Project {
     pub session_count: usize,
     pub subagent_count: usize,
     pub updated_at: i64,      // latest file mtime (secs)
+    pub running_count: usize, // running main sessions + running subagents
 }
 
 #[derive(Serialize, Clone)]
@@ -236,6 +251,7 @@ fn task_id_from_filename(name: &str) -> Option<String> {
 pub fn list_projects() -> Vec<Project> {
     let root = sessions_dir();
     let mut out = Vec::new();
+    let (_, task_by_uuid, _) = subagent_index();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let path = e.path();
@@ -249,7 +265,10 @@ pub fn list_projects() -> Vec<Project> {
             let mut count = 0usize;
             let mut sub_count = 0usize;
             let mut updated = 0i64;
-            let mut cwd = decode_dir_name(&name);
+            let mut running_count = 0usize;
+            let mut seen_uuids: HashSet<String> = HashSet::new();
+            let mut best_cwd: Option<(i64, String)> = None;
+            let cwd = decode_dir_name(&name);
             if let Ok(fd) = fs::read_dir(&path) {
                 for f in fd.flatten() {
                     if !f.path().is_file() {
@@ -262,6 +281,37 @@ pub fn list_projects() -> Vec<Project> {
                     count += 1;
                     if fname.contains("subagent-task-") {
                         sub_count += 1;
+                    }
+                    // running detection (dedupe mirror/real by uuid)
+                    let header = first_line(&f.path()).and_then(|l| {
+                        serde_json::from_str::<Value>(&l).ok()
+                    });
+                    if let Some(h) = &header {
+                        if let Some(u) = h.get("id").and_then(|x| x.as_str()) {
+                            if seen_uuids.insert(u.to_string()) {
+                                let is_running = if let Some(tid) = task_by_uuid.get(u) {
+                                    task_running(tid)
+                                } else {
+                                    session_file_running(&f.path())
+                                };
+                                if is_running {
+                                    running_count += 1;
+                                }
+                            }
+                        }
+                        // best-effort real cwd from newest session header
+                        if let Some(c) = h.get("cwd").and_then(|x| x.as_str()) {
+                            let mt = f
+                                .metadata()
+                                .ok()
+                                .and_then(|m| m.modified().ok())
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+                            if best_cwd.as_ref().map(|(bm, _)| mt > *bm).unwrap_or(true) {
+                                best_cwd = Some((mt, c.to_string()));
+                            }
+                        }
                     }
                     if let Ok(md) = f.metadata() {
                         if let Ok(mt) = md.modified() {
@@ -278,41 +328,14 @@ pub fn list_projects() -> Vec<Project> {
             if count == 0 {
                 continue;
             }
-            // best-effort real cwd from newest session header
-            if let Ok(fd) = fs::read_dir(&path) {
-                let mut best: Option<(i64, String)> = None;
-                for f in fd.flatten() {
-                    let p = f.path();
-                    let mt = f
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    if let Some((bm, _)) = &best {
-                        if mt <= *bm {
-                            continue;
-                        }
-                    }
-                    if let Some(line) = first_line(&p) {
-                        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
-                                best = Some((mt, c.to_string()));
-                            }
-                        }
-                    }
-                }
-                if let Some((_, c)) = best {
-                    cwd = c;
-                }
-            }
+            let cwd = best_cwd.map(|(_, c)| c).unwrap_or(cwd);
             out.push(Project {
                 key: name,
                 cwd,
                 session_count: count,
                 subagent_count: sub_count,
                 updated_at: updated,
+                running_count,
             });
         }
     }
@@ -536,6 +559,9 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                             m.running = true;
                         }
                     }
+                } else if session_file_running(&path) {
+                    // main session actively written (pi running in the terminal)
+                    m.running = true;
                 }
                 out.push(m);
             }

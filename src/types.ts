@@ -6,6 +6,7 @@ export interface Project {
   sessionCount: number;
   subagentCount: number;
   updatedAt: number;
+  runningCount: number;
 }
 
 export interface SessionMeta {
