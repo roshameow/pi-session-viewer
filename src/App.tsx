@@ -318,6 +318,14 @@ export default function App() {
         onOpenTerminal={(path) => {
           api.openInTerminal(path).catch((e) => setError(String(e)));
         }}
+        onDetachFromRmux={async (path) => {
+          try {
+            await api.detachFromRmux(path);
+            if (selectedProject) refreshSessions(selectedProject);
+          } catch (e) {
+            setError(String(e));
+          }
+        }}
         onDeleteSession={async (path) => {
           try {
             await api.deleteSession(path);

@@ -139,6 +139,7 @@ export function Sidebar({
   onRefresh,
   onOpenTerminal,
   onDeleteSession,
+  onDetachFromRmux,
   onOpenConfig,
   showConfig,
   finishedAt,
@@ -153,6 +154,7 @@ export function Sidebar({
   onRefresh: () => void;
   onOpenTerminal: (path: string) => void;
   onDeleteSession: (path: string) => Promise<void> | void;
+  onDetachFromRmux: (path: string) => Promise<void> | void;
   onOpenConfig: () => void;
   showConfig: boolean;
   finishedAt: Record<string, number>;
@@ -491,6 +493,19 @@ export function Sidebar({
           >
             <span>⧉</span> Copy session id
           </button>
+          {ctxMenu.s.inRmux && ctxMenu.s.rmuxAttached && !ctxMenu.s.rmuxDead && (
+            <button
+              className="ctx-item"
+              title="Detach all terminals from this rmux session — the pi keeps running"
+              onClick={() => {
+                const p = ctxMenu.s.path;
+                setCtxMenu(null);
+                onDetachFromRmux(p);
+              }}
+            >
+              <span>⊘</span> Detach from rmux
+            </button>
+          )}
           <button
             className={`ctx-item danger ${confirmingDelete ? "confirm" : ""}`}
             onClick={async () => {

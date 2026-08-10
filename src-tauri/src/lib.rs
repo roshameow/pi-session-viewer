@@ -317,6 +317,36 @@ fn ensure_rmux_window(
     Ok(Some(sess))
 }
 
+/// Detach all terminals from an rmux session (from the app side). The session
+/// keeps running; the attached terminal just drops back to its shell prompt.
+#[tauri::command]
+fn detach_from_rmux(session_path: String) -> Result<(), String> {
+    let rmux = rmux_bin().ok_or("rmux is not installed")?;
+    let map = sessions::rmux_runtime_map();
+    let rt = map
+        .get(&session_path)
+        .ok_or("session is not running in an rmux window")?;
+    if rt.dead {
+        return Err("the rmux pane is dead (pi exited) — nothing to detach".into());
+    }
+    let sess = rt.target.split(':').next().unwrap_or("").to_string();
+    if sess.is_empty() {
+        return Err("invalid rmux target".into());
+    }
+    let out = std::process::Command::new(&rmux)
+        .args(["detach-client", "-s", &sess])
+        .env("PATH", sessions::full_path())
+        .output()
+        .map_err(|e| format!("failed to run rmux detach-client: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "rmux detach failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 /// Open the session in a terminal. With rmux installed, the pi process runs in
 /// a persistent rmux session (`pi-<encoded-cwd>`), so the tab can be closed
 /// anytime and the agent keeps running; reattach via `pim` or the Attach button.
@@ -409,6 +439,7 @@ pub fn run() {
             export_session_html,
             open_in_terminal,
             attach_session,
+            detach_from_rmux,
             delete_session,
             sessions::list_running,
             sessions::session_status,
