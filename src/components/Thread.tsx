@@ -224,6 +224,20 @@ function callOnly(name: string, args: string): string {
   return `${name}(${arg})`;
 }
 
+/// Full text of an entry used for search matching.
+function entryText(e: Entry): string {
+  const parts: string[] = [];
+  if (e.summary) parts.push(e.summary);
+  if (e.name) parts.push(e.name);
+  for (const c of e.content) {
+    if (c.kind === "text") parts.push(c.text);
+    else if (c.kind === "thinking") parts.push(c.thinking);
+    else if (c.kind === "toolCall") parts.push(c.name + " " + c.arguments);
+    else if (c.kind === "bash") parts.push(c.command + "\n" + c.output);
+  }
+  return parts.join("\n").toLowerCase();
+}
+
 // ---------- thread ----------
 
 export function Thread({
@@ -236,8 +250,10 @@ export function Thread({
   running: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterMode>("default");
+  const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
@@ -257,12 +273,16 @@ export function Thread({
     }
   };
 
-  // Ctrl+O cycles filter modes (same as pi /tree)
+  // Ctrl+O cycles filter modes; Ctrl+F focuses the search box (like pi /tree)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         setFilter((f) => FILTER_CYCLE[(FILTER_CYCLE.indexOf(f) + 1) % FILTER_CYCLE.length]);
+      } else if (e.ctrlKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -274,6 +294,8 @@ export function Thread({
     const active = detail.active.map((i) => entries[i]);
     const skip = new Set<number>();
     const items: { entry: Entry; inlineResults: Entry[]; activeIdx: number }[] = [];
+    const q = search.trim().toLowerCase();
+    const qActive = q.length > 0;
 
     // ids of entries that carry a label (label entries point at them)
     const labeledIds = new Set(
@@ -302,6 +324,10 @@ export function Thread({
       }
       // "all": keep everything
 
+      // search filter (applies on top of the mode filter)
+      const passesSearch = !qActive || entryText(entry).includes(q);
+      if (!passesSearch) skip.add(idx);
+
       const toolCalls =
         entry.role === "assistant" ? entry.content.filter((c) => c.kind === "toolCall") : [];
       if (toolCalls.length === 0) {
@@ -309,13 +335,16 @@ export function Thread({
         return;
       }
       const results: Entry[] = [];
-      for (let j = idx + 1; j < active.length && results.length < toolCalls.length * 2; j++) {
-        const e = active[j];
-        if (e.role === "toolResult") {
-          const callId = e.toolCallId;
-          if (toolCalls.some((tc) => tc.kind === "toolCall" && tc.id === callId)) results.push(e);
-        } else if (e.role === "assistant" || e.role === "user") {
-          break;
+      // only pair results when this assistant itself passes the search
+      if (passesSearch) {
+        for (let j = idx + 1; j < active.length && results.length < toolCalls.length * 2; j++) {
+          const e = active[j];
+          if (e.role === "toolResult") {
+            const callId = e.toolCallId;
+            if (toolCalls.some((tc) => tc.kind === "toolCall" && tc.id === callId)) results.push(e);
+          } else if (e.role === "assistant" || e.role === "user") {
+            break;
+          }
         }
       }
       items.push({ entry, inlineResults: results, activeIdx: idx });
@@ -324,8 +353,12 @@ export function Thread({
         if (ri >= 0) skip.add(ri);
       });
     });
-    return { items, skip, hideToolOutput: filter === "no-tools" };
-  }, [detail, filter]);
+    let matchCount = 0;
+    for (const { activeIdx } of items) {
+      if (!skip.has(activeIdx)) matchCount++;
+    }
+    return { items, skip, matchCount, hideToolOutput: filter === "no-tools" };
+  }, [detail, filter, search]);
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -359,6 +392,29 @@ export function Thread({
               </button>
             </div>
             {exportMsg && <div className="export-msg">{exportMsg}</div>}
+          </div>
+          <div className="thread-search-row">
+            <input
+              ref={searchRef}
+              className="thread-search"
+              placeholder="Search messages… (Ctrl+F)"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setSearch("");
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+            {search.trim() ? (
+              <>
+                <span className="thread-search-count">{renderItems.matchCount} matches</span>
+                <button className="clear-btn" onClick={() => setSearch("")} title="Clear search">
+                  ×
+                </button>
+              </>
+            ) : null}
           </div>
           <div className="filter-bar" title="Ctrl+O cycles modes">
             {FILTER_CYCLE.map((m) => (

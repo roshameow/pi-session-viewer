@@ -24,6 +24,7 @@ function SessionItem({
   depth,
   selected,
   onSelect,
+  onContextMenu,
   runningSubs = 0,
   hasSubs = false,
   subsCollapsed = false,
@@ -33,6 +34,7 @@ function SessionItem({
   depth: number;
   selected: boolean;
   onSelect: (s: SessionMeta) => void;
+  onContextMenu?: (s: SessionMeta, x: number, y: number) => void;
   runningSubs?: number;
   hasSubs?: boolean;
   subsCollapsed?: boolean;
@@ -44,7 +46,11 @@ function SessionItem({
       className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"} ${s.running ? "running" : ""}`}
       style={{ paddingLeft: 8 + depth * 14 }}
       onClick={() => onSelect(s)}
-      title={`${s.cwd}\n${s.path}`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onContextMenu?.(s, e.clientX, e.clientY);
+      }}
+      title={`${s.cwd}\n${s.path}\n(right-click for options)`}
     >
       <div className="session-item-line1">
         {!s.isSubagent && hasSubs && (
@@ -93,6 +99,8 @@ export function Sidebar({
   onSelectProject,
   onSelectSession,
   onRefresh,
+  onOpenTerminal,
+  onDeleteSession,
 }: {
   projects: Project[];
   sessions: SessionMeta[];
@@ -102,11 +110,33 @@ export function Sidebar({
   onSelectProject: (p: Project) => void;
   onSelectSession: (s: SessionMeta) => void;
   onRefresh: () => void;
+  onOpenTerminal: (path: string) => void;
+  onDeleteSession: (path: string) => Promise<void> | void;
 }) {
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [sessionQuery, setSessionQuery] = useState("");
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; s: SessionMeta } | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // close the context menu on outside click / Escape
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCtxMenu(null);
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
 
   // resizable sidebar width (persisted)
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -162,7 +192,16 @@ export function Sidebar({
     const main: SessionMeta[] = [];
     const children = new Map<string, SessionMeta[]>();
     const subs: SessionMeta[] = [];
+    const q = sessionQuery.trim().toLowerCase();
+    const match = (s: SessionMeta) =>
+      !q ||
+      (s.name ?? "").toLowerCase().includes(q) ||
+      (s.firstMessage ?? "").toLowerCase().includes(q) ||
+      (s.lastMessage ?? "").toLowerCase().includes(q) ||
+      (s.taskId ?? "").toLowerCase().includes(q) ||
+      s.id.toLowerCase().includes(q);
     for (const s of sessions) {
+      if (!match(s)) continue;
       if (!s.isSubagent) {
         main.push(s);
         continue;
@@ -175,7 +214,7 @@ export function Sidebar({
       }
     }
     return { mainSessions: main, childrenMap: children, subagents: subs };
-  }, [sessions]);
+  }, [sessions, sessionQuery]);
 
   const parentTitle = (path: string | null): string | null => {
     if (!path) return null;
@@ -236,6 +275,12 @@ export function Sidebar({
       {/* sessions of selected project */}
       {selectedProject && (
         <div className="session-list">
+          <input
+            className="session-search"
+            placeholder="Search sessions… (title / content)"
+            value={sessionQuery}
+            onChange={(e) => setSessionQuery(e.target.value)}
+          />
           {loadingSessions ? (
             <div className="empty">Loading…</div>
           ) : (
@@ -265,6 +310,10 @@ export function Sidebar({
                         hasSubs={subs.length > 0}
                         subsCollapsed={groupCollapsed}
                         onToggleSubs={() => toggleGroup(s.path)}
+                        onContextMenu={(s, x, y) => {
+                          setConfirmingDelete(false);
+                          setCtxMenu({ x, y, s });
+                        }}
                       />
                       {subs.length > 0 && (
                         <div className={`subagent-group ${groupCollapsed ? "collapsed" : ""}`}>
@@ -288,6 +337,10 @@ export function Sidebar({
                                 depth={0}
                                 selected={selectedSession?.path === sub.path}
                                 onSelect={onSelectSession}
+                                onContextMenu={(sub, x, y) => {
+                                  setConfirmingDelete(false);
+                                  setCtxMenu({ x, y, s: sub });
+                                }}
                               />
                             ))}
                         </div>
@@ -315,6 +368,10 @@ export function Sidebar({
                         depth={0}
                         selected={selectedSession?.path === s.path}
                         onSelect={onSelectSession}
+                        onContextMenu={(s, x, y) => {
+                          setConfirmingDelete(false);
+                          setCtxMenu({ x, y, s });
+                        }}
                       />
                       <div className="subagent-parent">
                         {pt ? <>parent: {pt}</> : <span className="orphan">no parent</span>}
@@ -322,8 +379,62 @@ export function Sidebar({
                     </React.Fragment>
                   );
                 })}
+
+              {mainSessions.length === 0 && subagents.length === 0 && (
+                <div className="empty">
+                  {sessionQuery.trim() ? "No matching sessions" : "No sessions"}
+                </div>
+              )}
             </>
           )}
+        </div>
+      )}
+
+      {/* right-click context menu */}
+      {ctxMenu && (
+        <div
+          className="ctx-menu"
+          style={{
+            left: Math.min(ctxMenu.x, window.innerWidth - 220),
+            top: Math.min(ctxMenu.y, window.innerHeight - 160),
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="ctx-title" title={ctxMenu.s.path}>
+            {ctxMenu.s.isSubagent ? "🕸️ " : "💬 "}
+            {(ctxMenu.s.name || ctxMenu.s.firstMessage || "(empty)").slice(0, 42)}
+          </div>
+          <button
+            className="ctx-item"
+            onClick={() => {
+              onOpenTerminal(ctxMenu.s.path);
+              setCtxMenu(null);
+            }}
+          >
+            <span>⛭</span> Open in pi TUI (terminal)
+          </button>
+          <button
+            className={`ctx-item danger ${confirmingDelete ? "confirm" : ""}`}
+            onClick={async () => {
+              if (!confirmingDelete) {
+                setConfirmingDelete(true);
+                return;
+              }
+              const p = ctxMenu.s.path;
+              setCtxMenu(null);
+              try {
+                await onDeleteSession(p);
+              } catch {
+                /* handled by App */
+              }
+            }}
+          >
+            {confirmingDelete ? (
+              <span className="ctx-danger-text">⚠️ Confirm delete (to Trash)?</span>
+            ) : (
+              <span>🗑 Delete session</span>
+            )}
+          </button>
         </div>
       )}
     </div>

@@ -409,7 +409,7 @@ type SubIdx = (
 );
 static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
 
-fn subagent_index() -> SubIdx {
+pub fn subagent_index() -> SubIdx {
     let mut cache = SUB_IDX.get_or_init(|| Mutex::new(None)).lock().unwrap();
     let key = newest_mtime_secs(&sessions_dir()) ^ newest_mtime_secs(&pi_agent_dir().join("agent-logs"));
     if let Some((k, idx)) = cache.as_ref() {

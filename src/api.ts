@@ -11,6 +11,8 @@ export const api = {
   piVersion: () => invoke<string>("pi_version"),
   fileExists: (path: string) => invoke<boolean>("file_exists", { path }),
   exportSession: (path: string) => invoke<string>("export_session_html", { sessionPath: path }),
+  deleteSession: (path: string) => invoke<void>("delete_session", { path }),
+  openInTerminal: (path: string) => invoke<void>("open_in_terminal", { sessionPath: path }),
   listRunning: () => invoke<RunningSession[]>("list_running"),
   sendMessage: (sessionPath: string, message: string, channel: Channel<PiEvent>) =>
     invoke<void>("send_message", { sessionPath, message, onEvent: channel }),

@@ -259,6 +259,19 @@ export default function App() {
         loadingSessions={loadingSessions}
         onSelectProject={selectProject}
         onSelectSession={selectSession}
+        onOpenTerminal={(path) => {
+          api.openInTerminal(path).catch((e) => setError(String(e)));
+        }}
+        onDeleteSession={async (path) => {
+          try {
+            await api.deleteSession(path);
+            refreshProjects();
+            if (selectedProject) refreshSessions(selectedProject);
+            if (detail?.path === path) setDetail(null);
+          } catch (e) {
+            setError(String(e));
+          }
+        }}
         onRefresh={() => {
           refreshProjects();
           if (selectedProject) refreshSessions(selectedProject);
