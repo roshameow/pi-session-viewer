@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentBlock, Entry, SessionDetail } from "../types";
+import { Markdown } from "./Markdown";
 
 // ---------- Live conversation blocks (assembled from pi json events) ----------
 
@@ -286,7 +287,7 @@ export function Thread({
                 {b.thinking && <ThinkingLine text={b.thinking} />}
                 {b.text ? (
                   <div className="msg-text">
-                    {b.text}
+                    <Markdown text={b.text} />
                     {!b.done && <span className="cursor" />}
                   </div>
                 ) : (
@@ -382,9 +383,7 @@ function EntryView({
       <div className="msg user">
         <div className="msg-text">
           {entry.content.map((c, i) =>
-            c.kind === "text" ? (
-              <pre key={i} className="text-pre">{c.text}</pre>
-            ) : null
+            c.kind === "text" ? <Markdown key={i} text={c.text} /> : null
           )}
         </div>
       </div>
@@ -399,7 +398,11 @@ function EntryView({
         {thinking.map((c, i) => (
           <ThinkingLine key={i} text={(c as any).thinking} />
         ))}
-        {text && <div className="msg-text"><pre className="text-pre">{text}</pre></div>}
+        {text && (
+          <div className="msg-text">
+            <Markdown text={text} />
+          </div>
+        )}
         {calls.map((c, i) => {
           const call = c as Extract<ContentBlock, { kind: "toolCall" }>;
           const result = inlineResults.find((r) => r.toolCallId === call.id);
