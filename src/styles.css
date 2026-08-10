@@ -128,6 +128,31 @@ body {
 }
 .subagent-parent .orphan { color: var(--red); }
 
+/* running state badges */
+.subs-running-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--purple);
+  border: 1px solid rgba(149, 117, 205, 0.6);
+  background: rgba(149, 117, 205, 0.12);
+  border-radius: 8px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  animation: blink 1.4s infinite;
+  white-space: nowrap;
+}
+.sub-running-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--green);
+  border: 1px solid rgba(181, 189, 104, 0.6);
+  background: rgba(181, 189, 104, 0.12);
+  border-radius: 8px;
+  padding: 0 6px;
+  animation: blink 1.4s infinite;
+}
+.session-item.main.running { outline: 1px solid rgba(181, 189, 104, 0.35); border-radius: 6px; }
+
 .session-item {
   display: block;
   width: 100%;

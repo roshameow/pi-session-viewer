@@ -21,16 +21,18 @@ function SessionItem({
   depth,
   selected,
   onSelect,
+  runningSubs = 0,
 }: {
   s: SessionMeta;
   depth: number;
   selected: boolean;
   onSelect: (s: SessionMeta) => void;
+  runningSubs?: number;
 }) {
   const title = s.name || s.firstMessage || "(空会话)";
   return (
     <button
-      className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"}`}
+      className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"} ${s.running ? "running" : ""}`}
       style={{ paddingLeft: 8 + depth * 14 }}
       onClick={() => onSelect(s)}
       title={`${s.cwd}\n${s.path}`}
@@ -40,11 +42,17 @@ function SessionItem({
         <span className="session-icon">{s.isSubagent ? "🕸️" : "💬"}</span>
         <span className="session-title">{title}</span>
         {s.isSubagent && <span className="sub-chip">SUB</span>}
+        {!s.isSubagent && runningSubs > 0 && (
+          <span className="subs-running-badge" title={`${runningSubs} 个子代理运行中`}>
+            🕸️ {runningSubs} 运行中
+          </span>
+        )}
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
         {s.model && <span className="session-model">{s.model}</span>}
         {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
+        {s.isSubagent && s.running && <span className="sub-running-chip">● 运行中</span>}
       </div>
     </button>
   );
@@ -157,6 +165,7 @@ export function Sidebar({
               {!collapsedMain &&
                 mainSessions.map((s) => {
                   const subs = childrenMap.get(s.path) ?? [];
+                  const runningSubs = subs.filter((x) => x.running).length;
                   return (
                     <React.Fragment key={s.path}>
                       <SessionItem
@@ -164,6 +173,7 @@ export function Sidebar({
                         depth={0}
                         selected={selectedSession?.path === s.path}
                         onSelect={onSelectSession}
+                        runningSubs={runningSubs}
                       />
                       {subs.length > 0 && (
                         <div className="subagent-group">

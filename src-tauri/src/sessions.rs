@@ -432,6 +432,36 @@ fn subagent_index() -> (HashSet<String>, HashMap<String, String>, HashMap<String
     (uuids, by_uuid, match_text_by_uuid)
 }
 
+/// A subagent task is running if its agent-logs file exists, has no terminal
+/// event (agent_end / agent_settled) as the last line, and was written recently.
+/// pi-subagent-durable appends every kept event to `agent-logs/task-<id>.jsonl`
+/// while the task runs; the final line is `agent_settled` when it finishes.
+fn task_running(task_id: &str) -> bool {
+    let p = pi_agent_dir()
+        .join("agent-logs")
+        .join(format!("task-{task_id}.jsonl"));
+    let Ok(data) = fs::read(&p) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&data);
+    let last = text.lines().rev().find(|l| !l.trim().is_empty());
+    let Some(last) = last else { return false };
+    if let Ok(v) = serde_json::from_str::<Value>(last) {
+        match v.get("type").and_then(|x| x.as_str()) {
+            Some("agent_end") | Some("agent_settled") => return false,
+            _ => {}
+        }
+    }
+    // no terminal event yet: running if written within the last 3 minutes
+    let Ok(md) = fs::metadata(&p) else { return false };
+    let Ok(mt) = md.modified() else { return false };
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    let Ok(mtime) = mt.duration_since(std::time::UNIX_EPOCH) else { return false };
+    now.saturating_sub(mtime).as_secs() < 180
+}
+
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let root = sessions_dir();
     let dir = root.join(project_key);
@@ -446,7 +476,14 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             if !fname.ends_with(".jsonl") {
                 continue;
             }
-            if let Some(m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid) {
+            if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid) {
+                if m.is_subagent {
+                    if let Some(tid) = &m.task_id {
+                        if task_running(tid) {
+                            m.running = true;
+                        }
+                    }
+                }
                 out.push(m);
             }
         }
