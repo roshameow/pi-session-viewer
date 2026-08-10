@@ -267,9 +267,10 @@ end tell"#
         let before = count_of("count of tabs of front window");
         let mut ok = false;
         let mut keystroke_err: Option<String> = None;
-        // Prefer the stable tab-open-helper binary: it is never rebuilt, so its
-        // macOS Accessibility grant (recorded against the binary hash) survives
-        // app rebuilds forever. Falls back to the in-process osascript.
+        // The stable tab-open-helper binary posts Cmd+T (Terminal creates a
+        // fresh idle tab which becomes the front tab). It is never rebuilt, so
+        // its Accessibility grant survives app rebuilds. Trust its success —
+        // re-verifying tab counts here raced and double-opened a window.
         // runtime: <exe>/../Resources/resources/tab-open-helper; dev: source dir
         let helper = std::env::current_exe()
             .ok()
@@ -283,54 +284,49 @@ end tell"#
                     .join("resources")
                     .join("tab-open-helper")
             });
-        if helper.is_file() {
-            match std::process::Command::new(&helper).output() {
-                Ok(o) if o.status.success() => {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    if count_of("count of tabs of front window") > before {
-                        ok = true;
-                    } else {
-                        keystroke_err = Some(
-                            "helper ran but no new tab appeared (grant it in Accessibility)"
-                                .to_string(),
-                        );
-                    }
-                }
-                Ok(o) => {
-                    keystroke_err = Some(String::from_utf8_lossy(&o.stderr).trim().to_string());
-                }
-                Err(e) => keystroke_err = Some(format!("helper failed: {e}")),
-            }
-        }
-        if !ok && keystroke_err.is_none() {
-            for _ in 0..2 {
-                let k = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                if count_of("count of tabs of front window") > before {
-                    ok = true;
-                    break;
-                }
-                if let Err(e) = k {
-                    keystroke_err = Some(e);
-                    break;
-                }
-            }
-        }
-        if ok {
-            // fresh idle tab from Cmd+T is now the front tab; run the command there
+        let run_after_tab = || -> Result<String, String> {
+            // give Terminal a moment to finish creating the tab, then run the
+            // command in the (new, idle) front tab
+            std::thread::sleep(std::time::Duration::from_millis(900));
             run_term(&format!(r#"tell application "Terminal" to do script "{esc}" in front window"#))?;
             Ok("opened in a new tab".to_string())
-        } else {
-            // plain new window; explain why tabs were not possible
-            run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
-            let why = match keystroke_err {
-                Some(e) => e,
-                None => "keystroke posted but no new tab appeared".to_string(),
-            };
-            Ok(format!(
-                "opened a new window (tab failed: {why}) — enable Accessibility for pi-session-viewer (System Settings → Privacy & Security → Accessibility)"
-            ))
+        };
+        if helper.is_file() {
+            match std::process::Command::new(&helper).output() {
+                Ok(o) if o.status.success() => return run_after_tab(),
+                Ok(o) => {
+                    let why = format!(
+                        "{} {}",
+                        String::from_utf8_lossy(&o.stdout).trim(),
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    )
+                    .trim()
+                    .to_string();
+                    // helper denied (e.g. 1002) -> plain new window, explain why
+                    run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
+                    return Ok(format!(
+                        "opened a new window (tab failed: {why}) — enable Accessibility for pi-session-viewer (System Settings → Privacy & Security → Accessibility)"
+                    ));
+                }
+                Err(e) => {
+                    run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
+                    return Ok(format!(
+                        "opened a new window (tab failed: helper error {e}) — enable Accessibility for pi-session-viewer"
+                    ));
+                }
+            }
         }
+        // no helper bundled: fall back to in-process osascript keystroke
+        let before = count_of("count of tabs of front window");
+        for _ in 0..2 {
+            let _ = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            if count_of("count of tabs of front window") > before {
+                return run_after_tab();
+            }
+        }
+        run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
+        Ok("opened a new window (could not create a tab — enable Accessibility for pi-session-viewer)".to_string())
     }
 }
 
