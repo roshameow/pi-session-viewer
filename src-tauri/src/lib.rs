@@ -263,25 +263,39 @@ end tell"#
             return Ok("opened a new window (Terminal had no window to tab into)".to_string());
         }
         let _ = run_term(r#"tell application "Terminal" to activate"#);
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        std::thread::sleep(std::time::Duration::from_millis(600));
         let before = count_of("count of tabs of front window");
         let mut ok = false;
-        for _ in 0..2 {
-            let _ = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
+        let mut keystroke_err: Option<String> = None;
+        for _ in 0..3 {
+            let k = run_term(r#"tell application "System Events" to keystroke "t" using command down"#);
             std::thread::sleep(std::time::Duration::from_millis(500));
             if count_of("count of tabs of front window") > before {
                 ok = true;
                 break;
             }
+            if let Err(e) = k {
+                keystroke_err = Some(e);
+                break;
+            }
+            // keystroke posted but no tab appeared yet: re-activate and retry
+            let _ = run_term(r#"tell application "Terminal" to activate"#);
+            std::thread::sleep(std::time::Duration::from_millis(400));
         }
         if ok {
             // fresh idle tab from Cmd+T is now the front tab; run the command there
             run_term(&format!(r#"tell application "Terminal" to do script "{esc}" in front window"#))?;
             Ok("opened in a new tab".to_string())
         } else {
-            // no Accessibility (or keystroke swallowed) -> plain new window
+            // plain new window; explain why tabs were not possible
             run_term(&format!(r#"tell application "Terminal" to do script "{esc}""#))?;
-            Ok("opened a new window — enable Accessibility for pi-session-viewer (System Settings → Privacy & Security → Accessibility) to open tabs instead".to_string())
+            let why = match keystroke_err {
+                Some(e) => e,
+                None => "keystroke posted but no new tab appeared".to_string(),
+            };
+            Ok(format!(
+                "opened a new window (tab failed: {why}) — enable Accessibility for pi-session-viewer (System Settings → Privacy & Security → Accessibility)"
+            ))
         }
     }
 }
