@@ -28,6 +28,7 @@ function SessionItem({
   runningSubs = 0,
   sleepingSubs = 0,
   interruptedSubs = 0,
+  justFinished = false,
   hasSubs = false,
   subsCollapsed = false,
   onToggleSubs,
@@ -40,6 +41,7 @@ function SessionItem({
   runningSubs?: number;
   sleepingSubs?: number;
   interruptedSubs?: number;
+  justFinished?: boolean;
   hasSubs?: boolean;
   subsCollapsed?: boolean;
   onToggleSubs?: () => void;
@@ -96,6 +98,7 @@ function SessionItem({
             {interruptedSubs} interrupted
           </span>
         )}
+        {justFinished && <span className="finished-chip">✓ finished</span>}
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
@@ -133,6 +136,7 @@ export function Sidebar({
   onDeleteSession,
   onOpenConfig,
   showConfig,
+  finishedAt,
 }: {
   projects: Project[];
   sessions: SessionMeta[];
@@ -146,6 +150,7 @@ export function Sidebar({
   onDeleteSession: (path: string) => Promise<void> | void;
   onOpenConfig: () => void;
   showConfig: boolean;
+  finishedAt: Record<string, number>;
 }) {
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
@@ -247,6 +252,11 @@ export function Sidebar({
     }
     return { mainSessions: main, childrenMap: children, subagents: subs };
   }, [sessions, sessionQuery]);
+
+  const justFinishedFn = (path: string): boolean => {
+    const t = finishedAt[path];
+    return !!t && Date.now() - t < 60000;
+  };
 
   const parentTitle = (path: string | null): string | null => {
     if (!path) return null;
@@ -357,6 +367,7 @@ export function Sidebar({
                         onToggleSubs={() => toggleGroup(s.path)}
                         sleepingSubs={sleepingSubs}
                         interruptedSubs={interruptedSubs}
+                        justFinished={justFinishedFn(s.path)}
                         onContextMenu={(s, x, y) => {
                           setConfirmingDelete(false);
                           setCtxMenu({ x, y, s });
@@ -388,6 +399,7 @@ export function Sidebar({
                                   setConfirmingDelete(false);
                                   setCtxMenu({ x, y, s: sub });
                                 }}
+                                justFinished={justFinishedFn(sub.path)}
                               />
                             ))}
                         </div>
@@ -419,6 +431,7 @@ export function Sidebar({
                           setConfirmingDelete(false);
                           setCtxMenu({ x, y, s });
                         }}
+                        justFinished={justFinishedFn(s.path)}
                       />
                       <div className="subagent-parent">
                         {pt ? <>parent: {pt}</> : <span className="orphan">no parent</span>}

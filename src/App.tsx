@@ -36,6 +36,8 @@ export default function App() {
   const activePathRef = useRef<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastIdRef = useRef(0);
+  // path -> finish time (epoch ms) for the '✓ finished' sidebar chip
+  const [finishedAt, setFinishedAt] = useState<Record<string, number>>({});
   // running snapshot from the previous poll (null = not seeded yet)
   const prevRunningRef = useRef<
     Map<string, { title: string; isSubagent: boolean; projectKey: string }> | null
@@ -150,6 +152,9 @@ export default function App() {
                 status = await api.sessionStatus(path);
               } catch {
                 /* fall back to finished */
+              }
+              if (status === "finished") {
+                setFinishedAt((m) => ({ ...m, [path]: Date.now() }));
               }
               addToast(
                 path,
@@ -296,6 +301,7 @@ export default function App() {
         onSelectSession={selectSession}
         onOpenConfig={openConfig}
         showConfig={showConfig}
+        finishedAt={finishedAt}
         onOpenTerminal={(path) => {
           api.openInTerminal(path).catch((e) => setError(String(e)));
         }}
