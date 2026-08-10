@@ -78,10 +78,18 @@ body {
   border: 1px solid var(--border);
   color: var(--fg-dim);
   border-radius: 6px;
-  width: 26px;
-  height: 26px;
+  width: 27px;
+  height: 27px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 15px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.icon-btn svg {
+  display: block;
 }
 .icon-btn:hover { color: var(--fg); border-color: var(--cyan); }
 
