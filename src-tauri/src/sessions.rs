@@ -131,6 +131,7 @@ pub struct SessionMeta {
     pub parent_session_path: Option<String>, // linked parent session file (text/timing match)
     pub message_count: usize,
     pub running: bool,
+    pub sleeping: bool, // subagent killed/paused mid-work, resumable
     pub size: u64,
 }
 
@@ -517,34 +518,56 @@ fn build_subagent_index() -> SubIdx {
     (uuids, by_uuid, match_text_by_uuid)
 }
 
-/// A subagent task is running if its agent-logs file exists, has no terminal
-/// event (agent_end / agent_settled) as the last line, and was written recently.
-/// pi-subagent-durable appends every kept event to `agent-logs/task-<id>.jsonl`
-/// while the task runs; the final line is `agent_settled` when it finishes.
-fn task_running(task_id: &str) -> bool {
+/// Task lifecycle from the agent-logs file:
+/// - Running:  no terminal event (agent_end/agent_settled) + written recently
+/// - Sleeping: no terminal event + stale -> killed/paused mid-work, resumable
+/// - Finished: last line is a terminal event
+#[derive(PartialEq, Clone, Copy)]
+pub enum TaskStatus {
+    Running,
+    Sleeping,
+    Finished,
+    Unknown,
+}
+
+fn task_status(task_id: &str) -> TaskStatus {
     let p = pi_agent_dir()
         .join("agent-logs")
         .join(format!("task-{task_id}.jsonl"));
     let Ok(data) = fs::read(&p) else {
-        return false;
+        return TaskStatus::Unknown;
     };
     let text = String::from_utf8_lossy(&data);
     let last = text.lines().rev().find(|l| !l.trim().is_empty());
-    let Some(last) = last else { return false };
+    let Some(last) = last else { return TaskStatus::Unknown };
     if let Ok(v) = serde_json::from_str::<Value>(last) {
         match v.get("type").and_then(|x| x.as_str()) {
-            Some("agent_end") | Some("agent_settled") => return false,
+            Some("agent_end") | Some("agent_settled") => return TaskStatus::Finished,
             _ => {}
         }
     }
     // no terminal event yet: running if written within the last 3 minutes
-    let Ok(md) = fs::metadata(&p) else { return false };
-    let Ok(mt) = md.modified() else { return false };
+    let Ok(md) = fs::metadata(&p) else { return TaskStatus::Sleeping };
+    let Ok(mt) = md.modified() else { return TaskStatus::Sleeping };
     let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return false;
+        return TaskStatus::Sleeping;
     };
-    let Ok(mtime) = mt.duration_since(std::time::UNIX_EPOCH) else { return false };
-    now.saturating_sub(mtime).as_secs() < 180
+    let Ok(mtime) = mt.duration_since(std::time::UNIX_EPOCH) else {
+        return TaskStatus::Sleeping;
+    };
+    if now.saturating_sub(mtime).as_secs() < 180 {
+        TaskStatus::Running
+    } else {
+        TaskStatus::Sleeping
+    }
+}
+
+fn task_running(task_id: &str) -> bool {
+    task_status(task_id) == TaskStatus::Running
+}
+
+fn task_sleeping(task_id: &str) -> bool {
+    task_status(task_id) == TaskStatus::Sleeping
 }
 
 /// A lightweight snapshot of currently running sessions across ALL projects
@@ -557,6 +580,27 @@ pub struct RunningSession {
     pub is_subagent: bool,
     pub task_id: Option<String>,
     pub project_key: String,
+}
+
+/// Status of a session file for the frontend: "running" | "sleeping" |
+/// "finished" | "unknown". Used to classify a session that left the running set.
+#[tauri::command]
+pub fn session_status(path: String) -> String {
+    let id = session_id(&path).unwrap_or_default();
+    let (_, task_by_uuid, _) = subagent_index();
+    if let Some(tid) = task_by_uuid.get(&id) {
+        return match task_status(tid) {
+            TaskStatus::Running => "running".into(),
+            TaskStatus::Sleeping => "sleeping".into(),
+            TaskStatus::Finished => "finished".into(),
+            TaskStatus::Unknown => "unknown".into(),
+        };
+    }
+    if session_file_running(Path::new(&path)) {
+        "running".into()
+    } else {
+        "finished".into()
+    }
 }
 
 #[tauri::command]
@@ -631,8 +675,10 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid) {
                 if m.is_subagent {
                     if let Some(tid) = &m.task_id {
-                        if task_running(tid) {
-                            m.running = true;
+                        match task_status(tid) {
+                            TaskStatus::Running => m.running = true,
+                            TaskStatus::Sleeping => m.sleeping = true,
+                            _ => {}
                         }
                     }
                 } else if session_file_running(&path) {
@@ -727,6 +773,7 @@ fn parse_meta(
         parent_session_path: None,
         message_count: 0,
         running: running.contains(&spath),
+        sleeping: false,
         size,
     })
 }

@@ -13,6 +13,7 @@ export const api = {
   exportSession: (path: string) => invoke<string>("export_session_html", { sessionPath: path }),
   deleteSession: (path: string) => invoke<void>("delete_session", { path }),
   openInTerminal: (path: string) => invoke<void>("open_in_terminal", { sessionPath: path }),
+  sessionStatus: (path: string) => invoke<string>("session_status", { path }),
   listRunning: () => invoke<RunningSession[]>("list_running"),
   listConfig: () => invoke<ConfigView>("list_config"),
   sendMessage: (sessionPath: string, message: string, channel: Channel<PiEvent>) =>

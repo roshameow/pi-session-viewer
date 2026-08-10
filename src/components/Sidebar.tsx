@@ -85,6 +85,11 @@ function SessionItem({
         {s.model && <span className="session-model">{s.model}</span>}
         {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
         {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
+        {s.isSubagent && s.sleeping && (
+          <span className="sub-sleeping-chip" title="Killed/paused mid-work — resumable with full context">
+            💤 sleeping
+          </span>
+        )}
       </div>
     </button>
   );

@@ -26,6 +26,7 @@ export interface SessionMeta {
   parentSessionPath: string | null;
   messageCount: number;
   running: boolean;
+  sleeping: boolean;
   size: number;
 }
 

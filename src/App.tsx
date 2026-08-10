@@ -14,6 +14,7 @@ interface Toast {
   projectKey: string;
   title: string;
   isSubagent: boolean;
+  paused: boolean;
 }
 
 export default function App() {
@@ -40,9 +41,9 @@ export default function App() {
   >(null);
 
   const addToast = useCallback(
-    (path: string, projectKey: string, title: string, isSubagent: boolean) => {
+    (path: string, projectKey: string, title: string, isSubagent: boolean, paused = false) => {
       const id = ++toastIdRef.current;
-      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent }]);
+      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent, paused }]);
       setTimeout(() => {
         setToasts((ts) => ts.filter((t) => t.id !== id));
       }, 8000);
@@ -136,13 +137,26 @@ export default function App() {
             }
           }
         }
-        // notify when a previously-running session finished
+        // notify when a previously-running session finished / was paused
         const running = await api.listRunning();
         const prev = prevRunningRef.current;
         if (prev) {
           for (const [path, info] of prev) {
             if (!running.some((r) => r.path === path)) {
-              addToast(path, info.projectKey, info.title, info.isSubagent);
+              // classify: sleeping (paused) vs finished
+              let status = "finished";
+              try {
+                status = await api.sessionStatus(path);
+              } catch {
+                /* fall back to finished */
+              }
+              addToast(
+                path,
+                info.projectKey,
+                info.title,
+                info.isSubagent,
+                status === "sleeping"
+              );
             }
           }
         }
@@ -249,10 +263,18 @@ export default function App() {
       {/* finished-session toasts */}
       <div className="toast-stack">
         {toasts.map((t) => (
-          <button key={t.id} className="toast" onClick={() => openToastSession(t)}>
-            <span className="toast-icon">{t.isSubagent ? "🕸️" : "💬"}</span>
+          <button key={t.id} className={`toast ${t.paused ? "paused" : ""}`} onClick={() => openToastSession(t)}>
+            <span className="toast-icon">{t.paused ? "💤" : t.isSubagent ? "🕸️" : "💬"}</span>
             <span className="toast-body">
-              <span className="toast-title">{t.isSubagent ? "Subagent finished" : "Session finished"}</span>
+              <span className="toast-title">
+                {t.paused
+                  ? t.isSubagent
+                    ? "Subagent paused"
+                    : "Session paused"
+                  : t.isSubagent
+                    ? "Subagent finished"
+                    : "Session finished"}
+              </span>
               <span className="toast-text">{t.title}</span>
             </span>
             <span className="toast-close" onClick={(e) => { e.stopPropagation(); setToasts((ts) => ts.filter((x) => x.id !== t.id)); }}>×</span>

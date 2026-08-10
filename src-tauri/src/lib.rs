@@ -234,6 +234,7 @@ pub fn run() {
             open_in_terminal,
             delete_session,
             sessions::list_running,
+            sessions::session_status,
             config::list_config,
             agent::send_message,
             agent::abort_message,
