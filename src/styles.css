@@ -275,7 +275,7 @@ body {
   margin-bottom: 6px;
 }
 .msg-text {
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
   line-height: 1.6;
   padding: 2px 0;
@@ -300,7 +300,7 @@ body {
 }
 
 /* ---------- markdown ---------- */
-.md { line-height: 1.5; font-size: 12.5px; word-break: break-word; }
+.md { line-height: 1.5; font-size: 12.5px; word-break: break-word; white-space: normal; }
 .md > *:first-child { margin-top: 0; }
 .md > *:last-child { margin-bottom: 0; }
 .md p { margin: 4px 0; }
