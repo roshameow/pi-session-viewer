@@ -82,6 +82,16 @@ function SessionItem({
           </span>
         )}
         <span className="session-title">{title}</span>
+        {s.running && s.inRmux && (
+          <span className="runtime-chip rmux" title={`rmux: ${s.rmuxTarget ?? ""} — closable tab`}>
+            rmux
+          </span>
+        )}
+        {s.running && !s.inRmux && (
+          <span className="runtime-chip term" title="running in a terminal window">
+            term
+          </span>
+        )}
         {!s.isSubagent && (runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
           <span className="subs-summary" title="subagents: running / sleeping / interrupted">
             {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}

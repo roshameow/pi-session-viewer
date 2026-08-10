@@ -1709,3 +1709,13 @@ mod tests {
 
 }
 
+#[test]
+fn dbg_rt() {
+    for p in list_projects() {
+        for s in list_sessions(&p.key) {
+            if s.running {
+                println!("RUNNING: {} rmux={} target={:?} last={}", s.path.split('/').last().unwrap_or(""), s.in_rmux, s.rmux_target, s.last_message.clone().map(|m| m.chars().take(20).collect::<String>()).unwrap_or_default());
+            }
+        }
+    }
+}
