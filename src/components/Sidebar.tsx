@@ -96,7 +96,7 @@ function SessionItem({
                 ? s.rmuxDead
                   ? `rmux · exited (pi was killed here; window kept) — Attach/Open TUI to restart · id: ${s.id}`
                   : s.rmuxAttached
-                    ? `rmux · attached (${s.rmuxTarget ?? ""}) — detach: close the tab or Ctrl+Space d · id: ${s.id}`
+                    ? `rmux · attached (${s.rmuxTarget ?? ""}) — detach: Ctrl+G or close the tab · id: ${s.id}`
                     : `rmux · detached (${s.rmuxTarget ?? ""}) — running in background, attach to view · id: ${s.id}`
                 : `terminal window · attached (closing the tab kills pi) · id: ${s.id}`
             }
