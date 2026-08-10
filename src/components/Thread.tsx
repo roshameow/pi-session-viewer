@@ -455,7 +455,7 @@ export function Thread({
                 <button
                   className="export-btn"
                   onClick={doAttach}
-                  title="Attach to this session's rmux session (Ctrl+Space D to detach)"
+                  title="Attach to this session's rmux session (detach: Ctrl+G)"
                 >
                   ⇄ Attach
                 </button>

@@ -412,6 +412,12 @@ fn attach_session(session_path: String) -> Result<String, String> {
         // subagents live in pi-agents; attach directly (may not exist)
         "pi-agents".to_string()
     } else {
+        // main sessions: refuse to spawn a duplicate pi when the session is
+        // already alive in a terminal window (two pis appending the same
+        // jsonl corrupts it). rmux-active sessions fall through to reuse.
+        if sessions::session_has_live_terminal_pi(&session_path) {
+            return Ok("already running in a terminal window — no duplicate created".to_string());
+        }
         // main sessions: ensure the rmux window (create if not running), then attach
         let cmd = format!(
             "cd {} && {} --session {}",

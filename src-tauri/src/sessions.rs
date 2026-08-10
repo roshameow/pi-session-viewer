@@ -930,6 +930,51 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
     out
 }
 
+/// True when a pi process is currently running this session in a terminal
+/// window — actively writing (fresh mtime) or alive-but-idle. Mirrors the
+/// term_alive rule in list_sessions: the session must be among the N freshest
+/// non-rmux main sessions of its project, where N = live terminal pis there.
+/// Used by attach to avoid spawning a duplicate pi for an already-running
+/// session (two pis appending the same jsonl corrupts it).
+pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
+    let path = Path::new(session_path);
+    if session_file_running(path) {
+        return true;
+    }
+    let cwd = session_detail(session_path)
+        .map(|d| d.cwd)
+        .unwrap_or_default();
+    let term_n = alive_terminal_pis()
+        .iter()
+        .filter(|(_, c)| *c == cwd)
+        .count();
+    if term_n == 0 {
+        return false;
+    }
+    let Some(dir) = path.parent() else {
+        return false;
+    };
+    let rmux_map = rmux_runtime_map();
+    let mut mains: Vec<(i64, String)> = Vec::new();
+    if let Ok(fd) = fs::read_dir(dir) {
+        for f in fd.flatten() {
+            let p = f.path();
+            let name = f.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".jsonl") || name.contains("subagent-task-") {
+                continue;
+            }
+            let spath = p.to_string_lossy().into_owned();
+            if rmux_map.get(&spath).map(|r| !r.dead).unwrap_or(false) {
+                continue;
+            }
+            let mt = fmetadata(&p).map(|m| m.mtime).unwrap_or(0);
+            mains.push((mt, spath));
+        }
+    }
+    mains.sort_by(|a, b| b.0.cmp(&a.0));
+    mains.iter().take(term_n).any(|(_, p)| p == session_path)
+}
+
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
