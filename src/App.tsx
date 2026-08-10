@@ -43,6 +43,16 @@ export default function App() {
     }
   }, []);
 
+  // silent variant for the polling loop (no loading flicker)
+  const refreshSessionsSilent = useCallback(async (projectKey: string) => {
+    try {
+      const ss = await api.listSessions(projectKey);
+      setSessions(ss);
+    } catch {
+      // ignore transient errors during polling
+    }
+  }, []);
+
   const loadDetail = useCallback(async (s: SessionMeta) => {
     activePathRef.current = s.path;
     setRunning(s.running);
@@ -69,6 +79,31 @@ export default function App() {
   useEffect(() => {
     if (selectedProject) refreshSessions(selectedProject);
   }, [selectedProject, refreshSessions]);
+
+  // auto-refresh: keep running badges / subagent states live
+  useEffect(() => {
+    const t = setInterval(async () => {
+      try {
+        const ps = await api.listProjects();
+        setProjects(ps);
+        if (selectedProject) {
+          const ss = await api.listSessions(selectedProject);
+          setSessions(ss);
+          // live-update the detail view when the selected session is running
+          if (detail) {
+            const cur = ss.find((s) => s.path === detail.path);
+            if (cur?.running) {
+              const d = await api.sessionDetail(detail.path);
+              setDetail(d);
+            }
+          }
+        }
+      } catch {
+        // ignore transient polling errors
+      }
+    }, 10000);
+    return () => clearInterval(t);
+  }, [selectedProject, detail?.path]);
 
   // auto-open the most recent session on first load (like `pi -c`)
   const autoOpened = useRef(false);

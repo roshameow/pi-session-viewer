@@ -337,7 +337,60 @@ fn first_line(p: &Path) -> Option<String> {
 // and a task log — all sharing the same session uuid.
 // ---------------------------------------------------------------------------
 
-fn subagent_index() -> (HashSet<String>, HashMap<String, String>, HashMap<String, String>) {
+// ---------------------------------------------------------------------------
+// Cached indexes (rebuilt only when files change, so the 10s UI poll is cheap)
+// ---------------------------------------------------------------------------
+
+fn newest_mtime_secs(dir: &Path) -> u64 {
+    let mut newest = 0u64;
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if let Ok(sub) = fs::read_dir(&p) {
+                    for f in sub.flatten() {
+                        if let Ok(md) = f.metadata() {
+                            if let Ok(mt) = md.modified() {
+                                if let Ok(d) = mt.duration_since(std::time::UNIX_EPOCH) {
+                                    newest = newest.max(d.as_secs());
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if let Ok(md) = e.metadata() {
+                if let Ok(mt) = md.modified() {
+                    if let Ok(d) = mt.duration_since(std::time::UNIX_EPOCH) {
+                        newest = newest.max(d.as_secs());
+                    }
+                }
+            }
+        }
+    }
+    newest
+}
+
+type SubIdx = (
+    HashSet<String>,
+    HashMap<String, String>,
+    HashMap<String, String>,
+);
+static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
+
+fn subagent_index() -> SubIdx {
+    let mut cache = SUB_IDX.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    let key = newest_mtime_secs(&sessions_dir()) ^ newest_mtime_secs(&pi_agent_dir().join("agent-logs"));
+    if let Some((k, idx)) = cache.as_ref() {
+        if *k == key {
+            return idx.clone();
+        }
+    }
+    let idx = build_subagent_index();
+    *cache = Some((key, idx.clone()));
+    idx
+}
+
+fn build_subagent_index() -> SubIdx {
     // uuid -> taskId
     let mut by_uuid: HashMap<String, String> = HashMap::new();
     // uuid -> first user message (from mirror files; matches the parent's
@@ -589,11 +642,28 @@ struct ParentCall {
     task: String, // normalized
 }
 
+impl Clone for ParentCall {
+    fn clone(&self) -> Self {
+        ParentCall {
+            path: self.path.clone(),
+            task: self.task.clone(),
+        }
+    }
+}
+
 fn normalize_text(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
+    static CACHE: OnceLock<Mutex<Option<(String, u64, Vec<ParentCall>)>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    let key = newest_mtime_secs(&sessions_dir().join(project_key));
+    if let Some((pk, k, calls)) = cache.as_ref() {
+        if pk == project_key && *k == key {
+            return calls.clone();
+        }
+    }
     let mut out = Vec::new();
     let root = sessions_dir();
     let dir = root.join(project_key);
@@ -635,6 +705,8 @@ fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
             }
         }
     }
+    let cached = out.clone();
+    *cache = Some((project_key.to_string(), key, cached));
     out
 }
 

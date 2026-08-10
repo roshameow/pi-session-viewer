@@ -22,12 +22,18 @@ function SessionItem({
   selected,
   onSelect,
   runningSubs = 0,
+  hasSubs = false,
+  subsCollapsed = false,
+  onToggleSubs,
 }: {
   s: SessionMeta;
   depth: number;
   selected: boolean;
   onSelect: (s: SessionMeta) => void;
   runningSubs?: number;
+  hasSubs?: boolean;
+  subsCollapsed?: boolean;
+  onToggleSubs?: () => void;
 }) {
   const title = s.name || s.firstMessage || "(空会话)";
   return (
@@ -38,6 +44,18 @@ function SessionItem({
       title={`${s.cwd}\n${s.path}`}
     >
       <div className="session-item-line1">
+        {!s.isSubagent && hasSubs && (
+          <span
+            className={`group-toggle ${subsCollapsed ? "collapsed" : ""}`}
+            title={subsCollapsed ? "展开子代理" : "折叠子代理"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSubs?.();
+            }}
+          >
+            {subsCollapsed ? "▸" : "▾"}
+          </span>
+        )}
         {s.running && <span className="pulse-dot" />}
         <span className="session-icon">{s.isSubagent ? "🕸️" : "💬"}</span>
         <span className="session-title">{title}</span>
@@ -80,6 +98,16 @@ export function Sidebar({
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  const toggleGroup = (path: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
 
   const { mainSessions, childrenMap, subagents } = useMemo(() => {
     const main: SessionMeta[] = [];
@@ -166,6 +194,7 @@ export function Sidebar({
                 mainSessions.map((s) => {
                   const subs = childrenMap.get(s.path) ?? [];
                   const runningSubs = subs.filter((x) => x.running).length;
+                  const groupCollapsed = collapsedGroups.has(s.path);
                   return (
                     <React.Fragment key={s.path}>
                       <SessionItem
@@ -174,25 +203,34 @@ export function Sidebar({
                         selected={selectedSession?.path === s.path}
                         onSelect={onSelectSession}
                         runningSubs={runningSubs}
+                        hasSubs={subs.length > 0}
+                        subsCollapsed={groupCollapsed}
+                        onToggleSubs={() => toggleGroup(s.path)}
                       />
                       {subs.length > 0 && (
-                        <div className="subagent-group">
-                          <div className="subagent-group-head">
+                        <div className={`subagent-group ${groupCollapsed ? "collapsed" : ""}`}>
+                          <div
+                            className="subagent-group-head"
+                            onClick={() => toggleGroup(s.path)}
+                            title={groupCollapsed ? "展开" : "折叠"}
+                          >
+                            <span className="section-arrow">{groupCollapsed ? "▸" : "▾"}</span>
                             <span>🕸️ 子代理</span>
                             <span className="subagent-count">{subs.length}</span>
                             {subs.some((x) => x.running) && (
                               <span className="subagent-running">● 运行中</span>
                             )}
                           </div>
-                          {subs.map((sub) => (
-                            <SessionItem
-                              key={sub.path}
-                              s={sub}
-                              depth={0}
-                              selected={selectedSession?.path === sub.path}
-                              onSelect={onSelectSession}
-                            />
-                          ))}
+                          {!groupCollapsed &&
+                            subs.map((sub) => (
+                              <SessionItem
+                                key={sub.path}
+                                s={sub}
+                                depth={0}
+                                selected={selectedSession?.path === sub.path}
+                                onSelect={onSelectSession}
+                              />
+                            ))}
                         </div>
                       )}
                     </React.Fragment>
