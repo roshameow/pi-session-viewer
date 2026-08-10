@@ -1032,3 +1032,14 @@ body {
   flex-shrink: 0;
   white-space: nowrap;
 }
+.toast-clear-all {
+  align-self: flex-end;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.toast-clear-all:hover { color: var(--cyan); border-color: var(--cyan); }

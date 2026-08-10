@@ -46,10 +46,8 @@ export default function App() {
   const addToast = useCallback(
     (path: string, projectKey: string, title: string, isSubagent: boolean, paused = false, interrupted = false) => {
       const id = ++toastIdRef.current;
-      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent, paused, interrupted }]);
-      setTimeout(() => {
-        setToasts((ts) => ts.filter((t) => t.id !== id));
-      }, 10000);
+      // persistent until dismissed/clicked; cap the stack at 8 (drop oldest)
+      setToasts((ts) => [...ts, { id, path, projectKey, title, isSubagent, paused, interrupted }].slice(-8));
     },
     []
   );
@@ -60,6 +58,11 @@ export default function App() {
       setSelectedProject(t.projectKey);
       refreshSessions(t.projectKey);
     }
+    setFinishedAt((m) => {
+      const n = { ...m };
+      delete n[t.path];
+      return n;
+    });
     loadDetail({ path: t.path } as SessionMeta);
   };
 
@@ -197,6 +200,11 @@ export default function App() {
 
   const selectSession = (s: SessionMeta) => {
     setShowConfig(false);
+    setFinishedAt((m) => {
+      const n = { ...m };
+      delete n[s.path];
+      return n;
+    });
     loadDetail(s);
   };
 
@@ -269,6 +277,11 @@ export default function App() {
     <div className="app">
       {/* finished-session toasts */}
       <div className="toast-stack">
+        {toasts.length > 1 && (
+          <button className="toast-clear-all" onClick={() => setToasts([])}>
+            clear all
+          </button>
+        )}
         {toasts.map((t) => (
           <button key={t.id} className={`toast ${t.paused ? "paused" : ""} ${t.interrupted ? "interrupted" : ""}`} onClick={() => openToastSession(t)}>
             <span className="toast-body">

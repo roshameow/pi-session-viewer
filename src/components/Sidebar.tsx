@@ -254,8 +254,8 @@ export function Sidebar({
   }, [sessions, sessionQuery]);
 
   const justFinishedFn = (path: string): boolean => {
-    const t = finishedAt[path];
-    return !!t && Date.now() - t < 60000;
+    // persists until the session is opened or the app restarts
+    return !!finishedAt[path];
   };
 
   const parentTitle = (path: string | null): string | null => {
