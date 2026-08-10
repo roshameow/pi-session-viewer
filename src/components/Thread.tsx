@@ -282,6 +282,15 @@ export function Thread({
     }
   };
 
+  const doAttach = async () => {
+    try {
+      await api.attachSession(detail.path);
+    } catch (e) {
+      setExportMsg("✗ Failed to attach: " + String(e));
+      setTimeout(() => setExportMsg(null), 6000);
+    }
+  };
+
   const [copied, setCopied] = useState(false);
   const copySessionId = async () => {
     const text = detail.id;
@@ -443,8 +452,15 @@ export function Thread({
               <div className="session-head-actions">
                 <button
                   className="export-btn"
+                  onClick={doAttach}
+                  title="Attach to this session's rmux session (Ctrl+Space D to detach)"
+                >
+                  ⇄ Attach
+                </button>
+                <button
+                  className="export-btn"
                   onClick={doOpenTerminal}
-                  title="Open this session in pi TUI in a terminal window"
+                  title="Open this session in pi TUI (rmux-backed, closable tab)"
                 >
                   ⛭ Open TUI
                 </button>

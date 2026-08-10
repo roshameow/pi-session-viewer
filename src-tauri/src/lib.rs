@@ -146,69 +146,147 @@ fn delete_session(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the session in a new terminal window running `pi --session <file>`.
-/// macOS: AppleScript -> Terminal (or iTerm2 if installed).
+/// Shell name for a project's pi rmux session: pi-<basename>.
+fn rmux_session_name(cwd: &str) -> String {
+    let base = cwd
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("default");
+    let clean: String = base
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    format!("pi-{}", if clean.is_empty() { "default" } else { &clean })
+}
+
+fn rmux_available() -> bool {
+    std::process::Command::new("rmux")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run a Terminal (or iTerm) window executing `cmd` via AppleScript (new window).
+fn open_terminal_window(cmd: &str) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = std::process::Command::new("sh").args(["-c", cmd]).spawn()
+            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let app = if std::path::Path::new("/Applications/iTerm.app/Contents/MacOS/iTerm2").is_file() {
+            "iTerm"
+        } else {
+            "Terminal"
+        };
+    let script = format!(
+        r#"tell application "{app}" to do script "{cmd}""#,
+        app = app,
+        cmd = apple_escape(cmd)
+    );
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to open terminal: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "osascript failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+        Ok(())
+    }
+}
+
+/// Open the session in a terminal. With rmux installed, the pi process runs in
+/// a persistent rmux session (`pi-<project>`), so the tab can be closed anytime
+/// and the agent keeps running; reattach via `pim` or the Attach button.
+/// Without rmux, falls back to a plain `pi --session` window.
 #[tauri::command]
 fn open_in_terminal(session_path: String) -> Result<(), String> {
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
+    let id = sessions::session_id(&session_path).unwrap_or_default();
+    let short: String = id.chars().take(8).collect();
     let cmd = format!(
         "cd {} && {} --session {}",
         shell_quote(&cwd),
         shell_quote(&bin),
         shell_quote(&session_path)
     );
-    #[cfg(target_os = "macos")]
-    {
-        // NOTE: opening a NEW TAB in the current terminal window proved
-        // unreliable — Terminal's `do script ... in front window` and the
-        // Cmd+T keystroke both type into a raw-mode (pi TUI) tab instead of
-        // creating/focusing a new tab. A fresh window is the only reliable
-        // automation, so we use plain `do script` (new window).
-        let app = if std::path::Path::new(
-            "/Applications/iTerm.app/Contents/MacOS/iTerm2",
-        )
-        .is_file()
-        {
-            "iTerm"
-        } else {
-            "Terminal"
-        };
-        let script = format!(
-            r#"tell application "{app}" to do script "{cmd}""#,
-            app = app,
-            cmd = apple_escape(&cmd)
-        );
-        let out = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
+    if rmux_available() && !cwd.is_empty() {
+        let sess = rmux_session_name(&cwd);
+        let win = format!("s{short}");
+        // create the window (session first if needed), then attach in a terminal
+        let created = std::process::Command::new("rmux")
+            .args(["has-session", "-t", &sess])
             .output()
-            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let args: Vec<String> = if created {
+            vec![
+                "new-window".into(),
+                "-d".into(),
+                "-t".into(),
+                sess.clone(),
+                "-n".into(),
+                win,
+                cmd.clone(),
+            ]
+        } else {
+            vec![
+                "new-session".into(),
+                "-d".into(),
+                "-s".into(),
+                sess.clone(),
+                "-n".into(),
+                win,
+                cmd.clone(),
+            ]
+        };
+        let out = std::process::Command::new("rmux")
+            .args(&args)
+            .output()
+            .map_err(|e| format!("Failed to start rmux session: {e}"))?;
         if !out.status.success() {
             return Err(format!(
-                "osascript failed: {}",
+                "rmux failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+        return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("x-terminal-emulator")
-            .args(["-e", "sh", "-c", &cmd])
-            .spawn()
-            .map_err(|e| format!("Failed to open terminal: {e}"))?;
+    open_terminal_window(&cmd)
+}
+
+/// Attach to the rmux session a session belongs to (pi-agents for subagents,
+/// pi-<project> for main sessions).
+#[tauri::command]
+fn attach_session(session_path: String) -> Result<(), String> {
+    if !rmux_available() {
+        return Err("rmux is not installed".into());
     }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "cmd", "/k"])
-            .arg(&cmd)
-            .spawn()
-            .map_err(|e| format!("Failed to open terminal: {e}"))?;
-    }
-    Ok(())
+    let cwd = sessions::session_detail(&session_path)
+        .map(|d| d.cwd)
+        .unwrap_or_default();
+    let is_sub = sessions::session_id(&session_path)
+        .map(|id| sessions::is_subagent_uuid(&id))
+        .unwrap_or(false);
+    let sess = if is_sub {
+        "pi-agents".to_string()
+    } else if !cwd.is_empty() {
+        rmux_session_name(&cwd)
+    } else {
+        "pi-agents".to_string()
+    };
+    open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))
 }
 
 /// shell single-quote a string (paths with spaces/special chars)
@@ -240,6 +318,7 @@ pub fn run() {
             file_exists,
             export_session_html,
             open_in_terminal,
+            attach_session,
             delete_session,
             sessions::list_running,
             sessions::session_status,

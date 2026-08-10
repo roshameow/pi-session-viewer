@@ -407,6 +407,12 @@ fn model_context_window(model_id: &str) -> Option<u64> {
     }
 }
 
+/// Is this session uuid one of the subagent uuids (from mirrors / agent-logs)?
+pub fn is_subagent_uuid(id: &str) -> bool {
+    let (uuids, _, _) = subagent_index();
+    uuids.contains(id)
+}
+
 /// Read the session uuid from a session file's header (first line only).
 pub fn session_id(path: &str) -> Option<String> {
     first_line(Path::new(path)).and_then(|l| {
