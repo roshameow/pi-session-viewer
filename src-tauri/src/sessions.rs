@@ -2205,17 +2205,3 @@ mod tests {
     }
 
 }
-
-#[cfg(test)]
-mod map_check {
-    use super::*;
-    #[test]
-    fn check() {
-        let map = rmux_runtime_map();
-        for (k, v) in map.iter() {
-            if k.contains("019fec06") || k.contains("019fe979") {
-                println!("MAP {} -> target={} dead={} attached={}", k.split('/').last().unwrap_or(""), v.target, v.dead, v.attached);
-            }
-        }
-    }
-}
