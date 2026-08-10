@@ -7,6 +7,8 @@ export interface Project {
   subagentCount: number;
   updatedAt: number;
   runningCount: number;
+  rmuxCount: number;
+  termCount: number;
 }
 
 export interface SessionMeta {

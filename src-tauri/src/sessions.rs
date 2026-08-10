@@ -110,6 +110,8 @@ pub struct Project {
     pub subagent_count: usize,
     pub updated_at: i64,      // latest file mtime (secs)
     pub running_count: usize, // running main sessions + running subagents
+    pub rmux_count: usize,    // alive sessions in rmux windows (attached or detached)
+    pub term_count: usize,    // main sessions actively running in a terminal window
 }
 
 #[derive(Serialize, Clone)]
@@ -264,6 +266,7 @@ pub fn list_projects() -> Vec<Project> {
     let mut out = Vec::new();
     let (_, task_by_uuid, _) = subagent_index();
     let alive = alive_task_ids();
+    let rmux_map = rmux_runtime_map();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let path = e.path();
@@ -278,6 +281,8 @@ pub fn list_projects() -> Vec<Project> {
             let mut sub_count = 0usize;
             let mut updated = 0i64;
             let mut running_count = 0usize;
+            let mut rmux_count = 0usize;
+            let mut term_count = 0usize;
             let mut seen_uuids: HashSet<String> = HashSet::new();
             let mut best_cwd: Option<(i64, String)> = None;
             let cwd = decode_dir_name(&name);
@@ -301,13 +306,28 @@ pub fn list_projects() -> Vec<Project> {
                     if let Some(h) = &header {
                         if let Some(u) = h.get("id").and_then(|x| x.as_str()) {
                             if seen_uuids.insert(u.to_string()) {
-                                let is_running = if let Some(tid) = task_by_uuid.get(u) {
-                                    alive.contains(tid)
+                                if let Some(tid) = task_by_uuid.get(u) {
+                                    // subagent: running tasks live in pi-agents (rmux)
+                                    let is_running = alive.contains(tid);
+                                    if is_running {
+                                        running_count += 1;
+                                        rmux_count += 1;
+                                    }
                                 } else {
-                                    session_file_running(&f.path())
-                                };
-                                if is_running {
-                                    running_count += 1;
+                                    // main session
+                                    let is_running = session_file_running(&f.path());
+                                    if is_running {
+                                        running_count += 1;
+                                    }
+                                    let spath = f.path().to_string_lossy().into_owned();
+                                    match rmux_map.get(&spath) {
+                                        Some(rt) if !rt.dead => rmux_count += 1,
+                                        _ => {
+                                            if is_running {
+                                                term_count += 1;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -348,6 +368,8 @@ pub fn list_projects() -> Vec<Project> {
                 subagent_count: sub_count,
                 updated_at: updated,
                 running_count,
+                rmux_count,
+                term_count,
             });
         }
     }

@@ -350,6 +350,23 @@ body {
   color: #00d7ff;
   background: rgba(0, 215, 255, 0.1);
 }
+.mini-chip {
+  font-size: 8.5px;
+  font-family: var(--mono);
+  padding: 0 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  line-height: 13px;
+  margin-left: 4px;
+}
+.mini-chip.rmux {
+  color: #00d7ff;
+  background: rgba(0, 215, 255, 0.1);
+}
+.mini-chip.term {
+  color: #ff9e64;
+  background: rgba(255, 158, 100, 0.12);
+}
 .runtime-chip.term {
   color: #ff9e64;
   background: rgba(255, 158, 100, 0.12);

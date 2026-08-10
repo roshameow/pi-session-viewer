@@ -325,6 +325,16 @@ export function Sidebar({
                     ● {p.runningCount}
                   </span>
                 )}
+                {p.rmuxCount > 0 && (
+                  <span className="mini-chip rmux" title={`${p.rmuxCount} session(s) open in rmux`}>
+                    rmux {p.rmuxCount}
+                  </span>
+                )}
+                {p.termCount > 0 && (
+                  <span className="mini-chip term" title={`${p.termCount} session(s) open in terminal`}>
+                    term {p.termCount}
+                  </span>
+                )}
               </button>
             ))}
             {projects.length === 0 && <div className="empty">No pi sessions found</div>}
@@ -353,6 +363,16 @@ export function Sidebar({
                 <span className="section-arrow">{collapsedMain ? "▸" : "▾"}</span>
                 <span>Main sessions</span>
                 <span className="section-count">{mainSessions.length}</span>
+                {mainSessions.filter((x) => x.inRmux && !x.rmuxDead).length > 0 && (
+                  <span className="mini-chip rmux">
+                    rmux {mainSessions.filter((x) => x.inRmux && !x.rmuxDead).length}
+                  </span>
+                )}
+                {mainSessions.filter((x) => x.running && !x.inRmux).length > 0 && (
+                  <span className="mini-chip term">
+                    term {mainSessions.filter((x) => x.running && !x.inRmux).length}
+                  </span>
+                )}
               </div>
               {!collapsedMain &&
                 mainSessions.map((s) => {
