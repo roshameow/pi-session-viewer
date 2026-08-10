@@ -1023,10 +1023,10 @@ body {
 }
 .finished-chip {
   font-size: 9.5px;
-  font-weight: 700;
-  color: var(--fg-dim);
-  border: 1px solid var(--border);
-  background: var(--bg3);
+  font-weight: 800;
+  color: var(--cyan);
+  border: 1px solid rgba(0, 215, 255, 0.6);
+  background: rgba(0, 215, 255, 0.12);
   border-radius: 8px;
   padding: 0 6px;
   flex-shrink: 0;

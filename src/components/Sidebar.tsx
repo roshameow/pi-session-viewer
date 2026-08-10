@@ -82,7 +82,6 @@ function SessionItem({
         )}
         {s.running && <span className="pulse-dot" />}
         <span className="session-title">{title}</span>
-        {s.isSubagent && <span className="sub-chip">SUB</span>}
         {!s.isSubagent && runningSubs > 0 && (
           <span className="subs-running-badge" title={`${runningSubs} subagent(s) running`}>
             {runningSubs} running
@@ -98,7 +97,6 @@ function SessionItem({
             {interruptedSubs} interrupted
           </span>
         )}
-        {justFinished && <span className="finished-chip">✓ finished</span>}
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
@@ -155,7 +153,7 @@ export function Sidebar({
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [sessionQuery, setSessionQuery] = useState("");
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; s: SessionMeta } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -217,7 +215,7 @@ export function Sidebar({
   };
 
   const toggleGroup = (path: string) => {
-    setCollapsedGroups((prev) => {
+    setExpandedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
@@ -353,7 +351,7 @@ export function Sidebar({
                   const runningSubs = subs.filter((x) => x.running).length;
                   const sleepingSubs = subs.filter((x) => x.sleeping).length;
                   const interruptedSubs = subs.filter((x) => x.interrupted).length;
-                  const groupCollapsed = collapsedGroups.has(s.path);
+                  const groupCollapsed = !expandedGroups.has(s.path);
                   return (
                     <React.Fragment key={s.path}>
                       <SessionItem
