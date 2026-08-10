@@ -75,24 +75,24 @@ function SessionItem({
       }\n(right-click for options)`}
     >
       <div className="session-item-line1">
-        {!s.isSubagent && hasSubs && (
-          <span
-            className={`group-toggle ${subsCollapsed ? "collapsed" : ""}`}
-            title={subsCollapsed ? "Expand subagents" : "Collapse subagents"}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleSubs?.();
-            }}
-          >
-            {subsCollapsed ? "▸" : "▾"}
-          </span>
-        )}
         <span className="session-title">{title}</span>
         {!s.isSubagent && (runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
           <span className="subs-summary" title="subagents: running / sleeping / interrupted">
             {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}
             {sleepingSubs > 0 && <span className="sum sleep">◐{sleepingSubs}</span>}
             {interruptedSubs > 0 && <span className="sum intr">✕{interruptedSubs}</span>}
+          </span>
+        )}
+        {s.running && (
+          <span
+            className={`runtime-chip ${s.inRmux ? "rmux" : "term"}`}
+            title={
+              s.inRmux
+                ? `in rmux: ${s.rmuxTarget ?? ""} (closable tab)`
+                : "in terminal window"
+            }
+          >
+            {s.inRmux ? "rmux" : "term"}
           </span>
         )}
       </div>

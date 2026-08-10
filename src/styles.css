@@ -38,6 +38,7 @@ body {
   min-width: 0;
   position: relative;
 }
+
 .sidebar-resizer {
   position: absolute;
   right: -3px;
@@ -62,7 +63,6 @@ body {
 .sidebar-resizer.dragging::after {
   background: var(--cyan);
 }
-
 .sidebar-top {
   display: flex;
   align-items: center;
@@ -337,6 +337,23 @@ body {
   overflow: hidden;
 }
 .session-icon { font-size: 11px; }
+.runtime-chip {
+  font-size: 9px;
+  font-family: var(--mono);
+  padding: 0 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  line-height: 15px;
+  letter-spacing: 0.2px;
+}
+.runtime-chip.rmux {
+  color: #00d7ff;
+  background: rgba(0, 215, 255, 0.1);
+}
+.runtime-chip.term {
+  color: var(--fg-dim);
+  background: var(--bg3);
+}
 .session-title {
   flex: 1;
   min-width: 0; /* let long titles shrink so trailing chips stay visible */
