@@ -280,7 +280,7 @@ export function Sidebar({
                     ● {p.runningCount}
                   </span>
                 )}
-                {p.subagentCount > 0 && <span className="project-sub">🕸️{p.subagentCount}</span>}
+                {p.subagentCount > 0 && <span className="project-sub">sub {p.subagentCount}</span>}
               </button>
             ))}
             {projects.length === 0 && <div className="empty">No pi sessions found</div>}
@@ -417,8 +417,8 @@ export function Sidebar({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="ctx-title" title={ctxMenu.s.path}>
-            {ctxMenu.s.isSubagent ? "🕸️ " : "💬 "}
-            {(ctxMenu.s.name || ctxMenu.s.firstMessage || "(empty)").slice(0, 42)}
+            {(ctxMenu.s.isSubagent ? "[sub] " : "") +
+              (ctxMenu.s.name || ctxMenu.s.firstMessage || "(empty)").slice(0, 42)}
           </div>
           <button
             className="ctx-item"

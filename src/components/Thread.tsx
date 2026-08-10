@@ -454,7 +454,7 @@ export function Thread({
                   disabled={exporting}
                   title="Export this session to HTML (pi --export) and open it"
                 >
-                  {exporting ? "Exporting…" : "Export HTML"}
+                  {exporting ? "Exporting…" : "⬇ Export HTML"}
                 </button>
               </div>
             </div>
@@ -587,7 +587,7 @@ function EntryView({
     case "thinking_level_change":
       return (
         <div className="meta-line">
-          🧠 Thinking → <b>{entry.name}</b>
+          Thinking → <b>{entry.name}</b>
           <TimeStamp ts={entry.ts} />
         </div>
       );
