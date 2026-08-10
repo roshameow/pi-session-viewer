@@ -282,6 +282,24 @@ export function Thread({
     }
   };
 
+  const [copied, setCopied] = useState(false);
+  const copySessionId = async () => {
+    const text = detail.id;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // fallback for non-secure contexts
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   // Ctrl+O cycles filter modes; Ctrl+F focuses the search box (like pi /tree)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -389,6 +407,13 @@ export function Thread({
                 <div className="session-head-meta">
                   {detail.stats.messageCount} messages · {fmtTokens(detail.stats.tokenCount)} · $
                   {detail.stats.costTotal.toFixed(4)} · {detail.cwd}
+                </div>
+                <div className="session-head-id" title="Click to copy session id">
+                  <span className="session-id-label">id:</span>
+                  <span className="session-id-value">{detail.id}</span>
+                  <button className="session-id-copy" onClick={copySessionId}>
+                    {copied ? "✓ copied" : "⧉ copy"}
+                  </button>
                 </div>
               </div>
               <div className="session-head-actions">

@@ -395,6 +395,32 @@ body {
 }
 .session-head-title { font-size: 15px; font-weight: 700; }
 .session-head-meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+.session-head-id {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+}
+.session-id-label { color: var(--fg-dim); }
+.session-id-value {
+  font-family: var(--mono);
+  color: var(--cyan);
+  cursor: text;
+  user-select: text;
+  word-break: break-all;
+}
+.session-id-copy {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  border-radius: 5px;
+  padding: 1px 8px;
+  font-size: 10.5px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.session-id-copy:hover { color: var(--cyan); border-color: var(--cyan); }
 
 /* search */
 .thread-search-row {
