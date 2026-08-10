@@ -1092,3 +1092,22 @@ body {
   background: rgba(0, 215, 255, 0.12);
   border: 1px solid rgba(0, 215, 255, 0.6);
 }
+.runtime-chip {
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.runtime-chip.rmux {
+  color: var(--cyan);
+  border: 1px solid rgba(0, 215, 255, 0.45);
+  background: rgba(0, 215, 255, 0.08);
+}
+.runtime-chip.term {
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  background: var(--bg3);
+}

@@ -133,6 +133,8 @@ pub struct SessionMeta {
     pub running: bool,
     pub sleeping: bool,   // process alive, waiting on a bash sleep
     pub interrupted: bool, // process dead + no terminal event, resumable
+    pub in_rmux: bool,
+    pub rmux_target: Option<String>, // e.g. "pi-Users-...:s019fe979"
     pub size: u64,
 }
 
@@ -807,12 +809,47 @@ pub fn list_running() -> Vec<RunningSession> {
     out
 }
 
+/// Map of session file path -> rmux target (e.g. "pi-xxx:s019fe979") for
+/// sessions running inside rmux panes. Scans all panes' processes once.
+pub fn rmux_runtime_map() -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Ok(res) = std::process::Command::new("rmux")
+        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid}"])
+        .env("PATH", full_path())
+        .output()
+    else {
+        return out;
+    };
+    for line in String::from_utf8_lossy(&res.stdout).lines() {
+        let mut parts = line.splitn(2, ' ');
+        let (target, pid_s) = (parts.next().unwrap_or("").trim(), parts.next().unwrap_or("").trim());
+        let Ok(pid) = pid_s.parse::<u32>() else { continue };
+        let Ok(ps) = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .env("PATH", full_path())
+            .output()
+        else { continue };
+        let cmd = String::from_utf8_lossy(&ps.stdout);
+        // main sessions: command contains "--session <path>"
+        for tok in cmd.split_whitespace() {
+            if tok == "--session" { continue; }
+            let clean = tok.trim_matches('\'');
+            if clean.ends_with(".jsonl") && clean.contains("sessions/") {
+                out.insert(clean.to_string(), target.to_string());
+                break;
+            }
+        }
+    }
+    out
+}
+
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let root = sessions_dir();
     let dir = root.join(project_key);
     let mut out = Vec::new();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
     let alive = alive_task_ids();
+    let rmux_map = rmux_runtime_map();
     let (sub_uuids, task_by_uuid, match_text_by_uuid) = subagent_index();
 
     if let Ok(fd) = fs::read_dir(&dir) {
@@ -832,9 +869,23 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                             _ => {}
                         }
                     }
+                    // subagents live in rmux pi-agents when running
+                    if m.running {
+                        m.in_rmux = true;
+                        m.rmux_target = Some(
+                            rmux_map
+                                .get(&m.path)
+                                .cloned()
+                                .unwrap_or_else(|| "pi-agents".to_string()),
+                        );
+                    }
                 } else if session_file_running(&path) {
-                    // main session actively written (pi running in the terminal)
+                    // main session actively written (pi running)
                     m.running = true;
+                    if let Some(t) = rmux_map.get(&m.path) {
+                        m.in_rmux = true;
+                        m.rmux_target = Some(t.clone());
+                    }
                 }
                 out.push(m);
             }
@@ -926,6 +977,8 @@ fn parse_meta(
         running: running.contains(&spath),
         sleeping: false,
         interrupted: false,
+        in_rmux: false,
+        rmux_target: None,
         size,
     })
 }

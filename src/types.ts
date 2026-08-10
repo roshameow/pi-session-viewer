@@ -28,6 +28,8 @@ export interface SessionMeta {
   running: boolean;
   sleeping: boolean;
   interrupted: boolean;
+  inRmux: boolean;
+  rmuxTarget: string | null;
   size: number;
 }
 
