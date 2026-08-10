@@ -267,7 +267,11 @@ export function Thread({
     active.forEach((entry, idx) => {
       // mode-level filtering
       if (filter === "user-only") {
-        if (entry.role !== "user") skip.add(idx);
+        if (entry.role === "user") {
+          items.push({ entry, inlineResults: [] });
+        } else {
+          skip.add(idx);
+        }
         return;
       }
       if (filter === "labeled-only") {
