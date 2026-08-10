@@ -101,6 +101,8 @@ export function Sidebar({
   onRefresh,
   onOpenTerminal,
   onDeleteSession,
+  onOpenConfig,
+  showConfig,
 }: {
   projects: Project[];
   sessions: SessionMeta[];
@@ -112,6 +114,8 @@ export function Sidebar({
   onRefresh: () => void;
   onOpenTerminal: (path: string) => void;
   onDeleteSession: (path: string) => Promise<void> | void;
+  onOpenConfig: () => void;
+  showConfig: boolean;
 }) {
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
@@ -231,6 +235,13 @@ export function Sidebar({
       />
       <div className="sidebar-top">
         <span className="app-title">Pi Desktop</span>
+        <button
+          className={`icon-btn ${showConfig ? "active" : ""}`}
+          title="MCP / Agents / Skills config"
+          onClick={onOpenConfig}
+        >
+          ⚙️
+        </button>
         <button className="icon-btn" title="Refresh" onClick={onRefresh}>
           ⟳
         </button>

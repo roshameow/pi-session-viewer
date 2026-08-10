@@ -187,7 +187,7 @@ pub struct SessionDetail {
 // Encoding helpers
 // ---------------------------------------------------------------------------
 
-fn decode_dir_name(dir: &str) -> String {
+pub fn decode_dir_name(dir: &str) -> String {
     // "--Users-wenliu--" -> "/Users/wenliu" (best effort; header cwd is authoritative)
     let inner = dir.trim_start_matches('-').trim_end_matches('-');
     if inner.is_empty() {

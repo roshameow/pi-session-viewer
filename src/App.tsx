@@ -6,6 +6,7 @@ import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta } fro
 import { Sidebar } from "./components/Sidebar";
 import { Thread, buildLiveBlocks, type LiveBlock } from "./components/Thread";
 import { Composer } from "./components/Composer";
+import { ConfigPanel } from "./components/ConfigPanel";
 
 interface Toast {
   id: number;
@@ -27,6 +28,7 @@ export default function App() {
   const [piInfo, setPiInfo] = useState<string>("");
   // per-session draft: draft text bound to each session path
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [showConfig, setShowConfig] = useState(false);
 
   const channelRef = useRef<Channel<PiEvent> | null>(null);
   const activePathRef = useRef<string | null>(null);
@@ -169,10 +171,16 @@ export default function App() {
   const selectProject = (p: Project) => {
     setSelectedProject(p.key);
     setDetail(null);
+    setShowConfig(false);
   };
 
   const selectSession = (s: SessionMeta) => {
+    setShowConfig(false);
     loadDetail(s);
+  };
+
+  const openConfig = () => {
+    setShowConfig((v) => !v);
   };
 
   const send = async (msg: string) => {
@@ -259,6 +267,8 @@ export default function App() {
         loadingSessions={loadingSessions}
         onSelectProject={selectProject}
         onSelectSession={selectSession}
+        onOpenConfig={openConfig}
+        showConfig={showConfig}
         onOpenTerminal={(path) => {
           api.openInTerminal(path).catch((e) => setError(String(e)));
         }}
@@ -284,7 +294,9 @@ export default function App() {
             ⚠️ {error}
           </div>
         )}
-        {detail ? (
+        {showConfig ? (
+          <ConfigPanel />
+        ) : detail ? (
           <>
             <Thread detail={detail} liveBlocks={liveBlocks} running={running} />
             <Composer

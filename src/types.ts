@@ -77,6 +77,33 @@ export interface RunningSession {
   projectKey: string;
 }
 
+export interface McpServer {
+  name: string;
+  command: string;
+  args: string[];
+  env: string[];
+  enabled: boolean | null;
+}
+
+export interface AgentInfo {
+  name: string;
+  description: string;
+  tools: string | null;
+  file: string;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  source: string;
+}
+
+export interface ConfigView {
+  mcp: McpServer[];
+  agents: AgentInfo[];
+  skills: SkillInfo[];
+}
+
 // --- pi `--mode json` wire events (subset we render) ---
 
 export interface PiEvent {

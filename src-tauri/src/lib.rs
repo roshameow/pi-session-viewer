@@ -1,4 +1,5 @@
 mod agent;
+mod config;
 mod sessions;
 
 use std::path::Path;
@@ -233,6 +234,7 @@ pub fn run() {
             open_in_terminal,
             delete_session,
             sessions::list_running,
+            config::list_config,
             agent::send_message,
             agent::abort_message,
         ])
