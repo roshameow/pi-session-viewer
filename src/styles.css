@@ -223,33 +223,55 @@ body {
 .session-item.selected { background: var(--bg3); outline: 1px solid var(--cyan); }
 .session-item.sub { opacity: 0.85; }
 
-/* status distinction: colored left rail + subtle background tint */
-.session-item.status-running {
-  border-left: 3px solid var(--green);
-  background: rgba(181, 189, 104, 0.06);
-}
-.session-item.status-sleeping {
-  border-left: 3px solid var(--amber);
-  background: rgba(212, 167, 44, 0.07);
-}
-.session-item.status-interrupted {
-  border-left: 3px solid var(--red);
-  background: rgba(204, 102, 102, 0.07);
-}
-.session-item.status-running.selected,
-.session-item.status-sleeping.selected,
-.session-item.status-interrupted.selected {
+/* running main sessions keep a subtle green dot; no left rail */
+.session-item.status-running.selected {
   outline: 1px solid var(--cyan);
   outline-offset: -1px;
+}
+
+/* compact status symbols (one per session item) */
+.st {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  font-size: 10px;
+  font-weight: 800;
+  border-radius: 8px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.st.running {
+  color: var(--green);
+  background: rgba(181, 189, 104, 0.12);
+  animation: blink 1.4s infinite;
+}
+.st.sleeping {
+  color: var(--amber);
+  background: rgba(212, 167, 44, 0.1);
+  font-size: 9px;
+}
+.st.interrupted {
+  color: var(--red);
+  background: rgba(204, 102, 102, 0.1);
+}
+.st.finished {
+  color: var(--fg-dim);
+  background: var(--bg3);
+}
+.st.finished.fresh {
+  color: var(--cyan);
+  background: rgba(0, 215, 255, 0.12);
+  border: 1px solid rgba(0, 215, 255, 0.6);
 }
 
 /* subagent group under a main session */
 .subagent-group {
   margin: 4px 4px 10px 14px;
   padding: 4px 2px 2px 8px;
-  border-left: 2px solid var(--purple);
-  border-radius: 0 8px 8px 0;
-  background: rgba(149, 117, 205, 0.07);
+  border-radius: 8px;
+  background: rgba(149, 117, 205, 0.05);
 }
 .subagent-group.collapsed { padding-bottom: 2px; }
 .subagent-group-head {
@@ -259,8 +281,6 @@ body {
   font-size: 10.5px;
   color: var(--purple);
   padding: 3px 4px 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   font-weight: 700;
   cursor: pointer;
   user-select: none;

@@ -47,15 +47,16 @@ function SessionItem({
   onToggleSubs?: () => void;
 }) {
   const title = s.name || s.firstMessage || "(empty)";
-  const statusClass = s.running
-    ? "status-running"
+  const status: "running" | "sleeping" | "interrupted" | "finished" = s.running
+    ? "running"
     : s.isSubagent
       ? s.sleeping
-        ? "status-sleeping"
+        ? "sleeping"
         : s.interrupted
-          ? "status-interrupted"
-          : ""
-      : "";
+          ? "interrupted"
+          : "finished"
+      : "finished";
+  const statusClass = s.running ? "status-running" : "";
   return (
     <button
       className={`session-item ${selected ? "selected" : ""} ${s.isSubagent ? "sub" : "main"} ${statusClass}`}
@@ -80,7 +81,6 @@ function SessionItem({
             {subsCollapsed ? "▸" : "▾"}
           </span>
         )}
-        {s.running && <span className="pulse-dot" />}
         <span className="session-title">{title}</span>
         {!s.isSubagent && runningSubs > 0 && (
           <span className="subs-running-badge" title={`${runningSubs} subagent(s) running`}>
@@ -105,15 +105,21 @@ function SessionItem({
             {s.id.slice(0, 13)}…
           </span>
         )}
-        {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
-        {s.isSubagent && s.sleeping && (
-          <span className="sub-sleeping-chip" title="Process alive, waiting on a sleep — will auto-continue">
-            ◐ sleeping
-          </span>
+        {status === "running" && (
+          <span className="st running" title="running">●</span>
         )}
-        {s.isSubagent && s.interrupted && (
-          <span className="sub-interrupted-chip" title="Process dead, no terminal event — resumable via subagent_reload">
-            ✕ interrupted
+        {status === "sleeping" && (
+          <span className="st sleeping" title="sleeping — will auto-continue">zzz</span>
+        )}
+        {status === "interrupted" && (
+          <span className="st interrupted" title="interrupted — resumable via reload">✕</span>
+        )}
+        {status === "finished" && (
+          <span
+            className={`st finished ${justFinished ? "fresh" : ""}`}
+            title={justFinished ? "just finished" : "finished"}
+          >
+            ✓
           </span>
         )}
       </div>
