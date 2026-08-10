@@ -29,12 +29,37 @@ body {
 
 /* ---------- sidebar ---------- */
 .sidebar {
-  width: 300px;
-  min-width: 240px;
   display: flex;
   flex-direction: column;
   background: var(--bg2);
   border-right: 1px solid var(--border);
+  flex-shrink: 0;
+  min-width: 0;
+  position: relative;
+}
+.sidebar-resizer {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-resizer::after {
+  content: "";
+  width: 2px;
+  height: 34px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 0.15s;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer.dragging::after {
+  background: var(--cyan);
 }
 
 .sidebar-top {
@@ -270,6 +295,11 @@ body {
   padding-left: 18px;
 }
 .session-model { color: var(--cyan); opacity: 0.8; }
+.session-id {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--gray);
+}
 .session-task { color: var(--yellow); opacity: 0.8; }
 
 .pulse-dot {

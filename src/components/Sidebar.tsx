@@ -1,5 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { Project, SessionMeta } from "../types";
+
+const MIN_SIDEBAR = 200;
+const MAX_SIDEBAR = 640;
 
 function relTime(epochSec: number): string {
   if (!epochSec) return "";
@@ -68,6 +71,11 @@ function SessionItem({
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
+        {!s.isSubagent && (
+          <span className="session-id" title={`session id: ${s.id}`}>
+            {s.id.slice(0, 13)}…
+          </span>
+        )}
         {s.model && <span className="session-model">{s.model}</span>}
         {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
         {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
@@ -99,6 +107,47 @@ export function Sidebar({
   const [collapsedSub, setCollapsedSub] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  // resizable sidebar width (persisted)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("pi-sidebar-width"));
+    return Number.isFinite(saved) && saved > 0
+      ? Math.min(Math.max(saved, MIN_SIDEBAR), MAX_SIDEBAR)
+      : 300;
+  });
+  const widthRef = useRef(sidebarWidth);
+  widthRef.current = sidebarWidth;
+  const draggingRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      setSidebarWidth(Math.min(Math.max(e.clientX, MIN_SIDEBAR), MAX_SIDEBAR));
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      localStorage.setItem("pi-sidebar-width", String(widthRef.current));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    setDragging(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
 
   const toggleGroup = (path: string) => {
     setCollapsedGroups((prev) => {
@@ -137,7 +186,12 @@ export function Sidebar({
   };
 
   return (
-    <div className="sidebar">
+    <div className="sidebar" style={{ width: sidebarWidth }}>
+      <div
+        className={`sidebar-resizer ${dragging ? "dragging" : ""}`}
+        onMouseDown={startDrag}
+        title="Drag to resize"
+      />
       <div className="sidebar-top">
         <span className="app-title">Pi Desktop</span>
         <button className="icon-btn" title="Refresh" onClick={onRefresh}>
