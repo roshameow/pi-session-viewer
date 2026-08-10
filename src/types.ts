@@ -70,6 +70,7 @@ export interface SessionDetail {
   cwd: string;
   createdIso: string;
   path: string;
+  taskId: string | null;
   stats: Stats;
   entries: Entry[];
   active: number[];

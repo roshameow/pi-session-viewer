@@ -184,6 +184,7 @@ pub struct SessionDetail {
     pub cwd: String,
     pub created_iso: String,
     pub path: String,
+    pub task_id: Option<String>,
     pub stats: Stats,
     pub entries: Vec<Entry>,
     pub active: Vec<usize>, // indices of the active branch, root -> leaf
@@ -1333,6 +1334,8 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         active = chain;
     }
 
+    let (_, task_by_uuid, _) = subagent_index();
+    let task_id = task_by_uuid.get(&header_id).cloned();
     let stats = Stats {
         token_count: tokens,
         message_count: msg_count,
@@ -1348,6 +1351,7 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         cwd,
         created_iso: created,
         path: path.to_string(),
+        task_id,
         stats,
         entries,
         active,

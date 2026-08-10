@@ -266,7 +266,6 @@ export default function App() {
       <div className="toast-stack">
         {toasts.map((t) => (
           <button key={t.id} className={`toast ${t.paused ? "paused" : ""} ${t.interrupted ? "interrupted" : ""}`} onClick={() => openToastSession(t)}>
-            <span className="toast-icon">{t.interrupted ? "⏸" : t.paused ? "💤" : t.isSubagent ? "🕸️" : "💬"}</span>
             <span className="toast-body">
               <span className="toast-title">
                 {t.interrupted

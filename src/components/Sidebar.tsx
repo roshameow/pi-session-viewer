@@ -66,12 +66,11 @@ function SessionItem({
           </span>
         )}
         {s.running && <span className="pulse-dot" />}
-        <span className="session-icon">{s.isSubagent ? "🕸️" : "💬"}</span>
         <span className="session-title">{title}</span>
         {s.isSubagent && <span className="sub-chip">SUB</span>}
         {!s.isSubagent && runningSubs > 0 && (
           <span className="subs-running-badge" title={`${runningSubs} subagent(s) running`}>
-            🕸️ {runningSubs} running
+            {runningSubs} running
           </span>
         )}
       </div>
@@ -82,17 +81,15 @@ function SessionItem({
             {s.id.slice(0, 13)}…
           </span>
         )}
-        {s.model && <span className="session-model">{s.model}</span>}
-        {s.isSubagent && s.taskId && <span className="session-task">task:{s.taskId}</span>}
-        {s.isSubagent && s.running && <span className="sub-running-chip">● running</span>}
+        {s.isSubagent && s.running && <span className="sub-running-chip">running</span>}
         {s.isSubagent && s.sleeping && (
           <span className="sub-sleeping-chip" title="Process alive, waiting on a sleep — will auto-continue">
-            💤 sleeping
+            sleeping
           </span>
         )}
         {s.isSubagent && s.interrupted && (
           <span className="sub-interrupted-chip" title="Process dead, no terminal event — resumable via subagent_reload">
-            ⏸ interrupted
+            interrupted
           </span>
         )}
       </div>
@@ -275,7 +272,7 @@ export function Sidebar({
                 className={`project-item ${selectedProject === p.key ? "selected" : ""}`}
                 onClick={() => onSelectProject(p)}
               >
-                <span className="project-icon">📁</span>
+
                 <span className="project-name">{projectName(p.cwd)}</span>
                 <span className="project-count">{p.sessionCount}</span>
                 {p.runningCount > 0 && (
@@ -342,7 +339,7 @@ export function Sidebar({
                             title={groupCollapsed ? "Expand" : "Collapse"}
                           >
                             <span className="section-arrow">{groupCollapsed ? "▸" : "▾"}</span>
-                            <span>🕸️ subagents</span>
+                            <span>subagents</span>
                             <span className="subagent-count">{subs.length}</span>
                             {subs.some((x) => x.running) && (
                               <span className="subagent-running">● running</span>

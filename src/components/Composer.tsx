@@ -28,7 +28,7 @@ export function Composer({
     <div className="composer-wrap">
       {targetName && (
         <div className="composer-target" title="This message will be sent to the session below">
-          📨 → <span className="composer-target-name">{targetName}</span>
+          → <span className="composer-target-name">{targetName}</span>
         </div>
       )}
       <div className="composer">

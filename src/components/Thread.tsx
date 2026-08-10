@@ -424,15 +424,20 @@ export function Thread({
                     </span>
                   )}
                   {detail.stats.thinkingLevel && (
-                    <span className="thinking-badge">🧠 {detail.stats.thinkingLevel}</span>
+                    <span className="thinking-badge">thinking: {detail.stats.thinkingLevel}</span>
                   )}
                 </div>
                 <div className="session-head-id" title="Click to copy session id">
                   <span className="session-id-label">id:</span>
                   <span className="session-id-value">{detail.id}</span>
                   <button className="session-id-copy" onClick={copySessionId}>
-                    {copied ? "✓ copied" : "⧉ copy"}
+                    {copied ? "✓ copied" : "copy"}
                   </button>
+                  {detail.taskId && (
+                    <span className="session-task-inline" title="subagent task id">
+                      task: {detail.taskId}
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="session-head-actions">
@@ -449,7 +454,7 @@ export function Thread({
                   disabled={exporting}
                   title="Export this session to HTML (pi --export) and open it"
                 >
-                  {exporting ? "Exporting…" : "⬇ Export HTML"}
+                  {exporting ? "Exporting…" : "Export HTML"}
                 </button>
               </div>
             </div>
