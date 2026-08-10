@@ -375,6 +375,11 @@ fn detach_from_rmux(session_path: String) -> Result<(), String> {
 /// Without rmux, falls back to a plain `pi --session` window.
 #[tauri::command]
 fn open_in_terminal(session_path: String) -> Result<(), String> {
+    // already alive in an rmux pane (incl. pim sessions with short names)?
+    // attach to that pane's session — never spawn a second pi.
+    if let Some(sess) = existing_rmux_session(&session_path) {
+        return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
+    }
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
@@ -392,6 +397,24 @@ fn open_in_terminal(session_path: String) -> Result<(), String> {
     open_terminal_window(&cmd)
 }
 
+
+/// If a session already runs alive in an rmux pane, return the rmux SESSION
+/// name from its mapped target (e.g. "pi-quantnight" — pim creates short
+/// names the standard pi-<encoded-cwd> lookup can't find). Dead panes are
+/// ignored so the caller can recreate.
+fn existing_rmux_session(session_path: &str) -> Option<String> {
+    let map = sessions::rmux_runtime_map();
+    let rt = map.get(session_path)?;
+    if rt.dead {
+        return None;
+    }
+    let sess = rt.target.split(':').next().unwrap_or("").to_string();
+    if sess.is_empty() {
+        None
+    } else {
+        Some(sess)
+    }
+}
 /// Attach to the rmux session a session belongs to (pi-agents for subagents,
 /// pi-<project> for main sessions).
 #[tauri::command]
@@ -402,7 +425,10 @@ fn attach_session(session_path: String) -> Result<String, String> {
         .unwrap_or_default();
     let id = sessions::session_id(&session_path).unwrap_or_default();
     let is_sub = sessions::is_subagent_uuid(&id);
-    let sess = if is_sub {
+    let sess = if let Some(s) = existing_rmux_session(&session_path) {
+        // already alive in an rmux pane (incl. pim short-name sessions)
+        s
+    } else if is_sub {
         // subagents live in pi-agents; attach directly (may not exist)
         "pi-agents".to_string()
     } else {
