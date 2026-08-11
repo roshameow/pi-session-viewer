@@ -267,7 +267,55 @@ fn task_id_from_filename(name: &str) -> Option<String> {
 // Listing
 // ---------------------------------------------------------------------------
 
+/// Purge rmux windows whose pane died more than 6h ago. remain-on-exit keeps
+/// them so the crash output stays visible and the desktop shows the dead
+/// state, but without a cleanup they accumulate forever. Killing a dead
+/// window is safe: the session FILE persists, only the stale pane goes away.
+/// Runs at most once every 5 minutes (guarded) inside list_projects.
+fn cleanup_dead_rmux_windows() {
+    use std::sync::OnceLock;
+    static LAST: OnceLock<Mutex<u64>> = OnceLock::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    {
+        let last = LAST.get_or_init(|| Mutex::new(0)).lock().unwrap();
+        if now.saturating_sub(*last) < 300 {
+            return;
+        }
+        *last = now;
+    }
+    let Ok(out) = std::process::Command::new("rmux")
+        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name} #{pane_dead} #{pane_dead_time}"])
+        .env("PATH", full_path())
+        .output()
+    else {
+        return;
+    };
+    const THRESHOLD: u64 = 6 * 3600;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.splitn(3, ' ');
+        let (target, dead, dead_time) = (
+            it.next().unwrap_or("").trim(),
+            it.next().unwrap_or("").trim(),
+            it.next().unwrap_or("").trim(),
+        );
+        if dead != "1" || target.is_empty() {
+            continue;
+        }
+        let Ok(dt) = dead_time.parse::<u64>() else { continue };
+        if dt > 0 && now.saturating_sub(dt) > THRESHOLD {
+            let _ = std::process::Command::new("rmux")
+                .args(["kill-window", "-t", target])
+                .env("PATH", full_path())
+                .output();
+        }
+    }
+}
+
 pub fn list_projects() -> Vec<Project> {
+    cleanup_dead_rmux_windows();
     let root = sessions_dir();
     let mut out = Vec::new();
     let (_, task_by_uuid, _) = subagent_index();
