@@ -110,12 +110,12 @@ function SessionItem({
               : "● term"}
           </span>
         )}
-        {status === "running" && <span className="sub-running-chip">running</span>}
+        {status === "running" && <span className="sub-running-chip" title="running">● running</span>}
         {status === "sleeping" && (
-          <span className="sub-sleeping-chip" title="sleeping — will auto-continue">sleeping</span>
+          <span className="sub-sleeping-chip" title="sleeping — will auto-continue">◐ sleeping</span>
         )}
         {status === "interrupted" && (
-          <span className="sub-interrupted-chip" title="interrupted — resumable via reload">interrupted</span>
+          <span className="sub-interrupted-chip" title="interrupted — resumable via reload">✕ interrupted</span>
         )}
         {status === "finished" && justFinished && (
           <span className="sub-finished-chip fresh">just finished</span>

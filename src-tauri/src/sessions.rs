@@ -2296,3 +2296,15 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod slp {
+    use super::*;
+    #[test]
+    fn chk() {
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        for m in ss.iter().filter(|m| m.is_subagent) {
+            println!("SLP id={} running={} sleeping={} interrupted={} inRmux={} parent={:?}", &m.id[..13], m.running, m.sleeping, m.interrupted, m.in_rmux, m.parent_session_path);
+        }
+    }
+}
