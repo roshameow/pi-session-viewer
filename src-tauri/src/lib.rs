@@ -503,7 +503,6 @@ fn existing_rmux_session(session_path: &str) -> Option<String> {
 /// pi-<project> for main sessions).
 #[tauri::command]
 fn attach_session(session_path: String) -> Result<String, String> {
-    let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();

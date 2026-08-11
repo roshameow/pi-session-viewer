@@ -2228,29 +2228,3 @@ mod tests {
     }
 
 }
-
-#[cfg(test)]
-mod mp2 {
-    use super::*;
-    #[test]
-    fn chk() {
-        let map = rmux_runtime_map();
-        for (k, v) in map.iter() {
-            if k.contains("019fee76-14ae") || k.contains("019fe979") || k.contains("019fec06") {
-                println!("M2 {} -> {}", k.split('/').last().unwrap_or(""), v.target);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod mp3 {
-    use super::*;
-    #[test]
-    fn chk() {
-        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
-        for m in ss.iter().filter(|m| m.id.starts_with("019fee76-14ae") || m.id.starts_with("019fe979")) {
-            println!("S3 id={} rmux={} target={:?} term={}", &m.id[..13], m.in_rmux, m.rmux_target, m.term_alive);
-        }
-    }
-}
