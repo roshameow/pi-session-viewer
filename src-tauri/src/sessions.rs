@@ -1375,7 +1375,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     // dedupe: same uuid can have a mirror (subagent-task-*) and a real session
     // file (normal name). Prefer the real one (fuller history).
     let mut by_id: HashMap<String, SessionMeta> = HashMap::new();
-    for m in out {
+    for mut m in out {
         let cur = by_id.get(&m.id);
         let replace = match cur {
             None => true,
@@ -1383,7 +1383,18 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                 if !c.path.contains("subagent-task-") && m.path.contains("subagent-task-") {
                     false // current is real pi session, new is mirror -> keep current
                 } else if c.path.contains("subagent-task-") && !m.path.contains("subagent-task-") {
-                    true // current is mirror, new is real -> replace
+                    // current is mirror (rmux map keys subagent panes by the
+                    // mirror path), new is real -> replace, carrying the
+                    // rmux state over so the deduped entry shows its pane
+                    if !c.in_rmux && m.in_rmux {
+                        // nothing to do; real already has it
+                    } else if c.in_rmux {
+                        m.in_rmux = true;
+                        m.rmux_target = c.rmux_target.clone();
+                        m.rmux_attached = c.rmux_attached;
+                        m.rmux_dead = c.rmux_dead;
+                    }
+                    true
                 } else {
                     m.size > c.size
                 }
