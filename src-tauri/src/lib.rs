@@ -145,13 +145,22 @@ fn delete_session(path: String) -> Result<(), String> {
 /// Unique rmux session name derived from the FULL project path (avoids
 /// collisions between same-named projects in different directories):
 /// /Users/a/Code/python/quantnight -> pi-Users-a-Code-python-quantnight
-fn rmux_session_name(cwd: &str) -> String {
+fn rmux_session_name(cwd: &str, id: &str) -> String {
     let encoded = cwd.trim_start_matches('/').replace('/', "-");
     let clean: String = encoded
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect();
-    format!("pi-{}", if clean.is_empty() { "default" } else { &clean })
+    // one rmux session PER pi session: attaching one window used to re-target
+    // the whole project session (every client jumped to the last-attached
+    // window). the session name now carries id12 (uuid chars 0..12, includes
+    // the 8th-char dash) so each pi has its own session and attach is isolated.
+    let id12: String = id.chars().take(12).collect();
+    format!(
+        "pi-{}-{}",
+        if clean.is_empty() { "default" } else { &clean },
+        if id12.is_empty() { "s" } else { &id12 }
+    )
 }
 
 fn rmux_bin() -> Option<String> {
@@ -340,41 +349,36 @@ fn ensure_rmux_window(
         return Ok(None);
     }
     let rmux = rmux_bin().unwrap();
-    let sess = rmux_session_name(cwd);
-    let win = format!("s{}", id.chars().take(8).collect::<String>());
-    let session_exists = std::process::Command::new(&rmux)
-        .args(["has-session", "-t", &sess]).env("PATH", sessions::full_path())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    // does the window already exist AND is its pane process actually alive?
-    // (reuse only live windows; a stale window from an old pi gets recreated)
-    let pane_pid = |r: &str, s: &str, w: &str| -> Option<u32> {
-        std::process::Command::new(r)
-            .args(["list-panes", "-t", &format!("{s}:{w}"), "-F", "#{pane_pid}"])
+    // one session per pi session: sess = pi-<encoded-cwd>-<id12>, window = "main"
+    let sess = rmux_session_name(cwd, id);
+    let win = "main";
+    let run = |args: &[&str]| -> std::process::Output {
+        std::process::Command::new(&rmux)
+            .args(args)
             .env("PATH", sessions::full_path())
             .output()
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+            .unwrap_or_else(|_| std::process::Output { status: std::process::ExitStatus::default(), stdout: Vec::new(), stderr: Vec::new() })
     };
-    let pid_alive = |pid: u32| -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
+
+    let session_exists = run(&["has-session", "-t", &sess]).status.success();
     let win_alive = if session_exists {
-        pane_pid(&rmux, &sess, &win).map(pid_alive).unwrap_or(false)
+        let pid_out = run(&["list-panes", "-t", &format!("{sess}:{win}"), "-F", "#{pane_pid}"]);
+        let pid = String::from_utf8_lossy(&pid_out.stdout).trim().parse::<u32>().ok();
+        match pid {
+            Some(p) => std::process::Command::new("kill")
+                .args(["-0", &p.to_string()])
+                .env("PATH", sessions::full_path())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false),
+            None => false,
+        }
     } else {
         false
     };
-    // reuse only when the live window actually runs the requested session.
-    // an id8 prefix collision (two sessions sharing the first 8 chars) can
-    // make window s<id8> belong to a DIFFERENT session — reusing it would
-    // attach to the wrong conversation. unmapped windows are freshly created
-    // (map TTL race) and reused.
-    let window_runs_other = if win_alive {
+    // reuse only when this session actually runs the requested pi session;
+    // otherwise kill and recreate (id collisions or stale sessions)
+    let session_runs_other = if session_exists && win_alive {
         let map = sessions::rmux_runtime_map();
         let target = format!("{sess}:{win}");
         match map
@@ -388,73 +392,26 @@ fn ensure_rmux_window(
     } else {
         false
     };
-    if window_runs_other {
-        // kill the stale window so the block below starts fresh for OUR session
-        let _ = std::process::Command::new(&rmux)
-            .args(["kill-window", "-t", &format!("{sess}:{win}")])
-            .env("PATH", sessions::full_path())
-            .output();
-    }
-    if !win_alive || window_runs_other {
-        // stale window (old pi) -> remove it so the next block starts fresh
-        if session_exists {
-            let _ = std::process::Command::new(&rmux)
-                .args(["kill-window", "-t", &format!("{sess}:{win}")])
-                .env("PATH", sessions::full_path())
-                .output();
-        }
-        let session_exists = std::process::Command::new(&rmux)
-            .args(["has-session", "-t", &sess])
-            .env("PATH", sessions::full_path())
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        let args: Vec<String> = if session_exists {
-            vec![
-                "new-window".into(),
-                "-d".into(),
-                "-t".into(),
-                sess.clone(),
-                "-n".into(),
-                win.clone(),
-                cmd.to_string(),
-            ]
-        } else {
-            vec![
-                "new-session".into(),
-                "-d".into(),
-                "-s".into(),
-                sess.clone(),
-                "-n".into(),
-                win.clone(),
-                cmd.to_string(),
-            ]
-        };
-        let out = std::process::Command::new(&rmux)
-            .args(&args)
-            .env("PATH", sessions::full_path())
-            .output()
-            .map_err(|e| format!("Failed to start rmux session: {e}"))?;
+    if !win_alive || session_runs_other {
+        let _ = run(&["kill-session", "-t", &sess]);
+        let out = run(&[
+            "new-session",
+            "-d",
+            "-s",
+            &sess,
+            "-n",
+            win,
+            cmd,
+        ]);
         if !out.status.success() {
             return Err(format!(
                 "rmux failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        // record which session this window runs (WINDOW-level user option;
-        // plain `set-option -t sess:win` scopes @ options to the SESSION,
-        // making every window claim the last-opened session — `-w` is required)
-        let _ = std::process::Command::new(&rmux)
-            .args([
-                "set-option",
-                "-w",
-                "-t",
-                &format!("{sess}:{win}"),
-                "@pi_session",
-                session_path,
-            ])
-            .env("PATH", sessions::full_path())
-            .output();
+        // record which pi session this rmux session runs (window-level user
+        // option; -w is required — plain set-option scopes @ to the SESSION)
+        let _ = run(&["set-option", "-w", "-t", &format!("{sess}:{win}"), "@pi_session", session_path]);
     }
     Ok(Some(format!("{sess}:{win}")))
 }
