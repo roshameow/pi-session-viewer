@@ -1034,7 +1034,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     }
     let mut out = HashMap::new();
     let Ok(res) = std::process::Command::new("rmux")
-        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead}"])
+        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}"])
         .env("PATH", full_path())
         .output()
     else {
@@ -1110,14 +1110,23 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     };
 
     for line in String::from_utf8_lossy(&res.stdout).lines() {
-        let mut parts = line.splitn(3, ' ');
+        let mut parts = line.splitn(4, ' ');
         let (target, pid_s) = (parts.next().unwrap_or("").trim(), parts.next().unwrap_or("").trim());
         let dead = parts.next().unwrap_or("").trim() == "1";
+        let opt = parts.next().unwrap_or("").trim().to_string();
         let Ok(pid) = pid_s.parse::<u32>() else { continue };
         if !dead && !pid_alive(pid) {
             continue;
         }
         let sess = target.split(':').next().unwrap_or("").to_string();
+        // authoritative: the window records which session it was created for
+        // (set by ensure_rmux_window). this beats the id8-prefix heuristic,
+        // which misattributes windows when two sessions share the first 8
+        // chars of their uuid.
+        if !opt.is_empty() && Path::new(&opt).is_file() {
+            add(opt.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+            continue;
+        }
         let win = target.split(':').nth(1).unwrap_or("").to_string();
         // Open TUI main: window s<id8>
         if let Some(id8) = win.strip_prefix('s') {
