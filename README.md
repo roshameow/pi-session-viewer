@@ -18,9 +18,11 @@ GitHub: https://github.com/roshameow/pi-session-viewer
 ## rmux 检测原理(为什么可靠)
 
 pi 会清理自己的 argv(只剩 `pi`),`ps -o command=` 永远看不到 `--session`。所以定位靠:
-- **窗口名映射**:主会话窗口 `s<id8>`(会话 id 前 8 位);子代理窗口 `<agent>-<taskId>`(`pi-agents` 会话)
-- **裸 pi pane 回退**(`pim` 等短名会话,窗口名通用):`lsof` 拿 pane cwd → 选 mtime 最接近该 pi **启动时间**的未映射主会话(不能用"当前最新",会被正在活跃写的其他 pi 干扰)
+- **每 pi 一个独立 rmux 会话**:`pi-<编码cwd>-<id12>`(uuid 前 12 位,含第 8 位破折号,避免 id8 前缀碰撞),窗口固定 `main`。attach 一个 pi 只影响它自己的会话,tmux 的 attach 不会让其他 pi 的窗口跟着跳
+- **@pi_session 窗口选项(权威归属)**:每个 pi 在 `session_start` 时用 `getSessionFile()` 把自己注册进所在窗口的 `@pi_session` 选项(扩展自注册);desktop 建窗口时也写入。map 读选项即可精确归属,不依赖启发式
+- **子代理**:在独立 `pi-agents` 会话里,每个子代理一个窗口 `<agent>-task-<taskId>`;map 归到镜像路径,list_sessions 去重时把 rmux 状态合并给真实会话
 - **终端 pi**:`comm=pi` 且 tty 不属于任何 rmux pane(`#{pane_tty}` 排除)→ 映射到项目内最新非 rmux 主会话
+- **死窗口**:`remain-on-exit` 保留崩溃画面;map 中活窗口优先于死窗口;刷新时自动清理死亡超过 6 小时的死窗口
 
 ## macOS 标签页(Open TUI)
 
@@ -53,7 +55,7 @@ security import /tmp/psv.p12 -k ~/Library/Keychains/login.keychain-db -P psv -T 
 Tauri v2 + React 18 + Vite (TypeScript)
 ├── src-tauri/src/sessions.rs   纯 Rust 解析 JSONL(serde 映射 session v3 格式)
 │                               - list_projects / list_sessions / session_detail
-│                               - rmux_runtime_map / alive_terminal_pis(进程 + 窗口名定位)
+│                               - rmux_runtime_map(每 pi 会话 + @pi_session 选项)/ alive_terminal_pis(进程级)
 │                               - 多级缓存:(mtime,size) 文件指纹 + 2s TTL 子进程结果
 ├── src-tauri/src/agent.rs      spawn `pi --mode json`,stdout 逐行转发到 Channel 流
 ├── src-tauri/src/lib.rs        Tauri 命令注册 + rmux/terminal 集成
