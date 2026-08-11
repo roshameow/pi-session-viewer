@@ -75,7 +75,6 @@ function SessionItem({
       }\n(right-click for options)`}
     >
       <div className="session-item-line1">
-        <span className="session-title">{title}</span>
         {!s.isSubagent && (runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
           <span className="subs-summary" title="subagents: running / sleeping / interrupted">
             {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}
@@ -83,6 +82,7 @@ function SessionItem({
             {interruptedSubs > 0 && <span className="sum intr">✕{interruptedSubs}</span>}
           </span>
         )}
+        <span className="session-title">{title}</span>
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
@@ -110,12 +110,12 @@ function SessionItem({
               : "● term"}
           </span>
         )}
-        {status === "running" && <span className="sub-running-chip" title="running">● running</span>}
+        {status === "running" && <span className="sub-running-chip">running</span>}
         {status === "sleeping" && (
-          <span className="sub-sleeping-chip" title="sleeping — will auto-continue">◐ sleeping</span>
+          <span className="sub-sleeping-chip" title="sleeping — will auto-continue">sleeping</span>
         )}
         {status === "interrupted" && (
-          <span className="sub-interrupted-chip" title="interrupted — resumable via reload">✕ interrupted</span>
+          <span className="sub-interrupted-chip" title="interrupted — resumable via reload">interrupted</span>
         )}
         {status === "finished" && justFinished && (
           <span className="sub-finished-chip fresh">just finished</span>
