@@ -441,12 +441,13 @@ fn ensure_rmux_window(
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        // record which session this window runs (window-level user option);
-        // rmux_runtime_map reads it back so id8-prefix collisions can never
-        // misattribute the window or make a second Open TUI kill our own pi
+        // record which session this window runs (WINDOW-level user option;
+        // plain `set-option -t sess:win` scopes @ options to the SESSION,
+        // making every window claim the last-opened session — `-w` is required)
         let _ = std::process::Command::new(&rmux)
             .args([
                 "set-option",
+                "-w",
                 "-t",
                 &format!("{sess}:{win}"),
                 "@pi_session",
