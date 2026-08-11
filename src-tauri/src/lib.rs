@@ -264,9 +264,6 @@ end tell"#
         }
         let _ = run_term(r#"tell application "Terminal" to activate"#);
         std::thread::sleep(std::time::Duration::from_millis(600));
-        let before = count_of("count of tabs of front window");
-        let mut ok = false;
-        let mut keystroke_err: Option<String> = None;
         // The stable tab-open-helper binary posts Cmd+T (Terminal creates a
         // fresh idle tab which becomes the front tab). It is never rebuilt, so
         // its Accessibility grant survives app rebuilds. Trust its success —
