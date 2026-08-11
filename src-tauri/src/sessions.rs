@@ -2228,3 +2228,17 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod what {
+    use super::*;
+    #[test]
+    fn chk() {
+        let map = rmux_runtime_map();
+        for (k, v) in map.iter() {
+            if k.contains("019fe979") || k.contains("019fec06") || k.contains("019fee76-14ae") {
+                println!("W {} -> {} (dead={} attached={})", k.split('/').last().unwrap_or(""), v.target, v.dead, v.attached);
+            }
+        }
+    }
+}
