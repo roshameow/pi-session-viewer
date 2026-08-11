@@ -1047,7 +1047,7 @@ body {
   padding: 0 5px;
   line-height: 1.5;
 }
-.sum.run { color: var(--green); background: rgba(181, 189, 104, 0.12); }
+.sum.run { color: var(--green); background: rgba(181, 189, 104, 0.12); animation: pulse 1.2s infinite; }
 .sum.sleep { color: var(--amber); background: rgba(212, 167, 44, 0.1); }
 .sum.intr { color: var(--red); background: rgba(204, 102, 102, 0.1); }
 .sub-finished-chip {
