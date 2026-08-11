@@ -280,7 +280,7 @@ fn cleanup_dead_rmux_windows() {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     {
-        let last = LAST.get_or_init(|| Mutex::new(0)).lock().unwrap();
+        let mut last = LAST.get_or_init(|| Mutex::new(0)).lock().unwrap();
         if now.saturating_sub(*last) < 300 {
             return;
         }
