@@ -434,9 +434,9 @@ export function Sidebar({
                             <span className="subagent-count">{subs.length}</span>
                             {(runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
                               <span className="subs-summary" title="subagents: running / sleeping / interrupted">
-                                {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}
-                                {sleepingSubs > 0 && <span className="sum sleep">◐{sleepingSubs}</span>}
-                                {interruptedSubs > 0 && <span className="sum intr">✕{interruptedSubs}</span>}
+                                {runningSubs > 0 && <span className="sum run">● {runningSubs}</span>}
+                                {sleepingSubs > 0 && <span className="sum sleep">◐ {sleepingSubs}</span>}
+                                {interruptedSubs > 0 && <span className="sum intr">✕ {interruptedSubs}</span>}
                               </span>
                             )}
                           </div>
