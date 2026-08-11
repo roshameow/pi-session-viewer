@@ -75,13 +75,6 @@ function SessionItem({
       }\n(right-click for options)`}
     >
       <div className="session-item-line1">
-        {!s.isSubagent && (runningSubs > 0 || sleepingSubs > 0 || interruptedSubs > 0) && (
-          <span className="subs-summary" title="subagents: running / sleeping / interrupted">
-            {runningSubs > 0 && <span className="sum run">●{runningSubs}</span>}
-            {sleepingSubs > 0 && <span className="sum sleep">◐{sleepingSubs}</span>}
-            {interruptedSubs > 0 && <span className="sum intr">✕{interruptedSubs}</span>}
-          </span>
-        )}
         <span className="session-title">{title}</span>
       </div>
       <div className="session-item-line2">
@@ -439,8 +432,14 @@ export function Sidebar({
                             <span className="section-arrow">{groupCollapsed ? "▸" : "▾"}</span>
                             <span>subagents</span>
                             <span className="subagent-count">{subs.length}</span>
-                            {subs.some((x) => x.running) && (
-                              <span className="subagent-running">● running</span>
+                            {runningSubs > 0 && (
+                              <span className="subagent-running">● {runningSubs} running</span>
+                            )}
+                            {sleepingSubs > 0 && (
+                              <span className="subagent-sleeping">◐ {sleepingSubs} sleeping</span>
+                            )}
+                            {interruptedSubs > 0 && (
+                              <span className="subagent-interrupted">✕ {interruptedSubs} interrupted</span>
                             )}
                           </div>
                           {!groupCollapsed &&

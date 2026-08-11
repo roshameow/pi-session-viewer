@@ -296,6 +296,18 @@ body {
   font-weight: 600;
   animation: pulse 1.2s infinite;
 }
+.subagent-sleeping {
+  margin-left: 8px;
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 600;
+}
+.subagent-interrupted {
+  margin-left: 8px;
+  color: var(--red);
+  font-size: 10px;
+  font-weight: 600;
+}
 
 .session-item-line1 {
   display: flex;
