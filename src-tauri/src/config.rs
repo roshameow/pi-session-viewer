@@ -281,3 +281,5 @@ pub fn list_config() -> ConfigView {
         skills: read_skills(),
     }
 }
+
+

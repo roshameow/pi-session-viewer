@@ -1097,8 +1097,9 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             .unwrap_or(false)
     };
 
-    // Build id8 -> path and taskId -> path indexes from one scan of the session dirs.
+    // Build id8 -> path, id12 -> path and taskId -> path indexes from one scan of the session dirs.
     let mut id8_map: HashMap<String, String> = HashMap::new();
+    let mut id12_map: HashMap<String, String> = HashMap::new();
     let mut task_map: HashMap<String, String> = HashMap::new();
     if let Ok(root) = fs::read_dir(sessions_dir()) {
         for dir in root.flatten() {
@@ -1118,7 +1119,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                     } else if let Some(pos) = name.find('_') {
                         // main session: <ts>_<uuid>.jsonl -> id8 from the uuid part
                         let id_part = &name[pos + 1..];
-                        if id_part.len() >= 9 && id_part.as_bytes()[8] == b'-' {
+                        if id_part.len() >= 13 && id_part.as_bytes()[8] == b'-' {
                             let id8 = &id_part[..8];
                             if id8.chars().all(|c| c.is_ascii_hexdigit()) {
                                 // id8 prefix collision (two sessions sharing the
@@ -1129,11 +1130,26 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                                         let new_mt = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
                                         let old_mt = fmetadata(Path::new(existing)).map(|m| m.mtime).unwrap_or(0);
                                         if new_mt > old_mt {
-                                            id8_map.insert(id8.to_string(), p);
+                                            id8_map.insert(id8.to_string(), p.clone());
                                         }
                                     }
                                     None => {
-                                        id8_map.insert(id8.to_string(), p);
+                                        id8_map.insert(id8.to_string(), p.clone());
+                                    }
+                                }
+                                // id12 ("019fec06-2f1", dash at byte 8): window
+                                // names pi-<cwd>-<id12> carry this exactly.
+                                let id12 = &id_part[..12];
+                                match id12_map.get(id12) {
+                                    Some(existing) => {
+                                        let new_mt = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
+                                        let old_mt = fmetadata(Path::new(existing)).map(|m| m.mtime).unwrap_or(0);
+                                        if new_mt > old_mt {
+                                            id12_map.insert(id12.to_string(), p.clone());
+                                        }
+                                    }
+                                    None => {
+                                        id12_map.insert(id12.to_string(), p.clone());
                                     }
                                 }
                             }
@@ -1176,15 +1192,47 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             continue;
         }
         let sess = target.split(':').next().unwrap_or("").to_string();
+        let win = target.split(':').nth(1).unwrap_or("").to_string();
+        // Window names like pi-<cwd>-<id12> carry the session's id12 exactly.
+        // If the recorded @pi_session option conflicts with it, the NAME wins:
+        // a terminal pi (not in tmux) resolves `rmux display-message` to the
+        // last-active rmux window and can pollute that window's @pi_session
+        // with its own session path.
+        let win_id12 = win.rsplit('-').next().and_then(|s| {
+            if s.len() == 12
+                && s.as_bytes().get(8) == Some(&b'-')
+                && s[..8].chars().all(|c| c.is_ascii_hexdigit())
+                && s[9..].chars().all(|c| c.is_ascii_hexdigit())
+            {
+                Some(s.to_string())
+            } else {
+                None
+            }
+        });
+        let opt_is_file = !opt.is_empty() && Path::new(&opt).is_file();
+        let opt_matches_win = opt_is_file && win_id12.as_ref().map_or(false, |w| {
+            Path::new(&opt)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.find('_').map(|pos| &n[pos + 1..]))
+                .map(|uuid| uuid.len() >= 12 && &uuid[..12] == w.as_str())
+                .unwrap_or(false)
+        });
         // authoritative: the window records which session it was created for
         // (set by ensure_rmux_window). this beats the id8-prefix heuristic,
         // which misattributes windows when two sessions share the first 8
-        // chars of their uuid.
-        if !opt.is_empty() && Path::new(&opt).is_file() {
+        // chars of their uuid. A conflicting option is treated as absent.
+        if opt_is_file && (win_id12.is_none() || opt_matches_win) {
             add(opt.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
             continue;
         }
-        let win = target.split(':').nth(1).unwrap_or("").to_string();
+        // name-based id12 lookup (option missing or polluted by a foreign pi)
+        if let Some(id12) = &win_id12 {
+            if let Some(p) = id12_map.get(id12) {
+                add(p.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+                continue;
+            }
+        }
         // Open TUI main: window s<id8>
         if let Some(id8) = win.strip_prefix('s') {
             if id8.len() >= 8 && id8[..8].chars().all(|c| c.is_ascii_hexdigit()) {
@@ -2297,14 +2345,4 @@ mod tests {
 
 }
 
-#[cfg(test)]
-mod slp {
-    use super::*;
-    #[test]
-    fn chk() {
-        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
-        for m in ss.iter().filter(|m| m.is_subagent) {
-            println!("SLP id={} running={} sleeping={} interrupted={} inRmux={} parent={:?}", &m.id[..13], m.running, m.sleeping, m.interrupted, m.in_rmux, m.parent_session_path);
-        }
-    }
-}
+
