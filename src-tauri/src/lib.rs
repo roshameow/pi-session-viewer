@@ -577,16 +577,10 @@ fn attach_session(session_path: String) -> Result<String, String> {
             None => "pi-agents".to_string(),
         }
     };
-    // don't spawn another terminal if someone is already attached
-    let clients_sess = sess.split(':').next().unwrap_or(&sess).to_string();
-    let clients = std::process::Command::new(&rmux)
-        .args(["list-clients", "-t", &clients_sess]).env("PATH", sessions::full_path())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if !clients.is_empty() {
-        return Ok(format!("already attached (session {sess}) — no new window"));
-    }
+    // no per-session client guard: list-clients is session-scoped, so it would
+    // block attaching a DIFFERENT window of the same rmux session (e.g.
+    // 019fe979 and 019fee76-14ae live in one session with different windows).
+    // tmux supports multiple clients; each attach targets its own window.
     let msg = open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)))?;
     Ok(format!("attached to {sess} ({msg})"))
 }
