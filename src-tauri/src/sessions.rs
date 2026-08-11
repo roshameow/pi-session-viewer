@@ -1232,6 +1232,13 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 add(p.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
                 continue;
             }
+            // the window names a session whose file no longer exists; the
+            // recorded option is still a valid file — prefer it over the weak
+            // cwd/freshness heuristics below
+            if opt_is_file {
+                add(opt.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+                continue;
+            }
         }
         // Open TUI main: window s<id8>
         if let Some(id8) = win.strip_prefix('s') {
