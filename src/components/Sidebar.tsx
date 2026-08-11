@@ -472,6 +472,11 @@ export function Sidebar({
                 <span className="section-arrow">{collapsedSub ? "▸" : "▾"}</span>
                 <span>Subagent sessions</span>
                 <span className="section-count">{subagents.length}</span>
+                {subagents.filter((x) => x.inRmux && !x.rmuxDead).length > 0 && (
+                  <span className="mini-chip rmux">
+                    rmux {subagents.filter((x) => x.inRmux && !x.rmuxDead).length}
+                  </span>
+                )}
               </div>
               {!collapsedSub &&
                 subagents.map((s) => {

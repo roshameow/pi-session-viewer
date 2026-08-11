@@ -110,7 +110,7 @@ pub struct Project {
     pub subagent_count: usize,
     pub updated_at: i64,      // latest file mtime (secs)
     pub running_count: usize, // running main sessions + running subagents
-    pub rmux_count: usize,    // alive sessions in rmux windows (attached or detached)
+    pub rmux_count: usize,    // alive sessions in rmux windows, mains + running subagents
     pub term_count: usize,    // main sessions actively running in a terminal window
 }
 
@@ -362,7 +362,8 @@ pub fn list_projects() -> Vec<Project> {
                         if let Some(u) = h.get("id").and_then(|x| x.as_str()) {
                             if seen_uuids.insert(u.to_string()) {
                                 if let Some(tid) = task_by_uuid.get(u) {
-                                    // subagent: running tasks live in pi-agents (rmux)
+                                    // subagent: running tasks live in pi-agents (rmux);
+                                    // counted in rmux_count (mains + subagents together)
                                     let is_running = alive.contains(tid);
                                     if is_running {
                                         running_count += 1;
