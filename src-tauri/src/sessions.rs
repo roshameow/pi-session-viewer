@@ -1098,6 +1098,14 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     // session name -> has attached client (queried once per session)
     let mut attached_cache: HashMap<String, bool> = HashMap::new();
     let add = |path: String, target: String, sess: &str, dead: bool, out: &mut HashMap<String, RmuxRuntime>, attached_cache: &mut HashMap<String, bool>| {
+        // a LIVE window wins over a DEAD one for the same session: after the
+        // user kills a window and reopens the session, a stale dead pane (with
+        // its leftover @pi_session option) must not override the new live pane
+        if let Some(existing) = out.get(&path) {
+            if !existing.dead {
+                return; // already have a live window — ignore dead duplicates
+            }
+        }
         let attached = *attached_cache.entry(sess.to_string()).or_insert_with(|| {
             std::process::Command::new("rmux")
                 .args(["list-clients", "-t", sess])
