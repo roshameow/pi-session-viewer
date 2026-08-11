@@ -1072,7 +1072,21 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                         if id_part.len() >= 9 && id_part.as_bytes()[8] == b'-' {
                             let id8 = &id_part[..8];
                             if id8.chars().all(|c| c.is_ascii_hexdigit()) {
-                                id8_map.entry(id8.to_string()).or_insert_with(|| p.clone());
+                                // id8 prefix collision (two sessions sharing the
+                                // first 8 chars): keep the freshest mtime — the
+                                // window's pi was created for the most recent one
+                                match id8_map.get(id8) {
+                                    Some(existing) => {
+                                        let new_mt = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
+                                        let old_mt = fmetadata(Path::new(existing)).map(|m| m.mtime).unwrap_or(0);
+                                        if new_mt > old_mt {
+                                            id8_map.insert(id8.to_string(), p);
+                                        }
+                                    }
+                                    None => {
+                                        id8_map.insert(id8.to_string(), p);
+                                    }
+                                }
                             }
                         }
                     }

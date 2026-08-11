@@ -336,6 +336,7 @@ end tell"#
 fn ensure_rmux_window(
     cwd: &str,
     id: &str,
+    session_path: &str,
     cmd: &str,
 ) -> Result<Option<String>, String> {
     if !rmux_available() || cwd.is_empty() {
@@ -371,7 +372,33 @@ fn ensure_rmux_window(
     } else {
         false
     };
-    if !win_alive {
+    // reuse only when the live window actually runs the requested session.
+    // an id8 prefix collision (two sessions sharing the first 8 chars) can
+    // make window s<id8> belong to a DIFFERENT session — reusing it would
+    // attach to the wrong conversation. unmapped windows are freshly created
+    // (map TTL race) and reused.
+    let window_runs_other = if win_alive {
+        let map = sessions::rmux_runtime_map();
+        let target = format!("{sess}:{win}");
+        match map
+            .iter()
+            .find(|(_, v)| v.target.starts_with(&target))
+            .map(|(k, _)| k)
+        {
+            Some(p) => p != session_path,
+            None => false, // unmapped: freshly created or unknown — reuse
+        }
+    } else {
+        false
+    };
+    if window_runs_other {
+        // kill the stale window so the block below starts fresh for OUR session
+        let _ = std::process::Command::new(&rmux)
+            .args(["kill-window", "-t", &format!("{sess}:{win}")])
+            .env("PATH", sessions::full_path())
+            .output();
+    }
+    if !win_alive || window_runs_other {
         // stale window (old pi) -> remove it so the next block starts fresh
         if session_exists {
             let _ = std::process::Command::new(&rmux)
@@ -392,7 +419,7 @@ fn ensure_rmux_window(
                 "-t".into(),
                 sess.clone(),
                 "-n".into(),
-                win,
+                win.clone(),
                 cmd.to_string(),
             ]
         } else {
@@ -402,7 +429,7 @@ fn ensure_rmux_window(
                 "-s".into(),
                 sess.clone(),
                 "-n".into(),
-                win,
+                win.clone(),
                 cmd.to_string(),
             ]
         };
@@ -418,7 +445,7 @@ fn ensure_rmux_window(
             ));
         }
     }
-    Ok(Some(sess))
+    Ok(Some(format!("{sess}:{win}")))
 }
 
 /// Detach all terminals from an rmux session (from the app side). The session
@@ -473,7 +500,7 @@ fn open_in_terminal(session_path: String) -> Result<String, String> {
         shell_quote(&bin),
         shell_quote(&session_path)
     );
-    if let Some(sess) = ensure_rmux_window(&cwd, &id, &cmd)? {
+    if let Some(sess) = ensure_rmux_window(&cwd, &id, &session_path, &cmd)? {
         return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
     open_terminal_window(&cmd)
@@ -490,11 +517,18 @@ fn existing_rmux_session(session_path: &str) -> Option<String> {
     if rt.dead {
         return None;
     }
-    let sess = rt.target.split(':').next().unwrap_or("").to_string();
-    if sess.is_empty() {
+    // target = "session:window.pane" -> attach target "session:window" so the
+    // user lands on THIS pane, not the session's active window (which may be
+    // a different session's window)
+    let t = rt
+        .target
+        .rsplit_once('.')
+        .map(|(w, _)| w)
+        .unwrap_or(&rt.target);
+    if t.is_empty() {
         None
     } else {
-        Some(sess)
+        Some(t.to_string())
     }
 }
 /// Attach to the rmux session a session belongs to (pi-agents for subagents,
@@ -527,14 +561,15 @@ fn attach_session(session_path: String) -> Result<String, String> {
             shell_quote(&sessions::resolve_pi_bin().unwrap_or_else(|| "pi".into())),
             shell_quote(&session_path)
         );
-        match ensure_rmux_window(&cwd, &id, &cmd)? {
+        match ensure_rmux_window(&cwd, &id, &session_path, &cmd)? {
             Some(s) => s,
             None => "pi-agents".to_string(),
         }
     };
     // don't spawn another terminal if someone is already attached
+    let clients_sess = sess.split(':').next().unwrap_or(&sess).to_string();
     let clients = std::process::Command::new(&rmux)
-        .args(["list-clients", "-t", &sess]).env("PATH", sessions::full_path())
+        .args(["list-clients", "-t", &clients_sess]).env("PATH", sessions::full_path())
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
