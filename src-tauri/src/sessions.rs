@@ -323,6 +323,8 @@ pub fn list_projects() -> Vec<Project> {
     let rmux_map = rmux_runtime_map();
     // alive_terminal_pis() spawns ps+lsof; compute once, not per project
     let term_alive = alive_terminal_pis();
+    // registry-driven terminal pis (primary enumeration)
+    let reg_term = registry_terminal_pis();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let path = e.path();
@@ -409,11 +411,14 @@ pub fn list_projects() -> Vec<Project> {
                     }
                 }
             }
-            // term sessions = alive terminal pi processes running in this project
-            let term_count = term_alive
-                .iter()
-                .filter(|(_, c)| *c == cwd)
-                .count();
+            // term sessions = registered (registry-driven) + unregistered
+            // (ps comm=pi fallback) terminal pi processes in this project
+            let reg_pids: HashSet<u32> = reg_term.iter().map(|(p, _, _)| *p).collect();
+            let term_count = reg_term.iter().filter(|(_, c, _)| *c == cwd).count()
+                + term_alive
+                    .iter()
+                    .filter(|(p, c)| *c == cwd && !reg_pids.contains(p))
+                    .count();
 
             if count == 0 {
                 continue;
@@ -1252,6 +1257,40 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
     out
 }
 
+/// Registered terminal pis, registry-driven: entries with panePid == None
+/// (the extension found no tmux pane for this process) whose tty is NOT an
+/// rmux pane tty — a failed tty lookup would leave panePid null even for a
+/// pane-resident pi, so the tty cross-check keeps those in the rmux bucket.
+/// Returns (pid, cwd, session_path). This replaces the `ps comm=pi` scan as
+/// the primary terminal-pi enumeration: the registry is the single source of
+/// truth (enumerate + attribute + liveness all from one place).
+fn registry_terminal_pis() -> Vec<(u32, String, String)> {
+    let mut pane_ttys: HashSet<String> = HashSet::new();
+    if let Ok(res) = std::process::Command::new("rmux")
+        .args(["list-panes", "-a", "-F", "#{pane_tty}"])
+        .env("PATH", full_path())
+        .output()
+    {
+        for line in String::from_utf8_lossy(&res.stdout).lines() {
+            let t = line.trim().trim_start_matches("/dev/");
+            if !t.is_empty() {
+                pane_ttys.insert(t.to_string());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for e in runtime_registry().values() {
+        if e.pane_pid.is_some() {
+            continue;
+        }
+        if !e.tty.is_empty() && pane_ttys.contains(&e.tty) {
+            continue; // actually pane-resident (lookup failed at start)
+        }
+        out.push((e.pid, e.cwd.clone(), e.session_path.clone()));
+    }
+    out
+}
+
 pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
     let path = Path::new(session_path);
     if session_file_running(path) {
@@ -1267,9 +1306,10 @@ pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
     let cwd = session_detail(session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
+    let reg_pids: HashSet<u32> = registry_terminal_pis().iter().map(|(p, _, _)| *p).collect();
     let term_n = alive_terminal_pis()
         .iter()
-        .filter(|(_, c)| *c == cwd)
+        .filter(|(p, c)| *c == cwd && !reg_pids.contains(p))
         .count();
     if term_n == 0 {
         return false;
@@ -1675,17 +1715,23 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     // the pi is idle). registered pis (pid registry, pane_pid == None) map
     // straight to their session; unregistered ones fall back to marking the
     // freshest non-rmux main sessions.
-    let term_alive = alive_terminal_pis();
     let registry = runtime_registry();
+    let reg_term = registry_terminal_pis();
+    let reg_pids: HashSet<u32> = reg_term.iter().map(|(p, _, _)| *p).collect();
+    let term_alive = alive_terminal_pis();
     let mut direct_term: Vec<String> = Vec::new();
     let mut fallback_n = 0;
+    // 注册表驱动:注册过的终端 pi 直接按会话映射(不看 cwd,会话路径就是精确的)
+    for (_, _, sess) in &reg_term {
+        direct_term.push(sess.clone());
+    }
+    // ps 兜底:未注册的终端 pi 才走"最新非 rmux 会话"启发式
     for (pid, cwd) in &term_alive {
-        if *cwd != decode_dir_name(project_key) {
+        if reg_pids.contains(pid) {
             continue;
         }
-        match registry.get(pid) {
-            Some(e) if e.pane_pid.is_none() => direct_term.push(e.session_path.clone()),
-            _ => fallback_n += 1,
+        if *cwd == decode_dir_name(project_key) {
+            fallback_n += 1;
         }
     }
     if !direct_term.is_empty() {
@@ -2639,6 +2685,7 @@ mod tests {
     }
 
 }
+
 
 
 
