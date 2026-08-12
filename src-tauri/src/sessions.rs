@@ -598,6 +598,43 @@ fn build_subagent_index() -> SubIdx {
     // uuid -> first user message (from mirror files; matches the parent's
     // original subagent call text better than the resumed real session)
     let mut match_text_by_uuid: HashMap<String, String> = HashMap::new();
+    // session uuid -> creation time of its (normal-named) session file.
+    // A subagent mirror/agent-log whose header id points to a session created
+    // long BEFORE the mirror is corrupted: a buggy reload ran the subagent
+    // with `pi --session <parent>`, so its log/mirror carry the PARENT session
+    // id and would wrongly flag the parent session as a subagent. A legit
+    // subagent creates its own session file at the same moment as the mirror.
+    let mut session_created: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    if let Ok(rd) = fs::read_dir(sessions_dir()) {
+        for e in rd.flatten() {
+            if let Ok(fd) = fs::read_dir(e.path()) {
+                for f in fd.flatten() {
+                    let name = f.file_name().to_string_lossy().to_string();
+                    if !name.ends_with(".jsonl") || name.contains("subagent-task-") {
+                        continue;
+                    }
+                    if let Some(line) = first_line(&f.path()) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                            if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                                let created = fmetadata(&f.path())
+                                    .map(|m| m.created)
+                                    .unwrap_or(0);
+                                session_created.entry(id.to_string()).or_insert(created);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // a mirror/agent-log is corrupted when its header session predates it by
+    // more than 2 minutes (legit spawns create both at the same instant)
+    let corrupted_log = |id: &str, log_created: i64| -> bool {
+        match session_created.get(id) {
+            Some(sc) => sc + 120 < log_created,
+            None => false, // no session file -> unknown, keep as-is
+        }
+    };
     // 1) agent-logs/task-<taskId>.jsonl first line -> session uuid
     let logs = pi_agent_dir().join("agent-logs");
     if let Ok(fd) = fs::read_dir(&logs) {
@@ -613,6 +650,12 @@ fn build_subagent_index() -> SubIdx {
             if let Some(line) = first_line(&f.path()) {
                 if let Ok(v) = serde_json::from_str::<Value>(&line) {
                     if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                        let log_created = fmetadata(&f.path())
+                            .map(|m| m.created)
+                            .unwrap_or(0);
+                        if corrupted_log(id, log_created) {
+                            continue; // corrupted log: session id is the parent's
+                        }
                         if let Some(t) = &task_id {
                             by_uuid.insert(id.to_string(), t.clone());
                         } else {
@@ -651,6 +694,12 @@ fn build_subagent_index() -> SubIdx {
                         match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
                             "session" => {
                                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                                    let mirror_created = fmetadata(&f.path())
+                                        .map(|m| m.created)
+                                        .unwrap_or(0);
+                                    if corrupted_log(id, mirror_created) {
+                                        continue; // corrupted mirror: header id is the parent's
+                                    }
                                     if let Some(t) = &task_id {
                                         by_uuid.insert(id.to_string(), t.clone());
                                     } else {
@@ -1785,6 +1834,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 
 struct Fmeta {
     mtime: i64,
+    created: i64,
     size: u64,
 }
 
@@ -1796,8 +1846,16 @@ fn fmetadata(path: &Path) -> Option<Fmeta> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // macOS birthtime via created() (falls back to mtime where unavailable)
+    let created = md
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(mtime);
     Some(Fmeta {
         mtime,
+        created,
         size: md.len(),
     })
 }
@@ -2373,6 +2431,7 @@ mod tests {
     }
 
 }
+
 
 
 
