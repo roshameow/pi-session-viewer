@@ -1462,14 +1462,19 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         }
         let sess = target.split(':').next().unwrap_or("").to_string();
         // pid 注册表直连(最硬证据):pane 的 pid 或 pane_pid 在注册表里 →
-        // 直接归属该会话,胜过任何选项/窗口名/启发式。
+        // 直接归属该会话,胜过任何选项/窗口名/启发式。会话文件必须仍存在
+        // (被 /new 删除的会话不应吞掉真实归属,落到下方兜底)。
         if let Some(entry) = registry.get(&pid) {
-            add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
-            continue;
+            if Path::new(&entry.session_path).is_file() {
+                add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+                continue;
+            }
         }
         if let Some(entry) = registry.values().find(|e| e.pane_pid == Some(pid)) {
-            add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
-            continue;
+            if Path::new(&entry.session_path).is_file() {
+                add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+                continue;
+            }
         }
         let win = target.split(':').nth(1).unwrap_or("").to_string();
         // Window names like pi-<cwd>-<id12> carry the session's id12 exactly.
@@ -2693,4 +2698,30 @@ mod tests {
 
 
 
+
+
+#[cfg(test)]
+mod vfy9 {
+    use super::*;
+    #[test]
+    fn dump() {
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        for s in ss.iter().filter(|x| x.id.starts_with("019ff59a") || x.id.starts_with("019ff0f9")) {
+            println!("S id={} sub={} running={} inRmux={} dead={} attached={} term={}", &s.id[..13], s.is_subagent, s.running, s.in_rmux, s.rmux_dead, s.rmux_attached, s.term_alive);
+        }
+    }
+}
+
+#[cfg(test)]
+mod vfya {
+    use super::*;
+    #[test]
+    fn dump() {
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        for s in ss.iter().take(25) {
+            let chip = if s.in_rmux { format!("rmux({})", if s.rmux_dead {"dead"} else if s.rmux_attached {"att"} else {"det"}) } else if s.term_alive { "term".to_string() } else { "-".to_string() };
+            println!("S {} sub={} run={} chip={} {}", &s.id[..13], s.is_subagent, s.running, chip, s.path.rsplit('/').next().unwrap_or(""));
+        }
+    }
+}
 
