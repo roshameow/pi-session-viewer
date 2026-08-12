@@ -1184,7 +1184,13 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             else {
                 continue;
             };
-            let started_at = v.get("startedAt").and_then(|x| x.as_i64()).unwrap_or(0);
+            // 扩展写 Date.now()(毫秒),归一化为秒(旧格式可能已是秒)
+            let started_at_raw = v.get("startedAt").and_then(|x| x.as_i64()).unwrap_or(0);
+            let started_at = if started_at_raw > 10_000_000_000 {
+                started_at_raw / 1000
+            } else {
+                started_at_raw
+            };
             let alive = std::process::Command::new("kill")
                 .args(["-0", &pid.to_string()])
                 .env("PATH", full_path())
@@ -2616,6 +2622,7 @@ mod tests {
     }
 
 }
+
 
 
 
