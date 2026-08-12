@@ -1120,9 +1120,125 @@ fn lsof_cwd(pid: u32) -> Option<String> {
 /// non-rmux main sessions of its project, where N = live terminal pis there.
 /// Used by attach to avoid spawning a duplicate pi for an already-running
 /// session (two pis appending the same jsonl corrupts it).
+#[derive(Clone)]
+struct RuntimeEntry {
+    pid: u32,
+    pane_pid: Option<u32>,
+    session_path: String,
+    cwd: String,
+    started_at: i64,
+    tty: String,
+}
+
+/// Parse `ps -o etime=` output ("123", "01:02", "1:02:03", "2-01:02:03") -> secs.
+fn parse_etime(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (days, rest) = match s.split_once('-') {
+        Some((d, r)) => (d.parse::<i64>().ok()?, r),
+        None => (0, s),
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let secs: i64 = match parts.len() {
+        1 => parts[0].parse().ok()?,
+        2 => parts[0].parse::<i64>().ok()? * 60 + parts[1].parse::<i64>().ok()?,
+        3 => {
+            parts[0].parse::<i64>().ok()? * 3600
+                + parts[1].parse::<i64>().ok()? * 60
+                + parts[2].parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    Some(days * 86400 + secs)
+}
+
+/// Per-process runtime registry written by the pi extension at session_start
+/// (~/.pi/agent/runtime/<pid>.jsonl). Each pi writes ONLY its own pid file —
+/// a private identity slot, so the desktop maps a process (by pid or rmux
+/// pane_pid) straight to its session: no shared mutable state, no heuristics
+/// for registered pis. Validation: kill -0 liveness + elapsed-time vs
+/// registry-age consistency (rejects pid reuse: a fresh process would be
+/// younger than the registry by more than the startup latency). Dead entries
+/// are pruned.
+fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
+    let dir = pi_agent_dir().join("runtime");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut out = HashMap::new();
+    if let Ok(fd) = fs::read_dir(&dir) {
+        for f in fd.flatten() {
+            let p = f.path();
+            let Some(name) = p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
+                continue;
+            };
+            let Some(pid) = name.strip_suffix(".jsonl").and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            let Ok(text) = fs::read_to_string(&p) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+            let Some(session_path) = v
+                .get("sessionPath")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+            else {
+                continue;
+            };
+            let started_at = v.get("startedAt").and_then(|x| x.as_i64()).unwrap_or(0);
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .env("PATH", full_path())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !alive {
+                let _ = fs::remove_file(&p);
+                continue;
+            }
+            // pid-reuse guard: the current process's elapsed time must be >=
+            // the registry's age (it was running when the entry was written),
+            // minus a startup-latency tolerance. A reused pid would be a
+            // younger process -> elapsed << age -> rejected.
+            if let Ok(o) = std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "etime="])
+                .env("PATH", full_path())
+                .output()
+            {
+                if let Some(etime) =
+                    parse_etime(&String::from_utf8_lossy(&o.stdout))
+                {
+                    let age = now - started_at;
+                    if etime < age - 30 {
+                        continue; // pid reused by an unrelated younger process
+                    }
+                }
+            }
+            out.insert(
+                pid,
+                RuntimeEntry {
+                    pid,
+                    pane_pid: v.get("panePid").and_then(|x| x.as_i64()).map(|x| x as u32),
+                    session_path,
+                    cwd: v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_default(),
+                    started_at,
+                    tty: v.get("tty").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_default(),
+                },
+            );
+        }
+    }
+    out
+}
+
 pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
     let path = Path::new(session_path);
     if session_file_running(path) {
+        return true;
+    }
+    // pid 注册表直连:存在 pane_pid 为空的注册表条目指向本会话(终端 pi)
+    if runtime_registry()
+        .values()
+        .any(|e| e.session_path == session_path && e.pane_pid.is_none())
+    {
         return true;
     }
     let cwd = session_detail(session_path)
@@ -1171,6 +1287,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         }
     }
     let mut out = HashMap::new();
+    let registry = runtime_registry();
     let Ok(res) = std::process::Command::new("rmux")
         .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}"])
         .env("PATH", full_path())
@@ -1281,6 +1398,16 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             continue;
         }
         let sess = target.split(':').next().unwrap_or("").to_string();
+        // pid 注册表直连(最硬证据):pane 的 pid 或 pane_pid 在注册表里 →
+        // 直接归属该会话,胜过任何选项/窗口名/启发式。
+        if let Some(entry) = registry.get(&pid) {
+            add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+            continue;
+        }
+        if let Some(entry) = registry.values().find(|e| e.pane_pid == Some(pid)) {
+            add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out, &mut attached_cache);
+            continue;
+        }
         let win = target.split(':').nth(1).unwrap_or("").to_string();
         // Window names like pi-<cwd>-<id12> carry the session's id12 exactly.
         // If the recorded @pi_session option conflicts with it, the NAME wins:
@@ -1521,19 +1648,37 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             }
         }
     }
-    // alive terminal pis in this project -> mark the freshest main sessions
-    // that aren't in rmux as term_alive (chip shows even when the pi is idle)
-    let term_n = alive_terminal_pis()
-        .iter()
-        .filter(|(_, c)| *c == decode_dir_name(project_key))
-        .count();
-    if term_n > 0 {
+    // alive terminal pis in this project -> term_alive (chip shows even when
+    // the pi is idle). registered pis (pid registry, pane_pid == None) map
+    // straight to their session; unregistered ones fall back to marking the
+    // freshest non-rmux main sessions.
+    let term_alive = alive_terminal_pis();
+    let registry = runtime_registry();
+    let mut direct_term: Vec<String> = Vec::new();
+    let mut fallback_n = 0;
+    for (pid, cwd) in &term_alive {
+        if *cwd != decode_dir_name(project_key) {
+            continue;
+        }
+        match registry.get(pid) {
+            Some(e) if e.pane_pid.is_none() => direct_term.push(e.session_path.clone()),
+            _ => fallback_n += 1,
+        }
+    }
+    if !direct_term.is_empty() {
+        for m in out.iter_mut() {
+            if direct_term.contains(&m.path) {
+                m.term_alive = true;
+            }
+        }
+    }
+    if fallback_n > 0 {
         let mut cands: Vec<&mut SessionMeta> = out
             .iter_mut()
-            .filter(|m| !m.is_subagent && !m.in_rmux)
+            .filter(|m| !m.is_subagent && !m.in_rmux && !m.term_alive)
             .collect();
         cands.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
-        for m in cands.into_iter().take(term_n) {
+        for m in cands.into_iter().take(fallback_n) {
             m.term_alive = true;
         }
     }
@@ -2471,6 +2616,7 @@ mod tests {
     }
 
 }
+
 
 
 
