@@ -627,12 +627,58 @@ fn build_subagent_index() -> SubIdx {
             }
         }
     }
-    // a mirror/agent-log is corrupted when its header session predates it by
-    // more than 2 minutes (legit spawns create both at the same instant)
-    let corrupted_log = |id: &str, log_created: i64| -> bool {
-        match session_created.get(id) {
-            Some(sc) => sc + 120 < log_created,
-            None => false, // no session file -> unknown, keep as-is
+    // 预扫描:每个 id 被 agent-log/mirror 首次认领的时间(取最早)。
+    // 一个 id 只有在其会话文件创建时刻附近没有任何 log 认领、而首次认领
+    // 发生在很久之后时,才是"被污染的主会话"——这要求全量 min,不能只看
+    // 当前这条 log(否则 resume 的子代理——新镜像头 id 是旧会话、创建时间
+    // 远晚——会被误杀)。
+    let mut first_log_created: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    {
+        let mut claim = |id: &str, c: i64| {
+            match first_log_created.get(id) {
+                Some(ex) if *ex <= c => {}
+                _ => { first_log_created.insert(id.to_string(), c); }
+            }
+        };
+        let logs_dir = pi_agent_dir().join("agent-logs");
+        if let Ok(fd) = fs::read_dir(&logs_dir) {
+            for f in fd.flatten() {
+                let name = f.file_name().to_string_lossy().to_string();
+                if !name.starts_with("task-") || !name.ends_with(".jsonl") { continue; }
+                if let Some(line) = first_line(&f.path()) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                            claim(id, fmetadata(&f.path()).map(|m| m.created).unwrap_or(0));
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(rd) = fs::read_dir(sessions_dir()) {
+            for e in rd.flatten() {
+                if let Ok(fd) = fs::read_dir(e.path()) {
+                    for f in fd.flatten() {
+                        let name = f.file_name().to_string_lossy().to_string();
+                        if !name.contains("subagent-task-") || !name.ends_with(".jsonl") { continue; }
+                        if let Some(line) = first_line(&f.path()) {
+                            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                                    claim(id, fmetadata(&f.path()).map(|m| m.created).unwrap_or(0));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // corrupted: id 的会话文件存在,且它被 log/mirror 首次认领的时间
+    // 晚于会话创建 >2 分钟 → 这是真正的主会话(用户会话),任何 log/mirror
+    // 声称它是子代理都是 buggy reload 的污染。
+    let corrupted_log = |id: &str| -> bool {
+        match (session_created.get(id), first_log_created.get(id)) {
+            (Some(sc), Some(fl)) => *fl > *sc + 120,
+            _ => false,
         }
     };
     // 1) agent-logs/task-<taskId>.jsonl first line -> session uuid
@@ -650,11 +696,8 @@ fn build_subagent_index() -> SubIdx {
             if let Some(line) = first_line(&f.path()) {
                 if let Ok(v) = serde_json::from_str::<Value>(&line) {
                     if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                        let log_created = fmetadata(&f.path())
-                            .map(|m| m.created)
-                            .unwrap_or(0);
-                        if corrupted_log(id, log_created) {
-                            continue; // corrupted log: session id is the parent's
+                        if corrupted_log(id) {
+                            continue; // corrupted log: session id is a main session
                         }
                         if let Some(t) = &task_id {
                             by_uuid.insert(id.to_string(), t.clone());
@@ -694,11 +737,8 @@ fn build_subagent_index() -> SubIdx {
                         match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
                             "session" => {
                                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                                    let mirror_created = fmetadata(&f.path())
-                                        .map(|m| m.created)
-                                        .unwrap_or(0);
-                                    if corrupted_log(id, mirror_created) {
-                                        continue; // corrupted mirror: header id is the parent's
+                                    if corrupted_log(id) {
+                                        continue; // corrupted mirror: header id is a main session
                                     }
                                     if let Some(t) = &task_id {
                                         by_uuid.insert(id.to_string(), t.clone());
@@ -2431,6 +2471,7 @@ mod tests {
     }
 
 }
+
 
 
 
