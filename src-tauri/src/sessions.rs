@@ -1302,7 +1302,7 @@ fn pane_cwd_session(pid: &u32, already: &HashMap<String, RmuxRuntime>) -> Option
     let cwd = lsof_cwd(*pid)?;
     let dir = sessions_dir().join(encode_dir_name(&cwd));
     let start = process_start_epoch(*pid)?;
-    let mut best: Option<(i64, String)> = None; // (|mtime - start|, path)
+    let mut best: Option<(i64, String)> = None; // (|created - start|, path)
     if let Ok(fd) = fs::read_dir(&dir) {
         for f in fd.flatten() {
             let name = f.file_name().to_string_lossy().to_string();
@@ -1313,14 +1313,36 @@ fn pane_cwd_session(pid: &u32, already: &HashMap<String, RmuxRuntime>) -> Option
             if already.contains_key(&p) {
                 continue;
             }
-            let mt = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
-            let dist = (mt - start).abs();
+            // filename leading timestamp <ts>_<uuid>.jsonl is the session
+            // CREATION time — the pi starts it at that instant. file mtime is
+            // the LAST write: it misleads once the session is used later (an
+            // active session's mtime is far from start) or a decoy session
+            // (created moments before, never written) wins by luck.
+            let created = name
+                .split('_')
+                .next()
+                .and_then(parse_filename_ts)
+                .unwrap_or_else(|| fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0));
+            let dist = (created - start).abs();
             if best.as_ref().map(|(b, _)| dist < *b).unwrap_or(true) {
                 best = Some((dist, p));
             }
         }
     }
     best.map(|(_, p)| p)
+}
+
+/// Parse the session filename timestamp "2026-08-11T13-18-24-851Z" (dashes)
+/// into an epoch, normalizing to parse_iso_ts's "T13:18:24.851Z" (colons).
+fn parse_filename_ts(s: &str) -> Option<i64> {
+    let t = s.find('T')?;
+    let date = &s[..t];
+    let rest = s[t + 1..].trim_end_matches('Z');
+    let parts: Vec<&str> = rest.split('-').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    parse_iso_ts(&format!("{}T{}:{}:{}.{}Z", date, parts[0], parts[1], parts[2], parts[3]))
 }
 
 /// Epoch seconds when the process started. macOS `ps` has no `etimes`, so we
@@ -2351,5 +2373,6 @@ mod tests {
     }
 
 }
+
 
 
