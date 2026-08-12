@@ -1160,6 +1160,18 @@ fn parse_etime(s: &str) -> Option<i64> {
 /// younger than the registry by more than the startup latency). Dead entries
 /// are pruned.
 fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
+    // 2s TTL:list_sessions 会经 rmux map + 终端检测各扫一次,每条目还要
+    // kill + ps 两个子进程,不加缓存会放大子进程开销
+    type RegCache = Option<(std::time::Instant, HashMap<u32, RuntimeEntry>)>;
+    static CACHE: OnceLock<Mutex<RegCache>> = OnceLock::new();
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        if let Some((at, res)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(2) {
+                return res.clone();
+            }
+        }
+    }
     let dir = pi_agent_dir().join("runtime");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1204,7 +1216,9 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             // pid-reuse guard: the current process's elapsed time must be >=
             // the registry's age (it was running when the entry was written),
             // minus a startup-latency tolerance. A reused pid would be a
-            // younger process -> elapsed << age -> rejected.
+            // younger process -> elapsed << age -> rejected. Missing
+            // startedAt (0) skips the guard instead of rejecting the entry.
+            if started_at > 0 {
             if let Ok(o) = std::process::Command::new("ps")
                 .args(["-p", &pid.to_string(), "-o", "etime="])
                 .env("PATH", full_path())
@@ -1219,6 +1233,7 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
                     }
                 }
             }
+            }
             out.insert(
                 pid,
                 RuntimeEntry {
@@ -1232,6 +1247,8 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             );
         }
     }
+    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+        Some((std::time::Instant::now(), out.clone()));
     out
 }
 
