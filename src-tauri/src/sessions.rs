@@ -363,10 +363,10 @@ pub fn list_projects() -> Vec<Project> {
                     if let Some(h) = &header {
                         if let Some(u) = h.get("id").and_then(|x| x.as_str()) {
                             if seen_uuids.insert(u.to_string()) {
-                                if let Some(tid) = task_by_uuid.get(u) {
+                                if let Some(tasks) = task_by_uuid.get(u) {
                                     // subagent: running tasks live in pi-agents (rmux);
                                     // counted in rmux_count (mains + subagents together)
-                                    let is_running = alive.contains(tid);
+                                    let is_running = tasks.iter().any(|t| alive.contains(t));
                                     if is_running {
                                         running_count += 1;
                                         rmux_count += 1;
@@ -579,7 +579,7 @@ fn newest_mtime_secs(dir: &Path) -> u64 {
 
 type SubIdx = (
     HashSet<String>,
-    HashMap<String, String>,
+    HashMap<String, Vec<String>>,
     HashMap<String, String>,
 );
 static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
@@ -598,8 +598,8 @@ pub fn subagent_index() -> SubIdx {
 }
 
 fn build_subagent_index() -> SubIdx {
-    // uuid -> taskId
-    let mut by_uuid: HashMap<String, String> = HashMap::new();
+    // uuid -> taskIds (一个会话 reload 后可能有多个任务:旧已死 + 新在跑)
+    let mut by_uuid: HashMap<String, Vec<String>> = HashMap::new();
     // uuid -> first user message (from mirror files; matches the parent's
     // original subagent call text better than the resumed real session)
     let mut match_text_by_uuid: HashMap<String, String> = HashMap::new();
@@ -705,7 +705,7 @@ fn build_subagent_index() -> SubIdx {
                             continue; // corrupted log: session id is a main session
                         }
                         if let Some(t) = &task_id {
-                            by_uuid.insert(id.to_string(), t.clone());
+                            by_uuid.entry(id.to_string()).or_default().push(t.clone());
                         } else {
                             by_uuid.entry(id.to_string()).or_default();
                         }
@@ -746,7 +746,7 @@ fn build_subagent_index() -> SubIdx {
                                         continue; // corrupted mirror: header id is a main session
                                     }
                                     if let Some(t) = &task_id {
-                                        by_uuid.insert(id.to_string(), t.clone());
+                                        by_uuid.entry(id.to_string()).or_default().push(t.clone());
                                     } else {
                                         by_uuid.entry(id.to_string()).or_default();
                                     }
@@ -867,6 +867,15 @@ fn last_is_terminal(data: &str) -> bool {
     )
 }
 
+/// 一个 uuid 有多个任务时(reload 留下旧死任务 + 新活任务),选**活着**的
+/// 那个作为状态依据;全死则取最早的(显示用)。
+fn pick_task<'a>(tasks: &'a [String], alive: &HashSet<String>) -> Option<&'a String> {
+    tasks
+        .iter()
+        .find(|t| alive.contains(*t))
+        .or_else(|| tasks.first())
+}
+
 fn task_status(task_id: &str, alive: &HashSet<String>) -> TaskStatus {
     let p = pi_agent_dir()
         .join("agent-logs")
@@ -911,8 +920,8 @@ pub struct RunningSession {
 pub fn session_status(path: String) -> String {
     let id = session_id(&path).unwrap_or_default();
     let (_, task_by_uuid, _) = subagent_index();
-    if let Some(tid) = task_by_uuid.get(&id) {
-        let alive = alive_task_ids();
+    let alive = alive_task_ids();
+    if let Some(tid) = task_by_uuid.get(&id).and_then(|tasks| pick_task(tasks, &alive)) {
         return match task_status(tid, &alive) {
             TaskStatus::Running => "running".into(),
             TaskStatus::Sleeping => "sleeping".into(),
@@ -960,7 +969,10 @@ pub fn list_running() -> Vec<RunningSession> {
                     }
                     let is_sub = fname.contains("subagent-task-") || task_by_uuid.contains_key(&id);
                     let is_running = if is_sub {
-                        task_by_uuid.get(&id).map(|t| alive.contains(t)).unwrap_or(false)
+                        task_by_uuid
+                            .get(&id)
+                            .map(|tasks| tasks.iter().any(|t| alive.contains(t)))
+                            .unwrap_or(false)
                     } else {
                         session_file_running(&path)
                     };
@@ -971,7 +983,7 @@ pub fn list_running() -> Vec<RunningSession> {
                         title: first_msg.unwrap_or_else(|| "(empty)".into()),
                         path: spath,
                         is_subagent: is_sub,
-                        task_id: task_by_uuid.get(&id).cloned(),
+                        task_id: task_by_uuid.get(&id).and_then(|tasks| pick_task(tasks, &alive).cloned()),
                         project_key: project_key.clone(),
                     });
                 }
@@ -1677,7 +1689,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             if !fname.ends_with(".jsonl") {
                 continue;
             }
-            if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid) {
+            if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid, &alive) {
                 if m.is_subagent {
                     if let Some(tid) = &m.task_id {
                         match task_status(tid, &alive) {
@@ -1687,8 +1699,8 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                             _ => {}
                         }
                     }
-                    // subagents live in rmux pi-agents when running
-                    if m.running {
+                    // subagents live in rmux pi-agents when running or sleeping
+                    if m.running || m.sleeping {
                         m.in_rmux = true;
                         if let Some(rt) = rmux_map.get(&m.path) {
                             m.rmux_target = Some(rt.target.clone());
@@ -1758,34 +1770,50 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     }
 
     // dedupe: same uuid can have a mirror (subagent-task-*) and a real session
-    // file (normal name). Prefer the real one (fuller history).
+    // file (normal name). Prefer the real one (fuller history). The rmux map
+    // may key the pane by the mirror path OR the real path (registry points
+    // wherever the pi's getSessionFile landed); carry the rmux state over
+    // regardless of which file is processed first — scan order is arbitrary.
     let mut by_id: HashMap<String, SessionMeta> = HashMap::new();
-    for mut m in out {
-        let cur = by_id.get(&m.id);
-        let replace = match cur {
-            None => true,
-            Some(c) => {
-                if !c.path.contains("subagent-task-") && m.path.contains("subagent-task-") {
-                    false // current is real pi session, new is mirror -> keep current
-                } else if c.path.contains("subagent-task-") && !m.path.contains("subagent-task-") {
-                    // current is mirror (rmux map keys subagent panes by the
-                    // mirror path), new is real -> replace, carrying the
-                    // rmux state over so the deduped entry shows its pane
-                    if !c.in_rmux && m.in_rmux {
-                        // nothing to do; real already has it
-                    } else if c.in_rmux {
-                        m.in_rmux = true;
-                        m.rmux_target = c.rmux_target.clone();
-                        m.rmux_attached = c.rmux_attached;
-                        m.rmux_dead = c.rmux_dead;
-                    }
-                    true
-                } else {
-                    m.size > c.size
-                }
-            }
+    for m in out {
+        if !by_id.contains_key(&m.id) {
+            by_id.insert(m.id.clone(), m);
+            continue;
+        }
+        let (cur_is_real, cur_in_rmux, cur_attached, cur_dead, cur_size, cur_target) = {
+            let c = by_id.get(&m.id).unwrap();
+            (
+                !c.path.contains("subagent-task-"),
+                c.in_rmux,
+                c.rmux_attached,
+                c.rmux_dead,
+                c.size,
+                c.rmux_target.clone(),
+            )
         };
-        if replace {
+        let m_is_real = !m.path.contains("subagent-task-");
+        if cur_is_real && !m_is_real {
+            // keep the real; if the mirror carries rmux state the real lacks,
+            // merge it over (mirror processed second)
+            if m.in_rmux && !cur_in_rmux {
+                let c = by_id.get_mut(&m.id).unwrap();
+                c.in_rmux = true;
+                c.rmux_target = m.rmux_target.clone();
+                c.rmux_attached = m.rmux_attached;
+                c.rmux_dead = m.rmux_dead;
+            }
+        } else if !cur_is_real && m_is_real {
+            // replace the mirror with the real, carrying rmux state over
+            // (mirror processed first)
+            let mut real = m;
+            if cur_in_rmux && !real.in_rmux {
+                real.in_rmux = true;
+                real.rmux_target = cur_target;
+                real.rmux_attached = cur_attached;
+                real.rmux_dead = cur_dead;
+            }
+            by_id.insert(real.id.clone(), real);
+        } else if m.size > cur_size {
             by_id.insert(m.id.clone(), m);
         }
     }
@@ -1817,7 +1845,8 @@ fn parse_meta(
     fname: &str,
     running: &HashSet<String>,
     sub_uuids: &HashSet<String>,
-    task_by_uuid: &HashMap<String, String>,
+    task_by_uuid: &HashMap<String, Vec<String>>,
+    alive: &HashSet<String>,
 ) -> Option<SessionMeta> {
     // per-file cache keyed on (mtime, size): steady-state refreshes re-read
     // only the files that actually changed
@@ -1849,7 +1878,11 @@ fn parse_meta(
     let last_msg = tail_preview(path, 160);
     let spath = path.to_string_lossy().to_string();
     let task_id = if is_sub {
-        task_id_from_filename(fname).or_else(|| task_by_uuid.get(&id).cloned())
+        task_id_from_filename(fname).or_else(|| {
+            task_by_uuid
+                .get(&id)
+                .and_then(|tasks| pick_task(tasks, alive).cloned())
+        })
     } else {
         None
     };
@@ -2392,7 +2425,7 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
     }
 
     let (_, task_by_uuid, _) = subagent_index();
-    let task_id = task_by_uuid.get(&header_id).cloned();
+    let task_id = task_by_uuid.get(&header_id).and_then(|tasks| tasks.first().cloned());
     let stats = Stats {
         token_count: tokens,
         message_count: msg_count,
@@ -2721,6 +2754,72 @@ mod vfya {
         for s in ss.iter().take(25) {
             let chip = if s.in_rmux { format!("rmux({})", if s.rmux_dead {"dead"} else if s.rmux_attached {"att"} else {"det"}) } else if s.term_alive { "term".to_string() } else { "-".to_string() };
             println!("S {} sub={} run={} chip={} {}", &s.id[..13], s.is_subagent, s.running, chip, s.path.rsplit('/').next().unwrap_or(""));
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod vfyc {
+    use super::*;
+    #[test]
+    fn dump() {
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        println!("total sessions: {}", ss.len());
+        for s in ss.iter().filter(|x| x.id.starts_with("019ff58e") || x.id.starts_with("019ff597") || x.id.starts_with("019ff59a")) {
+            println!("S {} name={:?} run={} inRmux={} term={} sub={}", &s.id[..13], s.name, s.running, s.in_rmux, s.term_alive, s.is_subagent);
+        }
+    }
+}
+
+#[cfg(test)]
+mod vfyd {
+    use super::*;
+    #[test]
+    fn dump() {
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        for s in ss.iter().filter(|x| x.task_id.is_some()) {
+            if let Some(tid) = &s.task_id {
+                if tid.contains("msqyudp") || tid.contains("msqynf") {
+                    println!("S {} task={} run={} sleep={} intr={} inRmux={} dead={} attached={}", &s.id[..13], tid, s.running, s.sleeping, s.interrupted, s.in_rmux, s.rmux_dead, s.rmux_attached);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod vfye {
+    use super::*;
+    #[test]
+    fn dump() {
+        let m = rmux_runtime_map();
+        for (k, v) in &m {
+            let short: String = k.rsplit('/').next().unwrap_or(&k).chars().take(45).collect();
+            println!("MAP {} -> {} dead={}", short, v.target, v.dead);
+        }
+        println!("---");
+        // 找 fd33/fd47/fd1b 相关的所有会话文件
+        let dir = sessions_dir().join("--Users-wenliu-Code-python-quantnight--");
+        if let Ok(fd) = fs::read_dir(&dir) {
+            for f in fd.flatten() {
+                let name = f.file_name().to_string_lossy().to_string();
+                if name.contains("019ff92b") {
+                    println!("FILE {}", name);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod vfyf {
+    use super::*;
+    #[test]
+    fn dump() {
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        for s in ss.iter().filter(|x| x.id.starts_with("019ff92b")) {
+            println!("S {} task={:?} run={} sleep={} intr={} inRmux={} dead={} attached={}", &s.id[..13], s.task_id, s.running, s.sleeping, s.interrupted, s.in_rmux, s.rmux_dead, s.rmux_attached);
         }
     }
 }

@@ -117,12 +117,14 @@ fn delete_session(path: String) -> Result<(), String> {
                 }
             }
         }
-        if let Some(task_id) = task_by_uuid.get(&id) {
-            let log = sessions::pi_agent_dir()
-                .join("agent-logs")
-                .join(format!("task-{task_id}.jsonl"));
-            if log.is_file() {
-                files.push(log);
+        if let Some(task_ids) = task_by_uuid.get(&id) {
+            if let Some(task_id) = task_ids.first() {
+                let log = sessions::pi_agent_dir()
+                    .join("agent-logs")
+                    .join(format!("task-{task_id}.jsonl"));
+                if log.is_file() {
+                    files.push(log);
+                }
             }
         }
     }
