@@ -564,10 +564,10 @@ export function Sidebar({
               <span>⊘</span> Detach from rmux
             </button>
           )}
-          {ctxMenu.s.inRmux && !ctxMenu.s.rmuxDead && ctxMenu.s.rmuxAttached && (
+          {ctxMenu.s.inRmux && (
             <button
               className="ctx-item danger"
-              title="Close the rmux session — terminates the pi process running inside (hard stop, unlike Detach)"
+              title="Close the rmux session — terminates the pi process running inside (hard stop, unlike Detach; works for detached sessions too)"
               onClick={() => {
                 if (!confirmingKill) {
                   setConfirmingKill(true);
