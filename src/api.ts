@@ -13,6 +13,7 @@ export const api = {
   openInTerminal: (path: string) => invoke<string>("open_in_terminal", { sessionPath: path }),
   attachSession: (path: string) => invoke<string>("attach_session", { sessionPath: path }),
   detachFromRmux: (path: string) => invoke<void>("detach_from_rmux", { sessionPath: path }),
+  killRmuxSession: (path: string) => invoke<void>("kill_rmux_session", { sessionPath: path }),
   sessionStatus: (path: string) => invoke<string>("session_status", { path }),
   listRunning: () => invoke<RunningSession[]>("list_running"),
   listConfig: () => invoke<ConfigView>("list_config"),

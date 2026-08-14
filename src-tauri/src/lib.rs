@@ -448,6 +448,35 @@ fn detach_from_rmux(session_path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Kill (close) the rmux session running this pi session. The whole session
+/// dies — any live pi process in it is terminated and the window is removed
+/// (no remain-on-exit since the session itself is destroyed). Caller must
+/// confirm: this is a hard stop, unlike Detach which keeps the pi running.
+#[tauri::command]
+fn kill_rmux_session(session_path: String) -> Result<(), String> {
+    let rmux = rmux_bin().ok_or("rmux is not installed")?;
+    let map = sessions::rmux_runtime_map();
+    let rt = map
+        .get(&session_path)
+        .ok_or("session is not running in an rmux window")?;
+    let sess = rt.target.split(':').next().unwrap_or("").to_string();
+    if sess.is_empty() {
+        return Err("invalid rmux target".into());
+    }
+    let out = std::process::Command::new(&rmux)
+        .args(["kill-session", "-t", &sess])
+        .env("PATH", sessions::full_path())
+        .output()
+        .map_err(|e| format!("failed to run rmux kill-session: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "rmux kill-session failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 /// Open the session in a terminal. With rmux installed, the pi process runs in
 /// a persistent rmux session (`pi-<encoded-cwd>`), so the tab can be closed
 /// anytime and the agent keeps running; reattach via `pim` or the Attach button.
@@ -567,6 +596,7 @@ pub fn run() {
             open_in_terminal,
             attach_session,
             detach_from_rmux,
+            kill_rmux_session,
             delete_session,
             sessions::list_running,
             sessions::session_status,

@@ -133,6 +133,7 @@ export function Sidebar({
   onOpenTerminal,
   onDeleteSession,
   onDetachFromRmux,
+  onKillRmuxSession,
   onOpenConfig,
   showConfig,
   finishedAt,
@@ -148,6 +149,7 @@ export function Sidebar({
   onOpenTerminal: (path: string) => void;
   onDeleteSession: (path: string) => Promise<void> | void;
   onDetachFromRmux: (path: string) => Promise<void> | void;
+  onKillRmuxSession: (path: string) => Promise<void> | void;
   onOpenConfig: () => void;
   showConfig: boolean;
   finishedAt: Record<string, number>;
@@ -158,12 +160,16 @@ export function Sidebar({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [sessionQuery, setSessionQuery] = useState("");
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; s: SessionMeta } | null>(null);
+  const [confirmingKill, setConfirmingKill] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // close the context menu on outside left-click / Escape
   useEffect(() => {
     if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
+    const close = () => {
+      setCtxMenu(null);
+      setConfirmingKill(false);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setCtxMenu(null);
     };
@@ -487,6 +493,7 @@ export function Sidebar({
                         onSelect={onSelectSession}
                         onContextMenu={(s, x, y) => {
                           setConfirmingDelete(false);
+                          setConfirmingKill(false);
                           setCtxMenu({ x, y, s });
                         }}
                         justFinished={justFinishedFn(s.path)}
@@ -555,6 +562,28 @@ export function Sidebar({
               }}
             >
               <span>⊘</span> Detach from rmux
+            </button>
+          )}
+          {ctxMenu.s.inRmux && !ctxMenu.s.rmuxDead && ctxMenu.s.rmuxAttached && (
+            <button
+              className="ctx-item danger"
+              title="Close the rmux session — terminates the pi process running inside (hard stop, unlike Detach)"
+              onClick={() => {
+                if (!confirmingKill) {
+                  setConfirmingKill(true);
+                  return;
+                }
+                const p = ctxMenu.s.path;
+                setCtxMenu(null);
+                setConfirmingKill(false);
+                onKillRmuxSession(p);
+              }}
+            >
+              {confirmingKill ? (
+                <span className="ctx-danger-text">⚠️ Confirm close (kills pi)?</span>
+              ) : (
+                <span>✕ Close rmux session</span>
+              )}
             </button>
           )}
           <button

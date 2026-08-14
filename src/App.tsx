@@ -326,6 +326,15 @@ export default function App() {
             setError(String(e));
           }
         }}
+        onKillRmuxSession={async (path) => {
+          try {
+            await api.killRmuxSession(path);
+            refreshProjects();
+            if (selectedProject) refreshSessions(selectedProject);
+          } catch (e) {
+            setError(String(e));
+          }
+        }}
         onDeleteSession={async (path) => {
           try {
             await api.deleteSession(path);
