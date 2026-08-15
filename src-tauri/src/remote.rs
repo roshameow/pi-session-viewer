@@ -72,10 +72,30 @@ pub fn list_remote_hosts() -> Vec<String> {
     }
 }
 
+/// ssh 连接复用参数:ControlMaster 持久连接,后续 ssh/rsync 秒级复用
+/// (Tailscale relay 每次握手 1-2s,复用后 ~50ms)。
+fn ssh_master_args() -> Vec<String> {
+    vec![
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "ControlMaster=auto".into(),
+        "-o".into(),
+        "ControlPersist=600".into(),
+        "-o".into(),
+        "ControlPath=/tmp/pi-remote-%r@%h:%p".into(),
+    ]
+}
+
 /// Run a command on the remote host over ssh. Returns stdout.
 pub fn ssh_run(host: &str, cmd: &str) -> Result<String, String> {
+    let mut args = ssh_master_args();
+    args.push(host.to_string());
+    args.push(cmd.to_string());
     let out = std::process::Command::new("ssh")
-        .args(["-o", "ConnectTimeout=10", "-o", "BatchMode=yes", host, cmd])
+        .args(&args)
         .output()
         .map_err(|e| format!("ssh failed: {e}"))?;
     if !out.status.success() {
@@ -99,23 +119,29 @@ pub fn sync_remote(host: &str) -> Result<(), String> {
     }
     // 1) agent tree via rsync over ssh (exclude the cache itself, models,
     //    auth: desktop only needs sessions/agent-logs/runtime for browsing).
+    let mut rargs: Vec<String> = vec!["-az".into(), "--delete".into()];
+    // rsync 走同样的 ControlMaster 连接
+    let master = ssh_master_args();
+    rargs.push("-e".into());
+    rargs.push(format!("ssh {}", master.join(" ")));
+    for x in [
+        "--exclude",
+        "models.json",
+        "--exclude",
+        "auth.json",
+        "--exclude",
+        "mcp.json",
+        "--exclude",
+        "settings.json",
+        "--exclude",
+        "npm/",
+    ] {
+        rargs.push(x.into());
+    }
+    rargs.push(format!("{host}:.pi/agent/"));
+    rargs.push(dst_str.clone());
     let out = std::process::Command::new("rsync")
-        .args([
-            "-az",
-            "--delete",
-            "--exclude",
-            "models.json",
-            "--exclude",
-            "auth.json",
-            "--exclude",
-            "mcp.json",
-            "--exclude",
-            "settings.json",
-            "--exclude",
-            "npm/",
-            &format!("{host}:.pi/agent/"),
-            &dst_str,
-        ])
+        .args(&rargs)
         .output()
         .map_err(|e| format!("rsync failed: {e}"))?;
     if !out.status.success() {
@@ -125,18 +151,18 @@ pub fn sync_remote(host: &str) -> Result<(), String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    // 2) live snapshots for runtime chips (ps + rmux panes)
+    // 2) live snapshots for runtime chips (ps + rmux panes), single ssh round
     //    ps format: `pid tty etime command` (matches sessions.rs ps_lines)
-    let ps = ssh_run(
+    let snap = ssh_run(
         host,
-        "ps -eo pid=,tty=,etime=,command= | grep -E '[p]i([ ]|$)' || true",
+        "echo '---PS---'; ps -eo pid=,tty=,etime=,command= | grep -E '[p]i([ ]|$)' || true; echo '---RMUX---'; rmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}' 2>/dev/null || true",
     )?;
-    std::fs::write(dst.join("ps_snapshot.txt"), ps).map_err(|e| format!("ps snapshot: {e}"))?;
-    let panes = ssh_run(
-        host,
-        "rmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}' 2>/dev/null || true",
-    )?;
-    std::fs::write(dst.join("rmux_snapshot.txt"), panes).map_err(|e| format!("rmux snapshot: {e}"))?;
+    let (ps_part, rmux_part) = snap
+        .split_once("---RMUX---")
+        .map(|(p, r)| (p.trim_start_matches("---PS---\n").to_string(), r.to_string()))
+        .unwrap_or((String::new(), String::new()));
+    std::fs::write(dst.join("ps_snapshot.txt"), ps_part).map_err(|e| format!("ps snapshot: {e}"))?;
+    std::fs::write(dst.join("rmux_snapshot.txt"), rmux_part).map_err(|e| format!("rmux snapshot: {e}"))?;
     Ok(())
 }
 
