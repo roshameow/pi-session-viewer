@@ -137,6 +137,10 @@ export function Sidebar({
   onOpenConfig,
   showConfig,
   finishedAt,
+  remoteHosts,
+  remoteHost,
+  syncing,
+  onSwitchSource,
 }: {
   projects: Project[];
   sessions: SessionMeta[];
@@ -153,6 +157,10 @@ export function Sidebar({
   onOpenConfig: () => void;
   showConfig: boolean;
   finishedAt: Record<string, number>;
+  remoteHosts: string[];
+  remoteHost: string | null;
+  syncing: boolean;
+  onSwitchSource: (host: string | null) => void;
 }) {
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
@@ -161,14 +169,16 @@ export function Sidebar({
   const [sessionQuery, setSessionQuery] = useState("");
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; s: SessionMeta } | null>(null);
   const [confirmingKill, setConfirmingKill] = useState(false);
+  const [remoteMenu, setRemoteMenu] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // close the context menu on outside left-click / Escape
   useEffect(() => {
-    if (!ctxMenu) return;
+    if (!ctxMenu && !remoteMenu) return;
     const close = () => {
       setCtxMenu(null);
       setConfirmingKill(false);
+      setRemoteMenu(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setCtxMenu(null);
@@ -304,6 +314,59 @@ export function Sidebar({
             <circle cx="7" cy="17" r="2.4" fill="var(--bg2)" />
           </svg>
         </button>
+        {remoteHosts.length > 0 && (
+          <div className="remote-btn-wrap">
+            <button
+              className={`icon-btn ${remoteHost ? "active" : ""}`}
+              title={remoteHost ? `Browsing ${remoteHost} (remote) — click to switch source` : "Source: Local — click to browse a remote host"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRemoteMenu(!remoteMenu);
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.2" />
+                <circle cx="5" cy="6" r="2.4" />
+                <circle cx="19" cy="6" r="2.4" />
+                <circle cx="5" cy="18" r="2.4" />
+                <circle cx="19" cy="18" r="2.4" />
+                <path d="M6.8 7.4 10 10.5M17.2 7.4 14 10.5M6.8 16.6 10 13.5M17.2 16.6 14 13.5" />
+              </svg>
+            </button>
+            {remoteMenu && (
+              <div className="remote-menu" onClick={(e) => e.stopPropagation()}>
+                <div className="remote-menu-title">source {syncing ? "· syncing…" : ""}</div>
+                <button
+                  className={`remote-menu-item ${!remoteHost ? "selected" : ""}`}
+                  onClick={() => {
+                    setRemoteMenu(false);
+                    if (remoteHost) onSwitchSource(null);
+                  }}
+                >
+                  ⌁ Local (this Mac)
+                  {!remoteHost && <span className="remote-check">✓</span>}
+                </button>
+                {remoteHosts.map((h) => (
+                  <button
+                    key={h}
+                    className={`remote-menu-item ${remoteHost === h ? "selected" : ""}`}
+                    disabled={syncing}
+                    onClick={() => {
+                      setRemoteMenu(false);
+                      if (remoteHost !== h) onSwitchSource(h);
+                    }}
+                  >
+                    ⌁ {h} (remote)
+                    {remoteHost === h && <span className="remote-check">✓</span>}
+                  </button>
+                ))}
+                {remoteHost && (
+                  <div className="remote-menu-hint">refresh ↻ re-syncs {remoteHost}</div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <button className="icon-btn" title="Refresh now (auto-refresh: 10s)" onClick={onRefresh}>
           <svg
             width="16"

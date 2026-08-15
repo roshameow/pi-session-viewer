@@ -40,6 +40,10 @@ pub fn unmark_running(path: &str) {
 // ---------------------------------------------------------------------------
 
 pub fn pi_agent_dir() -> PathBuf {
+    // 远程源:所有读取指向同步缓存(~/.pi/remote/<host>/agent)
+    if let Some(h) = crate::remote::current_host() {
+        return crate::remote::remote_agent_dir(&h);
+    }
     if let Ok(d) = std::env::var("PI_CODING_AGENT_DIR") {
         return PathBuf::from(d);
     }
@@ -48,6 +52,10 @@ pub fn pi_agent_dir() -> PathBuf {
 }
 
 pub fn sessions_dir() -> PathBuf {
+    // 远程时忽略 PI_CODING_AGENT_SESSION_DIR(那是本机环境的覆盖)
+    if crate::remote::current_host().is_some() {
+        return pi_agent_dir().join("sessions");
+    }
     if let Ok(d) = std::env::var("PI_CODING_AGENT_SESSION_DIR") {
         return PathBuf::from(d);
     }
@@ -2885,3 +2893,50 @@ mod vfyf {
     }
 }
 
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+
+    // 会改全局 CURRENT_HOST;并行会污染其他 sessions 测试,默认跳过。
+    // 手动验证:cargo test remote_ -- --ignored
+    #[test]
+    #[ignore]
+    fn remote_pi_agent_dir_switch() {
+        crate::remote::set_current_host(Some("mac-mini".into()));
+        let d = sessions_dir();
+        let s = d.to_string_lossy().into_owned();
+        assert!(
+            s.contains(".pi/remote/mac-mini/agent/sessions"),
+            "sessions_dir 未切换到远程缓存: {s}"
+        );
+        assert!(
+            pi_agent_dir().to_string_lossy().contains(".pi/remote/mac-mini/agent"),
+            "pi_agent_dir 未切换到远程缓存"
+        );
+        // restore
+        crate::remote::set_current_host(None);
+        assert!(!sessions_dir().to_string_lossy().contains(".pi/remote"));
+    }
+
+    #[test]
+    #[ignore]
+    fn remote_ps_lines_reads_snapshot() {
+        // 写入一个假的 ps 快照,验证远程时 ps_lines 读它
+        crate::remote::set_current_host(Some("test-host".into()));
+        let root = crate::remote::agent_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("ps_snapshot.txt"),
+            "12345 ttys001 01:02 pi --session foo.jsonl\n",
+        )
+        .unwrap();
+        let lines = ps_lines();
+        assert!(lines.len() == 1 && lines[0].contains("pi"), "{lines:?}");
+        assert!(pid_alive(12345));
+        assert!(!pid_alive(99999));
+        // cleanup
+        let _ = std::fs::remove_dir_all(crate::remote::remote_agent_dir("test-host"));
+        crate::remote::set_current_host(None);
+    }
+}

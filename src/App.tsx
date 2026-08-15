@@ -330,30 +330,11 @@ export default function App() {
           </button>
         ))}
       </div>
-      {remoteHosts.length > 0 && (
-        <div className="source-bar">
-          <span className="source-label">source</span>
-          <select
-            className="source-select"
-            value={remoteHost ?? ""}
-            disabled={syncing}
-            onChange={(e) => {
-              const v = e.target.value;
-              switchSource(v === "" ? null : v);
-            }}
-          >
-            <option value="">Local (this Mac)</option>
-            {remoteHosts.map((h) => (
-              <option key={h} value={h}>
-                {h} ▸ remote
-              </option>
-            ))}
-          </select>
-          {remoteHost && <span className="source-hint">browsing {remoteHost} · refresh to re-sync</span>}
-          {syncing && <span className="source-hint">syncing…</span>}
-        </div>
-      )}
       <Sidebar
+        remoteHosts={remoteHosts}
+        remoteHost={remoteHost}
+        syncing={syncing}
+        onSwitchSource={switchSource}
         projects={projects}
         sessions={sessions}
         selectedProject={selectedProject}
