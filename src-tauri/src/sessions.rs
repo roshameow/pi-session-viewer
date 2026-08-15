@@ -580,7 +580,7 @@ fn newest_mtime_secs(dir: &Path) -> u64 {
 type SubIdx = (
     HashSet<String>,
     HashMap<String, Vec<String>>,
-    HashMap<String, String>,
+    HashMap<String, Vec<String>>,
 );
 static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
 
@@ -600,9 +600,13 @@ pub fn subagent_index() -> SubIdx {
 fn build_subagent_index() -> SubIdx {
     // uuid -> taskIds (一个会话 reload 后可能有多个任务:旧已死 + 新在跑)
     let mut by_uuid: HashMap<String, Vec<String>> = HashMap::new();
-    // uuid -> first user message (from mirror files; matches the parent's
-    // original subagent call text better than the resumed real session)
-    let mut match_text_by_uuid: HashMap<String, String> = HashMap::new();
+    // uuid -> first user messages (from mirror files; matches the parent's
+    // original subagent call text better than the resumed real session).
+    // A uuid can have MULTIPLE mirrors (reload spawns a new task with a new
+    // mirror; follow-up user messages land in later mirrors too). Keep ALL
+    // first messages — matching tries each, since the earliest (original
+    // Task) is the one that matches the parent's subagent call.
+    let mut match_text_by_uuid: HashMap<String, Vec<String>> = HashMap::new();
     // session uuid -> creation time of its (normal-named) session file.
     // A subagent mirror/agent-log whose header id points to a session created
     // long BEFORE the mirror is corrupted: a buggy reload ran the subagent
@@ -771,7 +775,10 @@ fn build_subagent_index() -> SubIdx {
                             .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string())),
                         first_msg,
                     ) {
-                        match_text_by_uuid.insert(id, fm);
+                        match_text_by_uuid
+                            .entry(id)
+                            .or_default()
+                            .push(fm);
                     }
                 }
             }
@@ -1824,13 +1831,17 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let parent_calls = collect_parent_calls(project_key);
     for m in out.iter_mut() {
         if m.is_subagent {
-            let match_text = match_text_by_uuid
+            let match_texts = match_text_by_uuid
                 .get(&m.id)
                 .cloned()
-                .or_else(|| m.first_message.clone());
-            if let Some(fm) = match_text {
-                if let Some(p) = match_parent(&fm, &parent_calls) {
-                    m.parent_session_path = Some(p);
+                .filter(|v| !v.is_empty())
+                .or_else(|| m.first_message.clone().map(|f| vec![f]));
+            if let Some(texts) = match_texts {
+                for fm in texts {
+                    if let Some(p) = match_parent(&fm, &parent_calls) {
+                        m.parent_session_path = Some(p);
+                        break;
+                    }
                 }
             }
         }
