@@ -1,5 +1,6 @@
 mod agent;
 mod config;
+mod remote;
 mod sessions;
 
 use std::sync::Arc;
@@ -88,6 +89,17 @@ fn open_file(p: &std::path::Path) -> std::io::Result<()> {
 /// falls back to a permanent delete.
 #[tauri::command]
 fn delete_session(path: String) -> Result<(), String> {
+    // 远程:把缓存路径映射回主机真实路径(~/.pi/remote/<host>/agent -> ~/.pi/agent)
+    let remote_host = remote::current_host();
+    let map_remote = |p: &std::path::Path| -> std::path::PathBuf {
+        if let Some(h) = &remote_host {
+            let base = remote::remote_agent_dir(h);
+            let rel = p.strip_prefix(&base).unwrap_or(p);
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            return std::path::PathBuf::from(home).join(".pi").join("agent").join(rel);
+        }
+        p.to_path_buf()
+    };
     let id = sessions::session_id(&path).unwrap_or_default();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     if std::path::Path::new(&path).is_file() {
@@ -127,6 +139,18 @@ fn delete_session(path: String) -> Result<(), String> {
                 }
             }
         }
+    }
+    if let Some(host) = &remote_host {
+        // 远程:映射回主机路径,ssh rm -f 全部
+        let targets: Vec<String> = files.iter().map(|f| map_remote(f).to_string_lossy().into_owned()).collect();
+        if !targets.is_empty() {
+            remote::ssh_run(host, &format!("rm -f {}", targets.iter().map(|t| shell_quote(t)).collect::<Vec<_>>().join(" ")))?;
+        }
+        // 同时删本地缓存副本
+        for f in files {
+            let _ = std::fs::remove_file(&f);
+        }
+        return Ok(());
     }
     for f in files {
         let status = std::process::Command::new("trash")
@@ -422,6 +446,15 @@ fn ensure_rmux_window(
 /// keeps running; the attached terminal just drops back to its shell prompt.
 #[tauri::command]
 fn detach_from_rmux(session_path: String) -> Result<(), String> {
+    if let Some(host) = remote::current_host() {
+        let map = sessions::rmux_runtime_map();
+        let rt = map.get(&session_path).ok_or("session is not running in an rmux window on this host")?;
+        if rt.dead { return Err("the rmux pane is dead — nothing to detach".into()); }
+        let sess = rt.target.split(':').next().unwrap_or("").to_string();
+        if sess.is_empty() { return Err("invalid rmux target".into()); }
+        remote::ssh_run(&host, &format!("rmux detach-client -s {}", shell_quote(&sess)))?;
+        return Ok(());
+    }
     let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let map = sessions::rmux_runtime_map();
     let rt = map
@@ -454,6 +487,14 @@ fn detach_from_rmux(session_path: String) -> Result<(), String> {
 /// confirm: this is a hard stop, unlike Detach which keeps the pi running.
 #[tauri::command]
 fn kill_rmux_session(session_path: String) -> Result<(), String> {
+    if let Some(host) = remote::current_host() {
+        let map = sessions::rmux_runtime_map();
+        let rt = map.get(&session_path).ok_or("session is not running in an rmux window on this host")?;
+        let sess = rt.target.split(':').next().unwrap_or("").to_string();
+        if sess.is_empty() { return Err("invalid rmux target".into()); }
+        remote::ssh_run(&host, &format!("rmux kill-session -t {}", shell_quote(&sess)))?;
+        return Ok(());
+    }
     let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let map = sessions::rmux_runtime_map();
     let rt = map
@@ -477,12 +518,51 @@ fn kill_rmux_session(session_path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Switch the desktop's agent source (None = local). Syncs the remote host's
+/// agent tree into the local cache first so sessions.rs readers work.
+#[tauri::command]
+fn set_remote_host(host: Option<String>) -> Result<(), String> {
+    if let Some(h) = &host {
+        remote::sync_remote(h)?;
+    }
+    remote::set_current_host(host);
+    Ok(())
+}
+
+/// Configured remote hosts (ssh aliases from ~/.pi-session-viewer.json).
+#[tauri::command]
+fn list_remote_hosts() -> Vec<String> {
+    remote::list_remote_hosts()
+}
+
+/// Current source host (None = local).
+#[tauri::command]
+fn get_remote_host() -> Option<String> {
+    remote::current_host()
+}
+
+/// Re-sync the currently selected remote host (refresh button).
+#[tauri::command]
+fn refresh_remote() -> Result<(), String> {
+    match remote::current_host() {
+        Some(h) => remote::sync_remote(&h),
+        None => Ok(()),
+    }
+}
+
 /// Open the session in a terminal. With rmux installed, the pi process runs in
 /// a persistent rmux session (`pi-<encoded-cwd>`), so the tab can be closed
 /// anytime and the agent keeps running; reattach via `pim` or the Attach button.
 /// Without rmux, falls back to a plain `pi --session` window.
 #[tauri::command]
 fn open_in_terminal(session_path: String) -> Result<String, String> {
+    if let Some(host) = remote::current_host() {
+        let cwd = sessions::session_detail(&session_path)
+            .map(|d| d.cwd)
+            .unwrap_or_default();
+        let cmd = remote::remote_attach_cmd(&host, &cwd, &session_path);
+        return open_terminal_window(&cmd);
+    }
     // already alive in an rmux pane (incl. pim sessions with short names)?
     // attach to that pane's session — never spawn a second pi.
     if let Some(sess) = existing_rmux_session(&session_path) {
@@ -537,6 +617,14 @@ fn attach_session(session_path: String) -> Result<String, String> {
     let cwd = sessions::session_detail(&session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
+    if let Some(host) = remote::current_host() {
+        // 远程:ssh -t 到主机 attach 对应 rmux target(经同步缓存的 map)
+        let sess = existing_rmux_session(&session_path)
+            .ok_or("session is not running in an rmux window on this host")?;
+        let cmd = remote::remote_attach_cmd(&host, &cwd, &sess);
+        let msg = open_terminal_window(&cmd)?;
+        return Ok(format!("attached to {sess} on {host} ({msg})"));
+    }
     let id = sessions::session_id(&session_path).unwrap_or_default();
     let is_sub = sessions::is_subagent_uuid(&id);
     let sess = if let Some(s) = existing_rmux_session(&session_path) {
@@ -598,6 +686,10 @@ pub fn run() {
             detach_from_rmux,
             kill_rmux_session,
             delete_session,
+            set_remote_host,
+            list_remote_hosts,
+            get_remote_host,
+            refresh_remote,
             sessions::list_running,
             sessions::session_status,
             config::list_config,

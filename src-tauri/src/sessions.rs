@@ -1074,16 +1074,12 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
             }
         }
     }
-    let Ok(ps_out) = std::process::Command::new("ps")
-        .args(["-axo", "pid=,tty=,comm="])
-        .env("PATH", full_path())
-        .output()
-    else {
-        return out;
-    };
-    for line in String::from_utf8_lossy(&ps_out.stdout).lines() {
+    for line in ps_lines() {
         let mut it = line.split_whitespace();
-        let (Some(pid_s), Some(tty), Some(comm)) = (it.next(), it.next(), it.next()) else {
+        // ps_lines 格式:pid tty etime command
+        let (Some(pid_s), Some(tty), Some(_etime), Some(comm)) =
+            (it.next(), it.next(), it.next(), it.next())
+        else {
             continue;
         };
         if comm != "pi" || tty == "??" || pane_ttys.contains(tty) {
@@ -1243,20 +1239,15 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             // younger process -> elapsed << age -> rejected. Missing
             // startedAt (0) skips the guard instead of rejecting the entry.
             if started_at > 0 {
-            if let Ok(o) = std::process::Command::new("ps")
-                .args(["-p", &pid.to_string(), "-o", "etime="])
-                .env("PATH", full_path())
-                .output()
-            {
-                if let Some(etime) =
-                    parse_etime(&String::from_utf8_lossy(&o.stdout))
+            if let Some(etime) = pid_line(pid).and_then(|l| {
+                parse_etime(l.split_whitespace().nth(2).unwrap_or(""))
+            })
                 {
                     let age = now - started_at;
                     if etime < age - 30 {
                         continue; // pid reused by an unrelated younger process
                     }
                 }
-            }
             }
             out.insert(
                 pid,
@@ -1283,6 +1274,52 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
 /// Returns (pid, cwd, session_path). This replaces the `ps comm=pi` scan as
 /// the primary terminal-pi enumeration: the registry is the single source of
 /// truth (enumerate + attribute + liveness all from one place).
+// 全量进程行:本地实时 ps,远程读同步快照。格式 "pid tty etime command"。
+// 远程快照只含 pi 进程(同步时 grep),足够运行状态判定。
+fn ps_lines() -> Vec<String> {
+    if crate::remote::current_host().is_some() {
+        let snap = crate::remote::agent_root().join("ps_snapshot.txt");
+        return fs::read_to_string(snap)
+            .unwrap_or_default()
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-eo", "pid=,tty=,etime=,command="])
+        .env("PATH", full_path())
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
+/// 某个 pid 的进程行(pid tty etime command)。
+fn pid_line(pid: u32) -> Option<String> {
+    ps_lines().into_iter().find(|l| {
+        l.split_whitespace()
+            .next()
+            .and_then(|p| p.parse::<u32>().ok())
+            == Some(pid)
+    })
+}
+
+/// pid 是否存活:本地 kill -0,远程在快照里找。
+pub fn pid_alive(pid: u32) -> bool {
+    if crate::remote::current_host().is_some() {
+        return pid_line(pid).is_some();
+    }
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn registry_terminal_pis() -> Vec<(u32, String, String)> {
     let mut pane_ttys: HashSet<String> = HashSet::new();
     if let Ok(res) = std::process::Command::new("rmux")
@@ -1370,20 +1407,32 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     }
     let mut out = HashMap::new();
     let registry = runtime_registry();
-    let Ok(res) = std::process::Command::new("rmux")
-        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}"])
-        .env("PATH", full_path())
-        .output()
-    else {
-        return out;
+    let res: std::process::Output = if crate::remote::current_host().is_some() {
+        // 远程:读同步时的 rmux 快照(格式与本地 list-panes 一致)
+        let snap = crate::remote::agent_root().join("rmux_snapshot.txt");
+        match fs::read_to_string(snap) {
+            Ok(t) => std::process::Output {
+                status: std::process::ExitStatus::default(),
+                stdout: t.into_bytes(),
+                stderr: Vec::new(),
+            },
+            Err(_) => {
+                return out;
+            }
+        }
+    } else {
+        match std::process::Command::new("rmux")
+            .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}"])
+            .env("PATH", full_path())
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                return out;
+            }
+        }
     };
-    let pid_alive = |pid: u32| -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
+    let pid_alive = pid_alive;
 
     // Build id8 -> path, id12 -> path and taskId -> path indexes from one scan of the session dirs.
     let mut id8_map: HashMap<String, String> = HashMap::new();
@@ -1563,12 +1612,13 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // not reveal the session. For a bare `pi` pane (e.g. the `pim` helper
         // creates sessions named pi-<proj> with a generic window name), map by
         // the pane's cwd -> the freshest main session of that project.
-        if let Ok(ps_out) = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .env("PATH", full_path())
-            .output()
-        {
-            let cmd = String::from_utf8_lossy(&ps_out.stdout);
+        if let Some(ps_out) = pid_line(pid) {
+            // pid_line 返回整行 "pid tty etime command";command 从第 4 字段起
+            let cmd = ps_out
+                .split_whitespace()
+                .nth(3)
+                .unwrap_or("")
+                .to_string();
             if cmd.trim() == "pi" {
                 if let Some(p) = pane_cwd_session(&pid, &out) {
                     add(p, target.to_string(), &sess, dead, &mut out, &mut attached_cache);
@@ -1651,11 +1701,12 @@ fn parse_filename_ts(s: &str) -> Option<i64> {
 /// Epoch seconds when the process started. macOS `ps` has no `etimes`, so we
 /// parse `etime` (formats: MM:SS, HH:MM:SS, D-HH:MM:SS).
 fn process_start_epoch(pid: u32) -> Option<i64> {
-    let out = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "etime="])
-        .env("PATH", full_path())
-        .output()
-        .ok()?;
+    let line = pid_line(pid)?;
+    let out = std::process::Output {
+        status: std::process::ExitStatus::default(),
+        stdout: format!("{}\n", line.split_whitespace().nth(2).unwrap_or("")).into_bytes(),
+        stderr: Vec::new(),
+    };
     let etime = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let mut days = 0i64;
     let time_part = if let Some((d, t)) = etime.split_once('-') {
@@ -1739,7 +1790,6 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     // the pi is idle). registered pis (pid registry, pane_pid == None) map
     // straight to their session; unregistered ones fall back to marking the
     // freshest non-rmux main sessions.
-    let registry = runtime_registry();
     let reg_term = registry_terminal_pis();
     let reg_pids: HashSet<u32> = reg_term.iter().map(|(p, _, _)| *p).collect();
     let term_alive = alive_terminal_pis();

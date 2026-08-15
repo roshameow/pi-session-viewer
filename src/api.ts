@@ -17,6 +17,10 @@ export const api = {
   sessionStatus: (path: string) => invoke<string>("session_status", { path }),
   listRunning: () => invoke<RunningSession[]>("list_running"),
   listConfig: () => invoke<ConfigView>("list_config"),
+  setRemoteHost: (host: string | null) => invoke<void>("set_remote_host", { host }),
+  listRemoteHosts: () => invoke<string[]>("list_remote_hosts"),
+  getRemoteHost: () => invoke<string | null>("get_remote_host"),
+  refreshRemote: () => invoke<void>("refresh_remote"),
   sendMessage: (sessionPath: string, message: string, channel: Channel<PiEvent>) =>
     invoke<void>("send_message", { sessionPath, message, onEvent: channel }),
   abortMessage: (sessionPath: string) => invoke<void>("abort_message", { sessionPath }),

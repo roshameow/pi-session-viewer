@@ -31,6 +31,9 @@ export default function App() {
   // per-session draft: draft text bound to each session path
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [showConfig, setShowConfig] = useState(false);
+  const [remoteHosts, setRemoteHosts] = useState<string[]>([]);
+  const [remoteHost, setRemoteHost] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   const channelRef = useRef<Channel<PiEvent> | null>(null);
   const activePathRef = useRef<string | null>(null);
@@ -64,6 +67,21 @@ export default function App() {
       return n;
     });
     loadDetail({ path: t.path } as SessionMeta);
+  };
+
+  const switchSource = async (host: string | null) => {
+    setSyncing(true);
+    try {
+      await api.setRemoteHost(host);
+      setRemoteHost(host);
+      setSelectedProject(null);
+      setDetail(null);
+      await refreshProjects();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const refreshProjects = useCallback(async () => {
@@ -119,6 +137,14 @@ export default function App() {
       .piBinPath()
       .then((p) => api.piVersion().then((v) => setPiInfo(`${p} (v${v})`)).catch(() => setPiInfo(p ?? "pi not found")))
       .catch(() => setPiInfo("pi not found"));
+    api
+      .getRemoteHost()
+      .then((h) => setRemoteHost(h))
+      .catch(() => {});
+    api
+      .listRemoteHosts()
+      .then((hs) => setRemoteHosts(hs))
+      .catch(() => {});
   }, [refreshProjects]);
 
   useEffect(() => {
@@ -304,6 +330,29 @@ export default function App() {
           </button>
         ))}
       </div>
+      {remoteHosts.length > 0 && (
+        <div className="source-bar">
+          <span className="source-label">source</span>
+          <select
+            className="source-select"
+            value={remoteHost ?? ""}
+            disabled={syncing}
+            onChange={(e) => {
+              const v = e.target.value;
+              switchSource(v === "" ? null : v);
+            }}
+          >
+            <option value="">Local (this Mac)</option>
+            {remoteHosts.map((h) => (
+              <option key={h} value={h}>
+                {h} ▸ remote
+              </option>
+            ))}
+          </select>
+          {remoteHost && <span className="source-hint">browsing {remoteHost} · refresh to re-sync</span>}
+          {syncing && <span className="source-hint">syncing…</span>}
+        </div>
+      )}
       <Sidebar
         projects={projects}
         sessions={sessions}
@@ -346,9 +395,20 @@ export default function App() {
           }
         }}
         onRefresh={() => {
-          refreshProjects();
-          if (selectedProject) refreshSessions(selectedProject);
-          if (detail) loadDetail({ path: detail.path } as SessionMeta);
+          if (remoteHost) {
+            api
+              .refreshRemote()
+              .then(() => {
+                refreshProjects();
+                if (selectedProject) refreshSessions(selectedProject);
+                if (detail) loadDetail({ path: detail.path } as SessionMeta);
+              })
+              .catch((e) => setError(String(e)));
+          } else {
+            refreshProjects();
+            if (selectedProject) refreshSessions(selectedProject);
+            if (detail) loadDetail({ path: detail.path } as SessionMeta);
+          }
         }}
       />
       <div className="main">

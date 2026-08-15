@@ -1081,3 +1081,30 @@ body {
   border-color: var(--cyan);
   background: rgba(122, 162, 247, 0.08);
 }
+
+/* ---------- remote source bar ---------- */
+.source-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--bg-elevated, #1a1a1a);
+  flex-shrink: 0;
+}
+.source-label {
+  opacity: 0.6;
+}
+.source-select {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--border, #444);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 4px;
+}
+.source-hint {
+  opacity: 0.5;
+  margin-left: 4px;
+}
