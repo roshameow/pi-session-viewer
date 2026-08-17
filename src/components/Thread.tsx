@@ -259,6 +259,7 @@ export function Thread({
   // tail and grow upward on demand.
   const [windowSize, setWindowSize] = useState(150);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef(0);
   const prevScrollHeight = useRef(0);
   const [expanding, setExpanding] = useState(false);
   const [search, setSearch] = useState("");
@@ -435,7 +436,11 @@ export function Thread({
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 200);
+    // 每帧 setState 会触发 Thread 重渲染;rAF 节流到渲染帧
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 200);
+    });
   };
 
   return (
@@ -555,7 +560,7 @@ export function Thread({
           {visibleItems.map(({ entry, inlineResults, activeIdx }, idx) => {
             if (renderItems.skip.has(activeIdx)) return null;
             return (
-              <EntryView
+              <MemoEntryView
                 key={entry.id + idx}
                 entry={entry}
                 inlineResults={inlineResults}
@@ -621,7 +626,7 @@ function ThinkingLine({ text }: { text: string }) {
   );
 }
 
-function EntryView({
+const MemoEntryView = React.memo(function EntryView({
   entry,
   inlineResults,
   hideToolOutput,
@@ -753,7 +758,7 @@ function EntryView({
     );
 
   return null;
-}
+});
 
 function TimeStamp({ ts }: { ts: string | null }) {
   if (!ts) return null;
