@@ -1747,9 +1747,33 @@ fn process_start_epoch(pid: u32) -> Option<i64> {
     Some(now - secs)
 }
 
+/// 目录指纹:所有 jsonl 文件的 (mtime,size)。文件内容变化(写入)不更新
+/// 目录 mtime,必须逐文件 stat;258+ 文件的 stat ~10ms,比全扫(4s+)快得多。
+fn dir_fingerprint(dir: &std::path::Path) -> Option<Vec<(String, i64, u64)>> {
+    let mut v = Vec::new();
+    for f in fs::read_dir(dir).ok()?.flatten() {
+        let md = fmetadata(&f.path())?;
+        v.push((f.file_name().to_string_lossy().into_owned(), md.mtime, md.size));
+    }
+    v.sort();
+    Some(v)
+}
+
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let root = sessions_dir();
     let dir = root.join(project_key);
+    // 结果级缓存:目录指纹不变直接返回(每 10s 轮询不再全扫 4-6s)
+    type ListCache = Option<(std::time::Instant, Vec<(String, i64, u64)>, Vec<SessionMeta>)>;
+    static LIST_CACHE: OnceLock<Mutex<ListCache>> = OnceLock::new();
+    let fp = dir_fingerprint(&dir);
+    {
+        let cache = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        if let Some((at, prev_fp, res)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(2) && Some(prev_fp) == fp.as_ref() {
+                return res.clone();
+            }
+        }
+    }
     let mut out = Vec::new();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
     let alive = alive_task_ids();
@@ -1914,6 +1938,10 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     }
 
     out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
+    if let Some(f) = fp {
+        *LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+            Some((std::time::Instant::now(), f, out.clone()));
+    }
     out
 }
 
@@ -2946,5 +2974,33 @@ mod remote_tests {
         // cleanup
         let _ = std::fs::remove_dir_all(crate::remote::remote_agent_dir("test-host"));
         crate::remote::set_current_host(None);
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn time_list_projects() {
+        let t0 = std::time::Instant::now();
+        let ps = list_projects();
+        println!("list_projects 1st: {} in {:?}", ps.len(), t0.elapsed());
+        let t0b = std::time::Instant::now();
+        let _ = list_projects();
+        println!("list_projects 2nd: {:?}", t0b.elapsed());
+        let t0c = std::time::Instant::now();
+        let _ = subagent_index();
+        println!("subagent_index: {:?}", t0c.elapsed());
+        let t0d = std::time::Instant::now();
+        let _ = collect_parent_calls("--Users-wenliu-Code-python-quantnight--");
+        println!("collect_parent_calls: {:?}", t0d.elapsed());
+        let t1 = std::time::Instant::now();
+        let ss = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        println!("list_sessions 1st: {} in {:?}", ss.len(), t1.elapsed());
+        let t1b = std::time::Instant::now();
+        let _ = list_sessions("--Users-wenliu-Code-python-quantnight--");
+        println!("list_sessions 2nd: {:?}", t1b.elapsed());
     }
 }
