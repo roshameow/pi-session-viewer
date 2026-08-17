@@ -741,8 +741,16 @@ fn build_subagent_index() -> SubIdx {
                         continue;
                     }
                     let task_id = task_id_from_filename(&name);
-                    let Ok(data) = fs::read(f.path()) else { continue };
-                    let text = String::from_utf8_lossy(&data);
+                    // 只读头部 16KB(header + first user message),不全文——
+                    // 169+ 个 mirror 全文读是 desktop 卡顿主因(每轮几百 MB)
+                    let mut text = String::new();
+                    if let Ok(file) = fs::File::open(f.path()) {
+                        use std::io::Read;
+                        let mut buf = [0u8; 16384];
+                        if let Ok(n) = file.take(16384).read(&mut buf) {
+                            text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        }
+                    }
                     let mut first_msg = None;
                     for (i, line) in text.lines().enumerate() {
                         if i > 20 {
