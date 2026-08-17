@@ -84,6 +84,17 @@ export default function App() {
     }
   };
 
+  // 比较两次 session_detail 内容是否实质相同(消息数 + 最后条目签名)。
+  // 相同则保持旧对象引用,让 Thread 的 memo 命中,避免全量重渲染。
+  const sameSessionContent = (a: SessionDetail, b: SessionDetail): boolean => {
+    if (a.entries.length !== b.entries.length) return false;
+    if (a.active.length !== b.active.length) return false;
+    const la = a.entries[a.entries.length - 1];
+    const lb = b.entries[b.entries.length - 1];
+    if (!la || !lb) return a.entries.length === b.entries.length && a.active.length === b.active.length;
+    return la.id === lb.id && la.ts === lb.ts;
+  };
+
   const refreshProjects = useCallback(async () => {
     try {
       const ps = await api.listProjects();
@@ -165,7 +176,12 @@ export default function App() {
             const cur = ss.find((s) => s.path === detail.path);
             if (cur?.running) {
               const d = await api.sessionDetail(detail.path);
-              setDetail(d);
+              // 内容没变就不替换对象——否则 Thread 的 150 条 Markdown
+              // 每 10s 全量重渲染(entry 引用全变,memo 失效),滑动时卡死。
+              setDetail((prev) => {
+                if (prev && sameSessionContent(prev, d)) return prev;
+                return d;
+              });
             }
           }
         }
