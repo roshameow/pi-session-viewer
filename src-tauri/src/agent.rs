@@ -89,14 +89,19 @@ pub fn send_message(
 
 /// Abort a running conversation for a session.
 #[tauri::command]
-pub fn abort_message(
+pub async fn abort_message(
     state: tauri::State<'_, Arc<AgentState>>,
     session_path: String,
 ) -> Result<(), String> {
-    if let Some(mut c) = state.children.lock().unwrap().remove(&session_path) {
-        let _ = c.kill();
-        let _ = c.wait();
-    }
+    let child = state.children.lock().unwrap().remove(&session_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(mut c) = child {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     unmark_running(&session_path);
     Ok(())
 }

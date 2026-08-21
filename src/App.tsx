@@ -18,6 +18,59 @@ interface Toast {
   interrupted: boolean;
 }
 
+// ---- identity helpers --------------------------------------------------------
+// The 10s poll re-fetches projects/sessions every tick. Without a guard every
+// poll replaced the arrays with fresh objects, re-rendering the whole sidebar
+// (hundreds of SessionItems) even when nothing changed — and during streaming
+// it re-rendered on every live event. Return the previous array when the
+// fields the UI renders are all equal, so memoized views keep their identity.
+
+function sameSessions(a: SessionMeta[], b: SessionMeta[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.path !== y.path ||
+      x.updatedAt !== y.updatedAt ||
+      x.running !== y.running ||
+      x.inRmux !== y.inRmux ||
+      x.termAlive !== y.termAlive ||
+      x.rmuxAttached !== y.rmuxAttached ||
+      x.rmuxDead !== y.rmuxDead ||
+      x.sleeping !== y.sleeping ||
+      x.interrupted !== y.interrupted ||
+      x.isSubagent !== y.isSubagent ||
+      x.taskId !== y.taskId ||
+      x.parentSessionPath !== y.parentSessionPath ||
+      x.name !== y.name ||
+      x.lastMessage !== y.lastMessage
+    )
+      return false;
+  }
+  return true;
+}
+
+function sameProjects(a: Project[], b: Project[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.key !== y.key ||
+      x.cwd !== y.cwd ||
+      x.sessionCount !== y.sessionCount ||
+      x.subagentCount !== y.subagentCount ||
+      x.runningCount !== y.runningCount ||
+      x.rmuxCount !== y.rmuxCount ||
+      x.termCount !== y.termCount ||
+      x.updatedAt !== y.updatedAt
+    )
+      return false;
+  }
+  return true;
+}
+
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
@@ -69,21 +122,6 @@ export default function App() {
     loadDetail({ path: t.path } as SessionMeta);
   };
 
-  const switchSource = async (host: string | null) => {
-    setSyncing(true);
-    try {
-      await api.setRemoteHost(host);
-      setRemoteHost(host);
-      setSelectedProject(null);
-      setDetail(null);
-      await refreshProjects();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   // 比较两次 session_detail 内容是否实质相同(消息数 + 最后条目签名)。
   // 相同则保持旧对象引用,让 Thread 的 memo 命中,避免全量重渲染。
   const sameSessionContent = (a: SessionDetail, b: SessionDetail): boolean => {
@@ -98,7 +136,7 @@ export default function App() {
   const refreshProjects = useCallback(async () => {
     try {
       const ps = await api.listProjects();
-      setProjects(ps);
+      setProjects((prev) => (sameProjects(prev, ps) ? prev : ps));
       setSelectedProject((cur) => cur ?? ps[0]?.key ?? null);
     } catch (e) {
       setError(String(e));
@@ -109,7 +147,7 @@ export default function App() {
     setLoadingSessions(true);
     try {
       const ss = await api.listSessions(projectKey);
-      setSessions(ss);
+      setSessions((prev) => (sameSessions(prev, ss) ? prev : ss));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -121,7 +159,7 @@ export default function App() {
   const refreshSessionsSilent = useCallback(async (projectKey: string) => {
     try {
       const ss = await api.listSessions(projectKey);
-      setSessions(ss);
+      setSessions((prev) => (sameSessions(prev, ss) ? prev : ss));
     } catch {
       // ignore transient errors during polling
     }
@@ -163,21 +201,28 @@ export default function App() {
   }, [selectedProject, refreshSessions]);
 
   // auto-refresh: keep running badges / subagent states live
+  // (detailRef keeps the latest detail visible to the interval closure even
+  // when the effect doesn't re-run — detail content updates without a path change)
+  const detailRef = useRef<SessionDetail | null>(null);
+  detailRef.current = detail;
   useEffect(() => {
     const t = setInterval(async () => {
       try {
         const ps = await api.listProjects();
-        setProjects(ps);
+        setProjects((prev) => (sameProjects(prev, ps) ? prev : ps));
         if (selectedProject) {
           const ss = await api.listSessions(selectedProject);
-          setSessions(ss);
-          // live-update the detail view when the selected session is running
-          if (detail) {
-            const cur = ss.find((s) => s.path === detail.path);
-            if (cur?.running) {
-              const d = await api.sessionDetail(detail.path);
-              // 内容没变就不替换对象——否则 Thread 的 150 条 Markdown
-              // 每 10s 全量重渲染(entry 引用全变,memo 失效),滑动时卡死。
+          setSessions((prev) => (sameSessions(prev, ss) ? prev : ss));
+          // live-update the detail view only when the running session's file
+          // actually changed (mtime/size). Skipping the refetch when nothing
+          // changed avoids shipping the multi-MB detail over IPC + JSON.parse
+          // every 10s (Thread's memo already keeps the DOM stable, but the
+          // transfer cost was still real).
+          const curDetail = detailRef.current;
+          if (curDetail) {
+            const cur = ss.find((s) => s.path === curDetail.path);
+            if (cur?.running && (cur.size !== curDetail.size || cur.updatedAt !== curDetail.updatedAt)) {
+              const d = await api.sessionDetail(curDetail.path);
               setDetail((prev) => {
                 if (prev && sameSessionContent(prev, d)) return prev;
                 return d;
@@ -234,35 +279,54 @@ export default function App() {
     }
   }, [sessions, detail, loadDetail]);
 
-  const selectProject = (p: Project) => {
+  const selectProject = useCallback((p: Project) => {
     setSelectedProject(p.key);
     setDetail(null);
     setShowConfig(false);
-  };
+  }, []);
 
-  const selectSession = (s: SessionMeta) => {
-    setShowConfig(false);
-    setFinishedAt((m) => {
-      const n = { ...m };
-      delete n[s.path];
-      return n;
-    });
-    loadDetail(s);
-  };
+  const selectSession = useCallback(
+    (s: SessionMeta) => {
+      setShowConfig(false);
+      setFinishedAt((m) => {
+        const n = { ...m };
+        delete n[s.path];
+        return n;
+      });
+      loadDetail(s);
+    },
+    [loadDetail]
+  );
 
-  const openConfig = () => {
+  const openConfig = useCallback(() => {
     setShowConfig((v) => !v);
-  };
+  }, []);
+
+  // ---- live event batching ------------------------------------------------
+  // pi streams one JSON event per line; during a fast turn that's many events
+  // per second. setLiveEvents per event re-rendered the whole app every time
+  // (buildLiveBlocks + Thread + Sidebar). Buffer events and flush once per
+  // animation frame instead — at most 60 renders/s, usually far fewer.
+  const pendingEventsRef = useRef<any[]>([]);
+  const liveRafRef = useRef(0);
+  const flushLive = useCallback(() => {
+    liveRafRef.current = 0;
+    setLiveEvents([...pendingEventsRef.current]);
+  }, []);
 
   const send = async (msg: string) => {
     if (!detail || running) return;
-    const evs: any[] = [];
+    pendingEventsRef.current = [];
+    if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
+    liveRafRef.current = 0;
     const channel = new Channel<PiEvent>();
     channel.onmessage = (ev) => {
-      evs.push(ev);
-      setLiveEvents([...evs]);
+      pendingEventsRef.current.push(ev);
       if (ev.type === "process_exit") {
         onTurnDone(activePathRef.current);
+      }
+      if (!liveRafRef.current) {
+        liveRafRef.current = requestAnimationFrame(flushLive);
       }
     };
     activePathRef.current = detail.path;
@@ -280,6 +344,9 @@ export default function App() {
     if (!path) return;
     setRunning(false);
     setLiveEvents([]);
+    pendingEventsRef.current = [];
+    if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
+    liveRafRef.current = 0;
     try {
       if (activePathRef.current === path) {
         setDetail(await api.sessionDetail(path));
@@ -304,6 +371,9 @@ export default function App() {
     try {
       await api.abortMessage(p);
       setRunning(false);
+      pendingEventsRef.current = [];
+      if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
+      liveRafRef.current = 0;
       if (p === detail?.path) {
         setDetail(await api.sessionDetail(p));
         setLiveEvents([]);
@@ -314,6 +384,76 @@ export default function App() {
   };
 
   const liveBlocks: LiveBlock[] = buildLiveBlocks(liveEvents);
+
+  // stable sidebar handlers (memoized Sidebar compares props by identity)
+  const onOpenTerminal = useCallback((path: string) => {
+    api.openInTerminal(path).catch((e) => setError(String(e)));
+  }, []);
+  const onDetachFromRmux = useCallback(
+    async (path: string) => {
+      try {
+        await api.detachFromRmux(path);
+        if (selectedProject) refreshSessions(selectedProject);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [selectedProject, refreshSessions]
+  );
+  const onKillRmuxSession = useCallback(
+    async (path: string) => {
+      try {
+        await api.killRmuxSession(path);
+        refreshProjects();
+        if (selectedProject) refreshSessions(selectedProject);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [selectedProject, refreshProjects, refreshSessions]
+  );
+  const onDeleteSession = useCallback(
+    async (path: string) => {
+      try {
+        await api.deleteSession(path);
+        refreshProjects();
+        if (selectedProject) refreshSessions(selectedProject);
+        if (detail?.path === path) setDetail(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [detail?.path, selectedProject, refreshProjects, refreshSessions]
+  );
+  const onRefresh = useCallback(() => {
+    const reloadAll = () => {
+      refreshProjects();
+      if (selectedProject) refreshSessions(selectedProject);
+      if (detail) loadDetail({ path: detail.path } as SessionMeta);
+    };
+    if (remoteHost) {
+      api
+        .refreshRemote()
+        .then(reloadAll)
+        .catch((e) => setError(String(e)));
+    } else {
+      reloadAll();
+    }
+  }, [remoteHost, selectedProject, refreshProjects, refreshSessions, loadDetail, detail]);
+  const onSwitchSource = useCallback(async (host: string | null) => {
+    setSyncing(true);
+    try {
+      await api.setRemoteHost(host);
+      setRemoteHost(host);
+      setSelectedProject(null);
+      setDetail(null);
+      await refreshProjects();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, [refreshProjects]);
 
   return (
     <div className="app">
@@ -350,63 +490,22 @@ export default function App() {
         remoteHosts={remoteHosts}
         remoteHost={remoteHost}
         syncing={syncing}
-        onSwitchSource={switchSource}
+        onSwitchSource={onSwitchSource}
         projects={projects}
         sessions={sessions}
         selectedProject={selectedProject}
-        selectedSession={detail ? { ...({ path: detail.path } as SessionMeta) } : null}
+        selectedSessionPath={detail?.path ?? null}
         loadingSessions={loadingSessions}
         onSelectProject={selectProject}
         onSelectSession={selectSession}
         onOpenConfig={openConfig}
         showConfig={showConfig}
         finishedAt={finishedAt}
-        onOpenTerminal={(path) => {
-          api.openInTerminal(path).catch((e) => setError(String(e)));
-        }}
-        onDetachFromRmux={async (path) => {
-          try {
-            await api.detachFromRmux(path);
-            if (selectedProject) refreshSessions(selectedProject);
-          } catch (e) {
-            setError(String(e));
-          }
-        }}
-        onKillRmuxSession={async (path) => {
-          try {
-            await api.killRmuxSession(path);
-            refreshProjects();
-            if (selectedProject) refreshSessions(selectedProject);
-          } catch (e) {
-            setError(String(e));
-          }
-        }}
-        onDeleteSession={async (path) => {
-          try {
-            await api.deleteSession(path);
-            refreshProjects();
-            if (selectedProject) refreshSessions(selectedProject);
-            if (detail?.path === path) setDetail(null);
-          } catch (e) {
-            setError(String(e));
-          }
-        }}
-        onRefresh={() => {
-          if (remoteHost) {
-            api
-              .refreshRemote()
-              .then(() => {
-                refreshProjects();
-                if (selectedProject) refreshSessions(selectedProject);
-                if (detail) loadDetail({ path: detail.path } as SessionMeta);
-              })
-              .catch((e) => setError(String(e)));
-          } else {
-            refreshProjects();
-            if (selectedProject) refreshSessions(selectedProject);
-            if (detail) loadDetail({ path: detail.path } as SessionMeta);
-          }
-        }}
+        onOpenTerminal={onOpenTerminal}
+        onDetachFromRmux={onDetachFromRmux}
+        onKillRmuxSession={onKillRmuxSession}
+        onDeleteSession={onDeleteSession}
+        onRefresh={onRefresh}
       />
       <div className="main">
         {error && (

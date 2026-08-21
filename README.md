@@ -58,7 +58,7 @@ Tauri v2 + React 18 + Vite (TypeScript)
 │                               - rmux_runtime_map(每 pi 会话 + @pi_session 选项)/ alive_terminal_pis(进程级)
 │                               - 多级缓存:(mtime,size) 文件指纹 + 2s TTL 子进程结果
 ├── src-tauri/src/agent.rs      spawn `pi --mode json`,stdout 逐行转发到 Channel 流
-├── src-tauri/src/lib.rs        Tauri 命令注册 + rmux/terminal 集成
+├── src-tauri/src/lib.rs        命令注册(全部 spawn_blocking 后台线程)+ rmux/terminal 集成
 ├── src-tauri/resources/        tab-open-helper(稳定签名,标签页按键)
 └── src/                        React 前端(侧边栏 + 线程渲染 + 输入区)
 ```
@@ -67,7 +67,15 @@ Tauri v2 + React 18 + Vite (TypeScript)
 
 ## 性能
 
-后端:会话头读取有界(256KB)+ 提前终止;`parse_meta` / `session_detail` / 父调用收集按 (mtime,size) 增量缓存;`rmux list-panes`、`ps`、`lsof` 结果 2s TTL 缓存。前端:线程**窗口化渲染**(默认尾部 150 条 + "show earlier" 按钮),Markdown 块 memo 化。
+**主线程零阻塞(核心修复)**:Tauri v2 的同步命令直接跑在主线程,而 `list_projects` / `list_sessions` / `session_detail` 在 470+ 会话的项目上各要 6-8s —— 打开 app 即冻结 15s+,10s 轮询又重复占满主线程,表现为"一打开就卡死,任何操作都卡"。现在所有重命令都是 `async fn` + `tauri::async_runtime::spawn_blocking`,跑在 tokio 阻塞线程池,UI 永不冻结(同 agy_bridge 的 `asyncio.to_thread` 原则)。
+
+**子进程批量化**:`rmux_runtime_map` 原本每个 pane 单独 `kill -0`、每个会话单独 `rmux list-clients -t`、每个注册条目/裸 pane 各一次全量 `ps` 扫描(实测 5s);改为一次 `ps -p <全部pid>` + 一次 `rmux list-clients -F`(本 rmux 无 `-a` 标志,默认即列出全部客户端)批量获取存活/etime/命令行(~100ms)。
+
+**结果级缓存**:`list_projects` 按(会话目录 + agent-log 最新 mtime)指纹 12s 缓存;`list_sessions` 按目录指纹缓存;`list_running` 复用 `parse_meta` 的 per-file (mtime,size) 缓存 —— 10s 轮询不再每轮重读 ~120MB 会话文件头。
+
+**前端**:轮询结果与上次逐字段比对(identity guard),没变化就保持原数组引用 → memo 化的 Sidebar / Thread 跳过重渲染;运行中会话的 detail 只在文件 mtime/size 变化时才重新拉取;流式事件按 rAF 批处理(每秒最多 60 次渲染,而不是每行事件一次);`SessionDetail` 携带 `size`/`updatedAt` 供前端判断。
+
+实测(quantnight 项目,472 文件):`list_projects` 8.4s→0.6s(缓存命中 2ms)、`list_sessions` 6.5s→1.2s、`list_running` 520ms→44ms;前端 279 会话侧边栏 + 14.5MB 巨型会话渲染,滚动 120fps 无掉帧。
 
 ## 运行
 

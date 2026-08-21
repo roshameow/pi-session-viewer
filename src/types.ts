@@ -81,6 +81,8 @@ export interface SessionDetail {
   stats: Stats;
   entries: Entry[];
   active: number[];
+  size: number;
+  updatedAt: number;
 }
 
 export interface RunningSession {

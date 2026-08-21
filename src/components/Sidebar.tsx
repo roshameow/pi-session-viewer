@@ -121,11 +121,11 @@ function SessionItem({
   );
 }
 
-export function Sidebar({
+export const Sidebar = React.memo(function Sidebar({
   projects,
   sessions,
   selectedProject,
-  selectedSession,
+  selectedSessionPath,
   loadingSessions,
   onSelectProject,
   onSelectSession,
@@ -145,7 +145,7 @@ export function Sidebar({
   projects: Project[];
   sessions: SessionMeta[];
   selectedProject: string | null;
-  selectedSession: SessionMeta | null;
+  selectedSessionPath: string | null;
   loadingSessions: boolean;
   onSelectProject: (p: Project) => void;
   onSelectSession: (s: SessionMeta) => void;
@@ -160,7 +160,7 @@ export function Sidebar({
   remoteHosts: string[];
   remoteHost: string | null;
   syncing: boolean;
-  onSwitchSource: (host: string | null) => void;
+  onSwitchSource: (host: string | null) => Promise<void> | void;
 }) {
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
@@ -477,7 +477,7 @@ export function Sidebar({
                       <SessionItem
                         s={s}
                         depth={0}
-                        selected={selectedSession?.path === s.path}
+                        selected={selectedSessionPath === s.path}
                         onSelect={onSelectSession}
                         runningSubs={runningSubs}
                         hasSubs={subs.length > 0}
@@ -515,7 +515,7 @@ export function Sidebar({
                                 key={sub.path}
                                 s={sub}
                                 depth={0}
-                                selected={selectedSession?.path === sub.path}
+                                selected={selectedSessionPath === sub.path}
                                 onSelect={onSelectSession}
                                 onContextMenu={(sub, x, y) => {
                                   setConfirmingDelete(false);
@@ -552,7 +552,7 @@ export function Sidebar({
                       <SessionItem
                         s={s}
                         depth={0}
-                        selected={selectedSession?.path === s.path}
+                        selected={selectedSessionPath === s.path}
                         onSelect={onSelectSession}
                         onContextMenu={(s, x, y) => {
                           setConfirmingDelete(false);
@@ -675,4 +675,4 @@ export function Sidebar({
       )}
     </div>
   );
-}
+});

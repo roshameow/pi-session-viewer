@@ -4,20 +4,47 @@ mod remote;
 mod sessions;
 
 use std::sync::Arc;
+use tauri::async_runtime::spawn_blocking;
+
+// ---- async command wrappers -------------------------------------------------
+// Tauri v2 runs SYNC commands on the main thread (the wry IPC callback), so
+// every list_projects / list_sessions / session_detail call froze the whole
+// UI for seconds. All blocking work now runs on the blocking thread pool via
+// spawn_blocking — same principle as agy_bridge.py's asyncio.to_thread: never
+// block the event loop / UI thread.
 
 #[tauri::command]
-fn list_projects() -> Vec<sessions::Project> {
-    sessions::list_projects()
+async fn list_projects() -> Vec<sessions::Project> {
+    spawn_blocking(sessions::list_projects).await.unwrap_or_default()
 }
 
 #[tauri::command]
-fn list_sessions(project_key: String) -> Vec<sessions::SessionMeta> {
-    sessions::list_sessions(&project_key)
+async fn list_sessions(project_key: String) -> Vec<sessions::SessionMeta> {
+    spawn_blocking(move || sessions::list_sessions(&project_key))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn session_detail(path: String) -> Result<sessions::SessionDetail, String> {
-    sessions::session_detail(&path)
+async fn session_detail(path: String) -> Result<sessions::SessionDetail, String> {
+    spawn_blocking(move || sessions::session_detail(&path))
+        .await
+        .map_err(|e| format!("session_detail task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn pi_version() -> Result<String, String> {
+    spawn_blocking(|| {
+        let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
+        let out = std::process::Command::new(bin)
+            .arg("--version")
+            .env("PATH", sessions::full_path())
+            .output()
+            .map_err(|e| format!("{e}"))?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -26,18 +53,13 @@ fn pi_bin_path() -> Option<String> {
 }
 
 #[tauri::command]
-fn pi_version() -> Result<String, String> {
-    let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
-    let out = std::process::Command::new(bin)
-        .arg("--version")
-        .env("PATH", sessions::full_path())
-        .output()
-        .map_err(|e| format!("{e}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+async fn export_session_html(session_path: String) -> Result<String, String> {
+    spawn_blocking(move || export_session_html_sync(&session_path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-fn export_session_html(session_path: String) -> Result<String, String> {
+fn export_session_html_sync(session_path: &str) -> Result<String, String> {
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let downloads = std::path::Path::new(&home).join("Downloads");
@@ -46,13 +68,13 @@ fn export_session_html(session_path: String) -> Result<String, String> {
     } else {
         std::path::PathBuf::from(&home)
     };
-    let id = sessions::session_id(&session_path).unwrap_or_else(|| "session".into());
+    let id = sessions::session_id(session_path).unwrap_or_else(|| "session".into());
     let short: String = id.chars().take(8).collect();
     let out = out_dir.join(format!("pi-session-{short}.html"));
 
     let result = std::process::Command::new(&bin)
         .arg("--export")
-        .arg(&session_path)
+        .arg(session_path)
         .arg(&out)
         .env("PATH", sessions::full_path())
         .output()
@@ -88,7 +110,13 @@ fn open_file(p: &std::path::Path) -> std::io::Result<()> {
 /// Uses the `trash` CLI when available (like pi /resume Ctrl+D), otherwise
 /// falls back to a permanent delete.
 #[tauri::command]
-fn delete_session(path: String) -> Result<(), String> {
+async fn delete_session(path: String) -> Result<(), String> {
+    spawn_blocking(move || delete_session_sync(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn delete_session_sync(path: &str) -> Result<(), String> {
     // 远程:把缓存路径映射回主机真实路径(~/.pi/remote/<host>/agent -> ~/.pi/agent)
     let remote_host = remote::current_host();
     let map_remote = |p: &std::path::Path| -> std::path::PathBuf {
@@ -445,10 +473,16 @@ fn ensure_rmux_window(
 /// Detach all terminals from an rmux session (from the app side). The session
 /// keeps running; the attached terminal just drops back to its shell prompt.
 #[tauri::command]
-fn detach_from_rmux(session_path: String) -> Result<(), String> {
+async fn detach_from_rmux(session_path: String) -> Result<(), String> {
+    spawn_blocking(move || detach_from_rmux_sync(&session_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn detach_from_rmux_sync(session_path: &str) -> Result<(), String> {
     if let Some(host) = remote::current_host() {
         let map = sessions::rmux_runtime_map();
-        let rt = map.get(&session_path).ok_or("session is not running in an rmux window on this host")?;
+        let rt = map.get(session_path).ok_or("session is not running in an rmux window on this host")?;
         if rt.dead { return Err("the rmux pane is dead — nothing to detach".into()); }
         let sess = rt.target.split(':').next().unwrap_or("").to_string();
         if sess.is_empty() { return Err("invalid rmux target".into()); }
@@ -458,7 +492,7 @@ fn detach_from_rmux(session_path: String) -> Result<(), String> {
     let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let map = sessions::rmux_runtime_map();
     let rt = map
-        .get(&session_path)
+        .get(session_path)
         .ok_or("session is not running in an rmux window")?;
     if rt.dead {
         return Err("the rmux pane is dead (pi exited) — nothing to detach".into());
@@ -486,10 +520,16 @@ fn detach_from_rmux(session_path: String) -> Result<(), String> {
 /// (no remain-on-exit since the session itself is destroyed). Caller must
 /// confirm: this is a hard stop, unlike Detach which keeps the pi running.
 #[tauri::command]
-fn kill_rmux_session(session_path: String) -> Result<(), String> {
+async fn kill_rmux_session(session_path: String) -> Result<(), String> {
+    spawn_blocking(move || kill_rmux_session_sync(&session_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn kill_rmux_session_sync(session_path: &str) -> Result<(), String> {
     if let Some(host) = remote::current_host() {
         let map = sessions::rmux_runtime_map();
-        let rt = map.get(&session_path).ok_or("session is not running in an rmux window on this host")?;
+        let rt = map.get(session_path).ok_or("session is not running in an rmux window on this host")?;
         let sess = rt.target.split(':').next().unwrap_or("").to_string();
         if sess.is_empty() { return Err("invalid rmux target".into()); }
         remote::ssh_run(&host, &format!("rmux kill-session -t {}", shell_quote(&sess)))?;
@@ -498,7 +538,7 @@ fn kill_rmux_session(session_path: String) -> Result<(), String> {
     let rmux = rmux_bin().ok_or("rmux is not installed")?;
     let map = sessions::rmux_runtime_map();
     let rt = map
-        .get(&session_path)
+        .get(session_path)
         .ok_or("session is not running in an rmux window")?;
     let sess = rt.target.split(':').next().unwrap_or("").to_string();
     if sess.is_empty() {
@@ -521,12 +561,16 @@ fn kill_rmux_session(session_path: String) -> Result<(), String> {
 /// Switch the desktop's agent source (None = local). Syncs the remote host's
 /// agent tree into the local cache first so sessions.rs readers work.
 #[tauri::command]
-fn set_remote_host(host: Option<String>) -> Result<(), String> {
-    if let Some(h) = &host {
-        remote::sync_remote(h)?;
-    }
-    remote::set_current_host(host);
-    Ok(())
+async fn set_remote_host(host: Option<String>) -> Result<(), String> {
+    spawn_blocking(move || {
+        if let Some(h) = &host {
+            remote::sync_remote(h)?;
+        }
+        remote::set_current_host(host);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Configured remote hosts (ssh aliases from ~/.pi-session-viewer.json).
@@ -543,11 +587,13 @@ fn get_remote_host() -> Option<String> {
 
 /// Re-sync the currently selected remote host (refresh button).
 #[tauri::command]
-fn refresh_remote() -> Result<(), String> {
-    match remote::current_host() {
+async fn refresh_remote() -> Result<(), String> {
+    spawn_blocking(|| match remote::current_host() {
         Some(h) => remote::sync_remote(&h),
         None => Ok(()),
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Open the session in a terminal. With rmux installed, the pi process runs in
@@ -555,31 +601,37 @@ fn refresh_remote() -> Result<(), String> {
 /// anytime and the agent keeps running; reattach via `pim` or the Attach button.
 /// Without rmux, falls back to a plain `pi --session` window.
 #[tauri::command]
-fn open_in_terminal(session_path: String) -> Result<String, String> {
+async fn open_in_terminal(session_path: String) -> Result<String, String> {
+    spawn_blocking(move || open_in_terminal_sync(&session_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn open_in_terminal_sync(session_path: &str) -> Result<String, String> {
     if let Some(host) = remote::current_host() {
-        let cwd = sessions::session_detail(&session_path)
+        let cwd = sessions::session_detail(session_path)
             .map(|d| d.cwd)
             .unwrap_or_default();
-        let cmd = remote::remote_attach_cmd(&host, &cwd, &session_path);
+        let cmd = remote::remote_attach_cmd(&host, &cwd, session_path);
         return open_terminal_window(&cmd);
     }
     // already alive in an rmux pane (incl. pim sessions with short names)?
     // attach to that pane's session — never spawn a second pi.
-    if let Some(sess) = existing_rmux_session(&session_path) {
+    if let Some(sess) = existing_rmux_session(session_path) {
         return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
-    let cwd = sessions::session_detail(&session_path)
+    let cwd = sessions::session_detail(session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
-    let id = sessions::session_id(&session_path).unwrap_or_default();
+    let id = sessions::session_id(session_path).unwrap_or_default();
     let cmd = format!(
         "cd {} && {} --session {}",
         shell_quote(&cwd),
         shell_quote(&bin),
-        shell_quote(&session_path)
+        shell_quote(session_path)
     );
-    if let Some(sess) = ensure_rmux_window(&cwd, &id, &session_path, &cmd)? {
+    if let Some(sess) = ensure_rmux_window(&cwd, &id, session_path, &cmd)? {
         return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
     open_terminal_window(&cmd)
@@ -613,21 +665,27 @@ fn existing_rmux_session(session_path: &str) -> Option<String> {
 /// Attach to the rmux session a session belongs to (pi-agents for subagents,
 /// pi-<project> for main sessions).
 #[tauri::command]
-fn attach_session(session_path: String) -> Result<String, String> {
-    let cwd = sessions::session_detail(&session_path)
+async fn attach_session(session_path: String) -> Result<String, String> {
+    spawn_blocking(move || attach_session_sync(&session_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn attach_session_sync(session_path: &str) -> Result<String, String> {
+    let cwd = sessions::session_detail(session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
     if let Some(host) = remote::current_host() {
         // 远程:ssh -t 到主机 attach 对应 rmux target(经同步缓存的 map)
-        let sess = existing_rmux_session(&session_path)
+        let sess = existing_rmux_session(session_path)
             .ok_or("session is not running in an rmux window on this host")?;
         let cmd = remote::remote_attach_cmd(&host, &cwd, &sess);
         let msg = open_terminal_window(&cmd)?;
         return Ok(format!("attached to {sess} on {host} ({msg})"));
     }
-    let id = sessions::session_id(&session_path).unwrap_or_default();
+    let id = sessions::session_id(session_path).unwrap_or_default();
     let is_sub = sessions::is_subagent_uuid(&id);
-    let sess = if let Some(s) = existing_rmux_session(&session_path) {
+    let sess = if let Some(s) = existing_rmux_session(session_path) {
         // already alive in an rmux pane (incl. pim short-name sessions)
         s
     } else if is_sub {
@@ -637,7 +695,7 @@ fn attach_session(session_path: String) -> Result<String, String> {
         // main sessions: refuse to spawn a duplicate pi when the session is
         // already alive in a terminal window (two pis appending the same
         // jsonl corrupts it). rmux-active sessions fall through to reuse.
-        if sessions::session_has_live_terminal_pi(&session_path) {
+        if sessions::session_has_live_terminal_pi(session_path) {
             return Ok("already running in a terminal window — no duplicate created".to_string());
         }
         // main sessions: ensure the rmux window (create if not running), then attach
@@ -645,9 +703,9 @@ fn attach_session(session_path: String) -> Result<String, String> {
             "cd {} && {} --session {}",
             shell_quote(&cwd),
             shell_quote(&sessions::resolve_pi_bin().unwrap_or_else(|| "pi".into())),
-            shell_quote(&session_path)
+            shell_quote(session_path)
         );
-        match ensure_rmux_window(&cwd, &id, &session_path, &cmd)? {
+        match ensure_rmux_window(&cwd, &id, session_path, &cmd)? {
             Some(s) => s,
             None => "pi-agents".to_string(),
         }
@@ -670,6 +728,21 @@ fn apple_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Status of a session file for the frontend: "running" | "sleeping" |
+/// "finished" | "unknown". Wraps sessions::session_status off-thread.
+#[tauri::command]
+async fn session_status(path: String) -> String {
+    spawn_blocking(move || sessions::session_status(path))
+        .await
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+/// Lightweight snapshot of currently running sessions across ALL projects.
+#[tauri::command]
+async fn list_running() -> Vec<sessions::RunningSession> {
+    spawn_blocking(sessions::list_running).await.unwrap_or_default()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -690,8 +763,8 @@ pub fn run() {
             list_remote_hosts,
             get_remote_host,
             refresh_remote,
-            sessions::list_running,
-            sessions::session_status,
+            session_status,
+            list_running,
             config::list_config,
             agent::send_message,
             agent::abort_message,
