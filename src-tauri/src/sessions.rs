@@ -1348,8 +1348,21 @@ fn ps_lines() -> Vec<String> {
 }
 
 /// 某个 pid 的进程行(pid tty etime command)。
+/// remote: read from the synced ps snapshot (host pids never appear in the
+/// local ps — using it here made every remote pane look dead).
+fn pid_lines_for_lookup() -> Vec<String> {
+    if crate::remote::current_host().is_some() {
+        return std::fs::read_to_string(crate::remote::agent_root().join("ps_snapshot.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+    }
+    ps_lines()
+}
+
 fn pid_line(pid: u32) -> Option<String> {
-    ps_lines().into_iter().find(|l| {
+    pid_lines_for_lookup().into_iter().find(|l| {
         l.split_whitespace()
             .next()
             .and_then(|p| p.parse::<u32>().ok())

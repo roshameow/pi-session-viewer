@@ -655,6 +655,17 @@ fn start_remote_pi(host: &str, cwd: &str, session_path: &str) -> Result<String, 
         .collect();
     let id12: String = id.chars().take(12).collect();
     let sess_name = format!("pi-{clean}-{id12}");
+    // already exists on the host (e.g. created by a previous transfer) → reuse
+    let check = remote::ssh_run(
+        host,
+        &format!(
+            "rmux has-session -t {} 2>/dev/null && echo YES || true",
+            shell_quote(&sess_name)
+        ),
+    )?;
+    if check.trim() == "YES" {
+        return Ok(sess_name);
+    }
     let sess_file = format!("$HOME/.pi/agent/{rel}");
     let inner = format!(
         "cd {} && pi --session {}",
