@@ -3,6 +3,7 @@ mod config;
 mod remote;
 mod sessions;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::async_runtime::spawn_blocking;
 
@@ -596,6 +597,29 @@ async fn refresh_remote() -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Transfer a local session (+ its subagent sessions) to a remote host and
+/// start `pi --session` there inside a detached rmux session. Returns the
+/// rmux session name on the host.
+#[tauri::command]
+async fn transfer_session_to_remote(
+    session_path: String,
+    host: String,
+    remote_cwd: String,
+    prompt: String,
+) -> Result<String, String> {
+    // refuse to transfer a session that has a live local pi appending to it —
+    // two pis writing the same jsonl corrupts it
+    if sessions::running_set().lock().map(|s| s.contains(&session_path)).unwrap_or(false) {
+        return Err("this session has a running desktop conversation — abort it first".into());
+    }
+    if sessions::session_has_live_terminal_pi(&session_path) {
+        return Err("this session is alive in a local terminal/rmux — detach or close it first".into());
+    }
+    spawn_blocking(move || remote::transfer_session_to_remote(&host, &session_path, &remote_cwd, &prompt))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Open the session in a terminal. With rmux installed, the pi process runs in
 /// a persistent rmux session (`pi-<encoded-cwd>`), so the tab can be closed
 /// anytime and the agent keeps running; reattach via `pim` or the Attach button.
@@ -607,12 +631,68 @@ async fn open_in_terminal(session_path: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Start `pi --session <file>` in a detached rmux session on the remote host.
+/// The desktop-side cache path is translated back to the host-side real path
+/// (~/.pi/agent/...). Returns the rmux session name.
+fn start_remote_pi(host: &str, cwd: &str, session_path: &str) -> Result<String, String> {
+    let cache_root = remote::agent_root();
+    let rel = PathBuf::from(session_path)
+        .strip_prefix(&cache_root)
+        .map_err(|_| format!("session is not in the {host} cache: {session_path}"))?
+        .to_string_lossy()
+        .into_owned();
+    let id = sessions::session_id(session_path).unwrap_or_default();
+    let encoded = cwd.trim_start_matches('/').replace('/', "-");
+    let clean: String = encoded
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let id12: String = id.chars().take(12).collect();
+    let sess_name = format!("pi-{clean}-{id12}");
+    let sess_file = format!("$HOME/.pi/agent/{rel}");
+    let inner = format!(
+        "cd {} && pi --session {}",
+        shell_quote(cwd),
+        shell_quote(&sess_file)
+    );
+    remote::ssh_run(
+        host,
+        &format!(
+            "rmux new-session -d -s {} -c {} {}",
+            shell_quote(&sess_name),
+            shell_quote(cwd),
+            shell_quote(&inner)
+        ),
+    )?;
+    Ok(sess_name)
+}
+
 fn open_in_terminal_sync(session_path: &str) -> Result<String, String> {
     if let Some(host) = remote::current_host() {
         let cwd = sessions::session_detail(session_path)
             .map(|d| d.cwd)
             .unwrap_or_default();
-        let cmd = remote::remote_attach_cmd(&host, &cwd, session_path);
+        // alive in a remote rmux pane → attach by rmux SESSION NAME (never
+        // pass the jsonl path as target). Not running → start a detached
+        // `pi --session` in a new rmux session on the host, then attach.
+        let sess = match existing_rmux_session(session_path) {
+            Some(s) => Some(s),
+            None => {
+                remote::sync_remote(&host)?;
+                existing_rmux_session(session_path)
+            }
+        };
+        let sess = match sess {
+            Some(s) => s,
+            None => start_remote_pi(&host, &cwd, session_path)?,
+        };
+        let cmd = remote::remote_attach_cmd(&host, &cwd, &sess);
         return open_terminal_window(&cmd);
     }
     // already alive in an rmux pane (incl. pim sessions with short names)?
@@ -676,9 +756,17 @@ fn attach_session_sync(session_path: &str) -> Result<String, String> {
         .map(|d| d.cwd)
         .unwrap_or_default();
     if let Some(host) = remote::current_host() {
-        // 远程:ssh -t 到主机 attach 对应 rmux target(经同步缓存的 map)
-        let sess = existing_rmux_session(session_path)
-            .ok_or("session is not running in an rmux window on this host")?;
+        // 远程:ssh -t 到主机 attach 对应 rmux target(经同步缓存的 map)。
+        // 快照是 sync 时抓的——新起的 pane(如刚转移的 session)不在其中,
+        // 所以找不到时先重新 sync 一次再查,仍无则报错。
+        let sess = match existing_rmux_session(session_path) {
+            Some(s) => Some(s),
+            None => {
+                remote::sync_remote(&host)?;
+                existing_rmux_session(session_path)
+            }
+        }
+        .ok_or("session is not running in an rmux window on this host")?;
         let cmd = remote::remote_attach_cmd(&host, &cwd, &sess);
         let msg = open_terminal_window(&cmd)?;
         return Ok(format!("attached to {sess} on {host} ({msg})"));
@@ -763,6 +851,7 @@ pub fn run() {
             list_remote_hosts,
             get_remote_host,
             refresh_remote,
+            transfer_session_to_remote,
             session_status,
             list_running,
             config::list_config,

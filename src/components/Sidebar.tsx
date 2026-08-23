@@ -134,6 +134,7 @@ export const Sidebar = React.memo(function Sidebar({
   onDeleteSession,
   onDetachFromRmux,
   onKillRmuxSession,
+  onTransferToRemote,
   onOpenConfig,
   showConfig,
   finishedAt,
@@ -154,6 +155,7 @@ export const Sidebar = React.memo(function Sidebar({
   onDeleteSession: (path: string) => Promise<void> | void;
   onDetachFromRmux: (path: string) => Promise<void> | void;
   onKillRmuxSession: (path: string) => Promise<void> | void;
+  onTransferToRemote: (path: string) => Promise<void> | void;
   onOpenConfig: () => void;
   showConfig: boolean;
   finishedAt: Record<string, number>;
@@ -647,6 +649,23 @@ export const Sidebar = React.memo(function Sidebar({
               ) : (
                 <span>✕ Close rmux session</span>
               )}
+            </button>
+          )}
+          {!ctxMenu.s.isSubagent && !remoteHost && (
+            <button
+              className="ctx-item"
+              title="Copy this session (+ its subagents) to the remote host and keep running there"
+              onClick={async () => {
+                const p = ctxMenu.s.path;
+                setCtxMenu(null);
+                try {
+                  await onTransferToRemote(p);
+                } catch {
+                  /* handled by App */
+                }
+              }}
+            >
+              <span>🌐</span> Transfer to Remote…
             </button>
           )}
           <button

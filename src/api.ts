@@ -18,6 +18,8 @@ export const api = {
   listRunning: () => invoke<RunningSession[]>("list_running"),
   listConfig: () => invoke<ConfigView>("list_config"),
   setRemoteHost: (host: string | null) => invoke<void>("set_remote_host", { host }),
+  transferSessionToRemote: (sessionPath: string, host: string, remoteCwd: string, prompt: string) =>
+    invoke<string>("transfer_session_to_remote", { sessionPath, host, remoteCwd, prompt }),
   listRemoteHosts: () => invoke<string[]>("list_remote_hosts"),
   getRemoteHost: () => invoke<string | null>("get_remote_host"),
   refreshRemote: () => invoke<void>("refresh_remote"),

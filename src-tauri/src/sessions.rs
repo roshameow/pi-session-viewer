@@ -1674,7 +1674,26 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 None
             }
         });
-        let opt_is_file = !opt.is_empty() && Path::new(&opt).is_file();
+        // remote snapshots record the HOST-side absolute path (~/.pi/agent/...);
+        // map it into our local cache dir so is_file() and the map key match
+        // the paths the UI passes (cache-relative session_path).
+        let opt_effective: String = if remote {
+            match opt.find("/.pi/agent/") {
+                Some(i) => {
+                    let rel = &opt[i + "/.pi/agent/".len()..];
+                    let cand = crate::remote::agent_root().join(rel);
+                    if cand.is_file() {
+                        cand.to_string_lossy().into_owned()
+                    } else {
+                        opt.clone()
+                    }
+                }
+                None => opt.clone(),
+            }
+        } else {
+            opt.clone()
+        };
+        let opt_is_file = !opt_effective.is_empty() && Path::new(&opt_effective).is_file();
         let opt_matches_win = opt_is_file && win_id12.as_ref().map_or(false, |w| {
             Path::new(&opt)
                 .file_name()
@@ -1688,7 +1707,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // which misattributes windows when two sessions share the first 8
         // chars of their uuid. A conflicting option is treated as absent.
         if opt_is_file && (win_id12.is_none() || opt_matches_win) {
-            add(opt.clone(), target.to_string(), &sess, dead, &mut out);
+            add(opt_effective.clone(), target.to_string(), &sess, dead, &mut out);
             continue;
         }
         // name-based id12 lookup (option missing or polluted by a foreign pi)
@@ -1701,7 +1720,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             // recorded option is still a valid file — prefer it over the weak
             // cwd/freshness heuristics below
             if opt_is_file {
-                add(opt.clone(), target.to_string(), &sess, dead, &mut out);
+                add(opt_effective.clone(), target.to_string(), &sess, dead, &mut out);
                 continue;
             }
         }

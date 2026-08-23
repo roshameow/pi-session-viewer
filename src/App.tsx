@@ -425,6 +425,38 @@ export default function App() {
     },
     [detail?.path, selectedProject, refreshProjects, refreshSessions]
   );
+  const onTransferToRemote = useCallback(
+    async (path: string) => {
+      const hosts = remoteHosts.length ? remoteHosts : await api.listRemoteHosts();
+      if (!hosts.length) {
+        setError("No remote hosts configured (~/.pi-session-viewer.json)");
+        return;
+      }
+      const host = hosts.length === 1 ? hosts[0] : (prompt(`Transfer to which host?\n${hosts.join("\n")}`, hosts[0]) ?? "");
+      if (!host) return;
+      // default guess: mac-mini-style layout ~/Project/<basename>
+      const detail = await api.sessionDetail(path);
+      const base = (detail.cwd || "").split("/").filter(Boolean).pop() || "project";
+      const remoteCwd = prompt(
+        `Remote working directory on ${host}:`,
+        `~/Project/${base}`
+      );
+      if (!remoteCwd) return;
+      const msg = prompt("First message to send after transfer (empty = just resume interactively):", "") ?? "";
+      try {
+        setSyncing(true);
+        const sess = await api.transferSessionToRemote(path, host, remoteCwd, msg);
+        alert(
+          `Transferred to ${host}.\nrmux session: ${sess}\nAttach locally: ssh -t ${host} 'rmux attach -t ${sess}'`
+        );
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setSyncing(false);
+      }
+    },
+    [remoteHosts]
+  );
   const onRefresh = useCallback(() => {
     const reloadAll = () => {
       refreshProjects();
@@ -505,6 +537,7 @@ export default function App() {
         onDetachFromRmux={onDetachFromRmux}
         onKillRmuxSession={onKillRmuxSession}
         onDeleteSession={onDeleteSession}
+        onTransferToRemote={onTransferToRemote}
         onRefresh={onRefresh}
       />
       <div className="main">
