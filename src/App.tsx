@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta } from "./types";
 import { Sidebar } from "./components/Sidebar";
-import { Thread, buildLiveBlocks, type LiveBlock } from "./components/Thread";
+import { Thread, appendLiveEvents, type LiveBlock } from "./components/Thread";
 import { Composer } from "./components/Composer";
 import { ConfigPanel } from "./components/ConfigPanel";
 
@@ -78,7 +78,7 @@ export default function App() {
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [running, setRunning] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<any[]>([]);
+  const [liveBlocks, setLiveBlocks] = useState<LiveBlock[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [piInfo, setPiInfo] = useState<string>("");
   // per-session draft: draft text bound to each session path
@@ -168,7 +168,7 @@ export default function App() {
   const loadDetail = useCallback(async (s: SessionMeta) => {
     activePathRef.current = s.path;
     setRunning(s.running);
-    setLiveEvents([]);
+    setLiveBlocks([]);
     try {
       const d = await api.sessionDetail(s.path);
       setDetail(d);
@@ -178,10 +178,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
     refreshProjects();
-    getCurrentWindow().onFocusChanged(({ payload }) => {
-      if (payload) refreshProjects();
-    });
+    getCurrentWindow()
+      .onFocusChanged(({ payload }) => {
+        if (payload) refreshProjects();
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
     api
       .piBinPath()
       .then((p) => api.piVersion().then((v) => setPiInfo(`${p} (v${v})`)).catch(() => setPiInfo(p ?? "pi not found")))
@@ -194,6 +201,10 @@ export default function App() {
       .listRemoteHosts()
       .then((hs) => setRemoteHosts(hs))
       .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [refreshProjects]);
 
   useEffect(() => {
@@ -206,68 +217,74 @@ export default function App() {
   const detailRef = useRef<SessionDetail | null>(null);
   detailRef.current = detail;
   useEffect(() => {
-    const t = setInterval(async () => {
-      try {
-        const ps = await api.listProjects();
-        setProjects((prev) => (sameProjects(prev, ps) ? prev : ps));
-        if (selectedProject) {
-          const ss = await api.listSessions(selectedProject);
-          setSessions((prev) => (sameSessions(prev, ss) ? prev : ss));
-          // live-update the detail view only when the running session's file
-          // actually changed (mtime/size). Skipping the refetch when nothing
-          // changed avoids shipping the multi-MB detail over IPC + JSON.parse
-          // every 10s (Thread's memo already keeps the DOM stable, but the
-          // transfer cost was still real).
-          const curDetail = detailRef.current;
-          if (curDetail) {
-            const cur = ss.find((s) => s.path === curDetail.path);
-            if (cur?.running && (cur.size !== curDetail.size || cur.updatedAt !== curDetail.updatedAt)) {
-              const d = await api.sessionDetail(curDetail.path);
-              setDetail((prev) => {
-                if (prev && sameSessionContent(prev, d)) return prev;
-                return d;
-              });
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      // Recursive setTimeout guarantees that a slow filesystem scan cannot
+      // overlap the next scan and multiply CPU usage. Background/minimized
+      // windows do not need live badges; focus triggers a refresh separately.
+      if (!document.hidden) {
+        try {
+          const ps = await api.listProjects();
+          setProjects((prev) => (sameProjects(prev, ps) ? prev : ps));
+          if (selectedProject) {
+            const ss = await api.listSessions(selectedProject);
+            setSessions((prev) => (sameSessions(prev, ss) ? prev : ss));
+            const curDetail = detailRef.current;
+            if (curDetail) {
+              const cur = ss.find((s) => s.path === curDetail.path);
+              if (cur?.running && (cur.size !== curDetail.size || cur.updatedAt !== curDetail.updatedAt)) {
+                const d = await api.sessionDetail(curDetail.path);
+                setDetail((prev) => {
+                  if (prev && sameSessionContent(prev, d)) return prev;
+                  return d;
+                });
+              }
             }
           }
-        }
-        // notify when a previously-running session finished / was paused
-        const running = await api.listRunning();
-        const prev = prevRunningRef.current;
-        if (prev) {
-          for (const [path, info] of prev) {
-            if (!running.some((r) => r.path === path)) {
-              // classify: sleeping (paused) vs finished
-              let status = "finished";
-              try {
-                status = await api.sessionStatus(path);
-              } catch {
-                /* fall back to finished */
+          const running = await api.listRunning();
+          const runningPaths = new Set(running.map((r) => r.path));
+          const prev = prevRunningRef.current;
+          if (prev) {
+            for (const [path, info] of prev) {
+              if (!runningPaths.has(path)) {
+                let status = "finished";
+                try {
+                  status = await api.sessionStatus(path);
+                } catch {
+                  /* fall back to finished */
+                }
+                if (status === "finished") {
+                  setFinishedAt((m) => ({ ...m, [path]: Date.now() }));
+                }
+                addToast(
+                  path,
+                  info.projectKey,
+                  info.title,
+                  info.isSubagent,
+                  status === "sleeping",
+                  status === "interrupted"
+                );
               }
-              if (status === "finished") {
-                setFinishedAt((m) => ({ ...m, [path]: Date.now() }));
-              }
-              addToast(
-                path,
-                info.projectKey,
-                info.title,
-                info.isSubagent,
-                status === "sleeping",
-                status === "interrupted"
-              );
             }
           }
+          prevRunningRef.current = new Map(
+            running.map((r) => [
+              r.path,
+              { title: r.title, isSubagent: r.isSubagent, projectKey: r.projectKey },
+            ])
+          );
+        } catch {
+          // ignore transient polling errors
         }
-        prevRunningRef.current = new Map(
-          running.map((r) => [
-            r.path,
-            { title: r.title, isSubagent: r.isSubagent, projectKey: r.projectKey },
-          ])
-        );
-      } catch {
-        // ignore transient polling errors
       }
-    }, 10000);
-    return () => clearInterval(t);
+      if (!cancelled) timer = window.setTimeout(poll, 10000);
+    };
+    timer = window.setTimeout(poll, 10000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [selectedProject, detail?.path, addToast]);
 
   // auto-open the most recent session on first load (like `pi -c`)
@@ -303,35 +320,36 @@ export default function App() {
   }, []);
 
   // ---- live event batching ------------------------------------------------
-  // pi streams one JSON event per line; during a fast turn that's many events
-  // per second. setLiveEvents per event re-rendered the whole app every time
-  // (buildLiveBlocks + Thread + Sidebar). Buffer events and flush once per
-  // animation frame instead — at most 60 renders/s, usually far fewer.
+  // Keep only events that have not yet been reduced into blocks. The old path
+  // retained and reprocessed the entire raw stream on every animation frame,
+  // turning long responses into O(n²) work and up to 60 markdown renders/s.
   const pendingEventsRef = useRef<any[]>([]);
-  const liveRafRef = useRef(0);
+  const liveTimerRef = useRef(0);
   const flushLive = useCallback(() => {
-    liveRafRef.current = 0;
-    setLiveEvents([...pendingEventsRef.current]);
+    liveTimerRef.current = 0;
+    const batch = pendingEventsRef.current.splice(0);
+    if (batch.length) setLiveBlocks((prev) => appendLiveEvents(prev, batch));
   }, []);
 
   const send = async (msg: string) => {
     if (!detail || running) return;
     pendingEventsRef.current = [];
-    if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
-    liveRafRef.current = 0;
+    if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
+    liveTimerRef.current = 0;
     const channel = new Channel<PiEvent>();
     channel.onmessage = (ev) => {
       pendingEventsRef.current.push(ev);
       if (ev.type === "process_exit") {
         onTurnDone(activePathRef.current);
-      }
-      if (!liveRafRef.current) {
-        liveRafRef.current = requestAnimationFrame(flushLive);
+      } else if (!liveTimerRef.current) {
+        // 12.5 updates/s is visually smooth for text while avoiding a full
+        // markdown/layout pass for every token.
+        liveTimerRef.current = window.setTimeout(flushLive, 80);
       }
     };
     activePathRef.current = detail.path;
     setRunning(true);
-    setLiveEvents([]);
+    setLiveBlocks([]);
     try {
       await api.sendMessage(detail.path, msg, channel);
     } catch (e) {
@@ -343,10 +361,10 @@ export default function App() {
   const onTurnDone = async (path: string | null) => {
     if (!path) return;
     setRunning(false);
-    setLiveEvents([]);
+    setLiveBlocks([]);
     pendingEventsRef.current = [];
-    if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
-    liveRafRef.current = 0;
+    if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
+    liveTimerRef.current = 0;
     try {
       if (activePathRef.current === path) {
         setDetail(await api.sessionDetail(path));
@@ -372,18 +390,16 @@ export default function App() {
       await api.abortMessage(p);
       setRunning(false);
       pendingEventsRef.current = [];
-      if (liveRafRef.current) cancelAnimationFrame(liveRafRef.current);
-      liveRafRef.current = 0;
+      if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
+      liveTimerRef.current = 0;
       if (p === detail?.path) {
         setDetail(await api.sessionDetail(p));
-        setLiveEvents([]);
+        setLiveBlocks([]);
       }
     } catch (e) {
       setError(String(e));
     }
   };
-
-  const liveBlocks: LiveBlock[] = buildLiveBlocks(liveEvents);
 
   // stable sidebar handlers (memoized Sidebar compares props by identity)
   const onOpenTerminal = useCallback((path: string) => {

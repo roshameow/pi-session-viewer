@@ -851,14 +851,10 @@ pub enum TaskStatus {
 /// command line. One ps call covers every task.
 fn alive_task_ids() -> HashSet<String> {
     let mut out = HashSet::new();
-    let Ok(res) = std::process::Command::new("ps")
-        .args(["-axo", "command"])
-        .output()
-    else {
-        return out;
-    };
-    let text = String::from_utf8_lossy(&res.stdout);
-    for line in text.lines() {
+    // 远程主机:子代理进程只存在于 host 上,本机 ps 永远看不到——必须读同步
+    // 下来的 ps_snapshot.txt(ps_lines() 已做远程适配);本地模式仍走实时 ps。
+    let lines = ps_lines();
+    for line in lines.iter() {
         // task ids appear as path suffixes, e.g. .../agent-logs/task-<id>.jsonl
         let bytes = line.as_bytes();
         let mut i = 0usize;
@@ -885,37 +881,73 @@ fn alive_task_ids() -> HashSet<String> {
     out
 }
 
-/// Last agent-log event is a bash `sleep N` (the agent waiting, will continue).
-fn last_is_sleep(data: &str) -> bool {
-    let last = data.lines().rev().find(|l| !l.trim().is_empty());
-    let Some(last) = last else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(last) else {
-        return false;
-    };
-    let is_bash_tool = v.get("toolName").and_then(|x| x.as_str()) == Some("bash");
-    if !is_bash_tool {
-        return false;
-    }
-    let cmd = v
-        .get("args")
-        .and_then(|a| a.get("command"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    // "sleep 1500" / "sleep 2900; cd ..."
-    let trimmed = cmd.trim_start();
-    trimmed.starts_with("sleep ") || trimmed.starts_with("sleep\\t")
+#[derive(Clone, Copy)]
+enum LastTaskEvent {
+    Sleep,
+    Terminal,
+    Other,
 }
 
-fn last_is_terminal(data: &str) -> bool {
-    let last = data.lines().rev().find(|l| !l.trim().is_empty());
-    let Some(last) = last else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(last) else {
-        return false;
-    };
-    matches!(
-        v.get("type").and_then(|x| x.as_str()),
-        Some("agent_end") | Some("agent_settled")
-    )
+/// Classify only the last agent-log event. Some task logs are tens of MB; the
+/// old `fs::read` path loaded and UTF-8-scanned every log for every 10-second
+/// poll (hundreds of MB per refresh). Tail reads are bounded, and unchanged
+/// files reuse the metadata-keyed classification.
+fn last_task_event(path: &Path) -> LastTaskEvent {
+    type TailCache = HashMap<String, (i64, u64, LastTaskEvent)>;
+    static CACHE: OnceLock<Mutex<TailCache>> = OnceLock::new();
+
+    let key = path.to_string_lossy().into_owned();
+    let Some(md) = fmetadata(path) else { return LastTaskEvent::Other };
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+        if let Some((mtime, size, event)) = cache.get(&key) {
+            if *mtime == md.mtime && *size == md.size {
+                return *event;
+            }
+        }
+    }
+
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX_TAIL: u64 = 64 * 1024;
+    let event = (|| {
+        let mut file = fs::File::open(path).ok()?;
+        let start = md.size.saturating_sub(MAX_TAIL);
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut data = Vec::with_capacity((md.size - start) as usize);
+        file.read_to_end(&mut data).ok()?;
+        let text = String::from_utf8_lossy(&data);
+        let last = text.lines().rev().find(|line| !line.trim().is_empty())?;
+        // If one JSON event itself exceeds 64 KiB, the bounded chunk starts in
+        // the middle and parsing safely falls back to Other.
+        let v = serde_json::from_str::<Value>(last).ok()?;
+        if matches!(
+            v.get("type").and_then(|x| x.as_str()),
+            Some("agent_end") | Some("agent_settled")
+        ) {
+            return Some(LastTaskEvent::Terminal);
+        }
+        if v.get("toolName").and_then(|x| x.as_str()) == Some("bash") {
+            let cmd = v
+                .get("args")
+                .and_then(|a| a.get("command"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .trim_start();
+            if cmd.starts_with("sleep ") || cmd.starts_with("sleep\t") {
+                return Some(LastTaskEvent::Sleep);
+            }
+        }
+        Some(LastTaskEvent::Other)
+    })()
+    .unwrap_or(LastTaskEvent::Other);
+
+    let mut cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    // Avoid retaining stale entries forever after task logs are removed.
+    if cache.len() > 4096 {
+        cache.clear();
+    }
+    cache.insert(key, (md.mtime, md.size, event));
+    event
 }
 
 /// 一个 uuid 有多个任务时(reload 留下旧死任务 + 新活任务),选**活着**的
@@ -931,22 +963,22 @@ fn task_status(task_id: &str, alive: &HashSet<String>) -> TaskStatus {
     let p = pi_agent_dir()
         .join("agent-logs")
         .join(format!("task-{task_id}.jsonl"));
-    let Ok(data) = fs::read(&p) else {
+    if !p.is_file() {
         return if alive.contains(task_id) {
             TaskStatus::Running
         } else {
             TaskStatus::Unknown
         };
-    };
-    let text = String::from_utf8_lossy(&data);
+    }
+    let event = last_task_event(&p);
     if alive.contains(task_id) {
         // process alive: sleeping only while a bash sleep is running
-        if last_is_sleep(&text) {
+        if matches!(event, LastTaskEvent::Sleep) {
             TaskStatus::Sleeping
         } else {
             TaskStatus::Running
         }
-    } else if last_is_terminal(&text) {
+    } else if matches!(event, LastTaskEvent::Terminal) {
         TaskStatus::Finished
     } else {
         TaskStatus::Interrupted
@@ -1334,17 +1366,33 @@ fn ps_lines() -> Vec<String> {
             .map(|s| s.to_string())
             .collect();
     }
-    let out = std::process::Command::new("ps")
+    // list_projects, list_sessions and list_running execute back-to-back in a
+    // single refresh. Share one process snapshot instead of spawning/scanning
+    // `ps` three or more times.
+    type PsCache = Option<(std::time::Instant, Vec<String>)>;
+    static CACHE: OnceLock<Mutex<PsCache>> = OnceLock::new();
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        if let Some((at, lines)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(2) {
+                return lines.clone();
+            }
+        }
+    }
+    let lines: Vec<String> = std::process::Command::new("ps")
         .args(["-eo", "pid=,tty=,etime=,command="])
         .env("PATH", full_path())
-        .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect(),
-        Err(_) => vec![],
-    }
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+        Some((std::time::Instant::now(), lines.clone()));
+    lines
 }
 
 /// 某个 pid 的进程行(pid tty etime command)。
@@ -2064,6 +2112,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     // parent linkage: match subagent first message against the parent session's
     // subagent tool calls (task text), within this project.
     let parent_calls = collect_parent_calls(project_key);
+    let parent_sig = parent_calls_signature(&parent_calls);
     for m in out.iter_mut() {
         if m.is_subagent {
             let match_texts = match_text_by_uuid
@@ -2073,7 +2122,13 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                 .or_else(|| m.first_message.clone().map(|f| vec![f]));
             if let Some(texts) = match_texts {
                 for fm in texts {
-                    if let Some(p) = match_parent(&fm, &parent_calls) {
+                    if let Some(p) = match_parent_cached(
+                        project_key,
+                        &m.id,
+                        &fm,
+                        parent_sig,
+                        &parent_calls,
+                    ) {
                         m.parent_session_path = Some(p);
                         break;
                     }
@@ -2184,18 +2239,11 @@ fn parse_meta(
 // land in the dedicated subagent section.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct ParentCall {
     path: String,
     task: String, // normalized
-}
-
-impl Clone for ParentCall {
-    fn clone(&self) -> Self {
-        ParentCall {
-            path: self.path.clone(),
-            task: self.task.clone(),
-        }
-    }
+    alpha_id: Option<String>,
 }
 
 fn normalize_text(s: &str) -> String {
@@ -2287,6 +2335,16 @@ fn scan_file_for_parent_calls(path: &Path, out: &mut Vec<ParentCall>) {
     }
 }
 
+fn push_parent_call(out: &mut Vec<ParentCall>, path: &Path, task: &str) {
+    let task = normalize_text(task);
+    let alpha_id = extract_alpha_id(&task);
+    out.push(ParentCall {
+        path: path.to_string_lossy().to_string(),
+        task,
+        alpha_id,
+    });
+}
+
 fn extract_tasks(args: &Value, out: &mut Vec<ParentCall>, path: &Path) {
     match args {
         Value::String(s) => {
@@ -2296,24 +2354,64 @@ fn extract_tasks(args: &Value, out: &mut Vec<ParentCall>, path: &Path) {
         }
         Value::Object(map) => {
             if let Some(t) = map.get("task").and_then(|x| x.as_str()) {
-                out.push(ParentCall {
-                    path: path.to_string_lossy().to_string(),
-                    task: normalize_text(t),
-                });
+                push_parent_call(out, path, t);
             }
             if let Some(tasks) = map.get("tasks").and_then(|x| x.as_array()) {
                 for t in tasks {
                     if let Some(s) = t.get("task").and_then(|x| x.as_str()) {
-                        out.push(ParentCall {
-                            path: path.to_string_lossy().to_string(),
-                            task: normalize_text(s),
-                        });
+                        push_parent_call(out, path, s);
                     }
                 }
             }
         }
         _ => {}
     }
+}
+
+fn parent_calls_signature(calls: &[ParentCall]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    // read_dir order is unspecified, so combine per-call hashes in an
+    // order-independent way; unchanged calls then keep cache hits.
+    calls.iter().fold(0u64, |signature, call| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        call.path.hash(&mut hasher);
+        call.task.hash(&mut hasher);
+        signature.wrapping_add(hasher.finish())
+    })
+}
+
+fn match_parent_cached(
+    project_key: &str,
+    session_id: &str,
+    first_message: &str,
+    calls_sig: u64,
+    calls: &[ParentCall],
+) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    type MatchCache = HashMap<(String, String, u64, u64), Option<String>>;
+    static CACHE: OnceLock<Mutex<MatchCache>> = OnceLock::new();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    first_message.hash(&mut hasher);
+    let text_sig = hasher.finish();
+    let key = (
+        project_key.to_string(),
+        session_id.to_string(),
+        calls_sig,
+        text_sig,
+    );
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+        if let Some(result) = cache.get(&key) {
+            return result.clone();
+        }
+    }
+    let result = match_parent(first_message, calls);
+    let mut cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    if cache.len() > 8192 {
+        cache.clear();
+    }
+    cache.insert(key, result.clone());
+    result
 }
 
 fn match_parent(first_message: &str, calls: &[ParentCall]) -> Option<String> {
@@ -2340,7 +2438,7 @@ fn match_parent(first_message: &str, calls: &[ParentCall]) -> Option<String> {
             0.0
         };
         // alpha id (e.g. blQqQL86) present in both -> strong signal
-        if let Some(pid) = extract_alpha_id(a) {
+        if let Some(pid) = &c.alpha_id {
             if body_alpha.as_deref() == Some(pid.as_str()) {
                 score = score.max(1.0);
             }

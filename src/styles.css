@@ -122,7 +122,6 @@ body {
   font-size: 10.5px;
   font-weight: 700;
   padding: 0 4px;
-  animation: blink 1.4s infinite;
   flex-shrink: 0;
 }
 
@@ -189,7 +188,6 @@ body {
   background: rgba(181, 189, 104, 0.12);
   border-radius: 8px;
   padding: 0 6px;
-  animation: blink 1.4s infinite;
 }
 .sub-sleeping-chip {
   font-size: 9.5px;
@@ -239,7 +237,6 @@ body {
 .st.running {
   color: var(--green);
   background: rgba(181, 189, 104, 0.12);
-  animation: blink 1.4s infinite;
 }
 .st.sleeping {
   color: var(--amber);
@@ -294,7 +291,6 @@ body {
   color: var(--green);
   font-size: 10px;
   font-weight: 600;
-  animation: pulse 1.2s infinite;
 }
 .subagent-sleeping {
   margin-left: 8px;
@@ -1047,7 +1043,7 @@ body {
   padding: 0 5px;
   line-height: 1.5;
 }
-.sum.run { color: var(--green); background: rgba(181, 189, 104, 0.12); animation: pulse 1.2s infinite; }
+.sum.run { color: var(--green); background: rgba(181, 189, 104, 0.12); }
 .sum.sleep { color: var(--amber); background: rgba(212, 167, 44, 0.1); }
 .sum.intr { color: var(--red); background: rgba(204, 102, 102, 0.1); }
 .sub-finished-chip {

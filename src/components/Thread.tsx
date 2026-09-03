@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentBlock, Entry, SessionDetail } from "../types";
-import { Markdown, MemoMarkdown } from "./Markdown";
+import { MemoMarkdown } from "./Markdown";
 import { api } from "../api";
 
 // ---------- Live conversation blocks (assembled from pi json events) ----------
@@ -10,22 +10,15 @@ export type LiveBlock =
   | { kind: "assistant"; text: string; thinking: string; done: boolean }
   | { kind: "tool"; name: string; args: string; result: string; isError: boolean; done: boolean };
 
-export function buildLiveBlocks(events: any[]): LiveBlock[] {
-  const blocks: LiveBlock[] = [];
-  let curAssistant: { text: string; thinking: string } | null = null;
-  let curTool: (LiveBlock & { kind: "tool" }) | null = null;
-
-  const flushAssistant = (done: boolean) => {
-    if (curAssistant) {
-      blocks.push({ kind: "assistant", text: curAssistant.text, thinking: curAssistant.thinking, done });
-      curAssistant = null;
-    }
-  };
-  const flushTool = (done: boolean) => {
-    if (curTool) {
-      curTool.done = done;
-      blocks.push(curTool);
-      curTool = null;
+export function appendLiveEvents(previous: LiveBlock[], events: any[]): LiveBlock[] {
+  // Process only the newly arrived events. Rebuilding from the complete event
+  // history on every token made a long response O(n²) and retained every raw
+  // event for the duration of the turn.
+  const blocks = previous.slice();
+  const finishLast = () => {
+    const last = blocks[blocks.length - 1];
+    if (last?.kind === "assistant" || last?.kind === "tool") {
+      blocks[blocks.length - 1] = { ...last, done: true };
     }
   };
 
@@ -33,50 +26,64 @@ export function buildLiveBlocks(events: any[]): LiveBlock[] {
     switch (ev.type) {
       case "message_start": {
         const m = ev.message;
+        finishLast();
         if (m?.role === "user") {
-          flushAssistant(true);
-          flushTool(true);
           const text = contentText(m.content);
           if (text) blocks.push({ kind: "user", text });
         } else if (m?.role === "assistant") {
-          flushTool(true);
-          curAssistant = { text: "", thinking: "" };
+          blocks.push({ kind: "assistant", text: "", thinking: "", done: false });
         }
         break;
       }
       case "message_update": {
         const ae = ev.assistantMessageEvent;
-        if (!ae || !curAssistant) break;
-        if (ae.type === "text_delta" && typeof ae.delta === "string") curAssistant.text += ae.delta;
-        if (ae.type === "thinking_delta" && typeof ae.delta === "string") curAssistant.thinking += ae.delta;
+        const last = blocks[blocks.length - 1];
+        if (!ae || last?.kind !== "assistant") break;
+        if (ae.type === "text_delta" && typeof ae.delta === "string") {
+          blocks[blocks.length - 1] = { ...last, text: last.text + ae.delta };
+        } else if (ae.type === "thinking_delta" && typeof ae.delta === "string") {
+          blocks[blocks.length - 1] = { ...last, thinking: last.thinking + ae.delta };
+        }
         break;
       }
       case "message_end": {
         const m = ev.message;
-        if (m?.role === "assistant" && curAssistant) {
-          const t = contentText(m.content);
-          if (t) curAssistant.text = t;
-          flushAssistant(true);
+        const last = blocks[blocks.length - 1];
+        if (m?.role === "assistant" && last?.kind === "assistant") {
+          const text = contentText(m.content);
+          blocks[blocks.length - 1] = { ...last, text: text || last.text, done: true };
         }
         break;
       }
       case "tool_execution_start": {
-        flushAssistant(true);
-        curTool = { kind: "tool", name: ev.toolName ?? "tool", args: stringify(ev.args), result: "", isError: false, done: false };
+        finishLast();
+        blocks.push({
+          kind: "tool",
+          name: ev.toolName ?? "tool",
+          args: stringify(ev.args),
+          result: "",
+          isError: false,
+          done: false,
+        });
         break;
       }
       case "tool_execution_update": {
-        if (curTool) {
-          const r = stringify(ev.partialResult);
-          if (r) curTool.result = r;
+        const last = blocks[blocks.length - 1];
+        if (last?.kind === "tool") {
+          const result = stringify(ev.partialResult);
+          if (result) blocks[blocks.length - 1] = { ...last, result };
         }
         break;
       }
       case "tool_execution_end": {
-        if (curTool) {
-          curTool.result = stringify(ev.result);
-          curTool.isError = !!ev.isError;
-          flushTool(true);
+        const last = blocks[blocks.length - 1];
+        if (last?.kind === "tool") {
+          blocks[blocks.length - 1] = {
+            ...last,
+            result: stringify(ev.result),
+            isError: !!ev.isError,
+            done: true,
+          };
         }
         break;
       }
@@ -84,9 +91,11 @@ export function buildLiveBlocks(events: any[]): LiveBlock[] {
         break;
     }
   }
-  flushAssistant(true);
-  flushTool(true);
   return blocks;
+}
+
+export function buildLiveBlocks(events: any[]): LiveBlock[] {
+  return appendLiveEvents([], events);
 }
 
 function stringify(v: unknown): string {
@@ -431,14 +440,24 @@ export function Thread({
   }, [windowSize, expanding]);
 
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (autoScroll && scrollRef.current) {
+      // Re-starting smooth scrolling for every streamed token keeps WebKit's
+      // compositor busy continuously. A direct tail lock is both cheaper and
+      // more predictable while output is streaming.
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [renderItems.items.length, liveBlocks, autoScroll]);
+
+  useEffect(() => () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  }, []);
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     // 每帧 setState 会触发 Thread 重渲染;rAF 节流到渲染帧
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
       setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 200);
     });
   };
