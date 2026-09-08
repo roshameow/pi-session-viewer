@@ -280,8 +280,12 @@ export const Sidebar = React.memo(function Sidebar({
     if (!path) return null;
     const m = sessions.find((s) => s.path === path);
     if (!m) return null;
-    const t = m.name || m.firstMessage || "(parent)";
-    return t.length > 26 ? t.slice(0, 26) + "…" : t;
+    // A main session may have been created by an automated notification, so
+    // firstMessage is often "[脚本通知] ..." and is a misleading parent label.
+    // The explicit parent relationship is UUID-based; display that stable ID
+    // (plus a user-assigned name when available) instead of message content.
+    const shortId = m.id.slice(0, 8);
+    return m.name ? `${m.name} · ${shortId}` : shortId;
   };
 
   return (

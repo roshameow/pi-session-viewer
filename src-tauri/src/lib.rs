@@ -135,7 +135,7 @@ fn delete_session_sync(path: &str) -> Result<(), String> {
         files.push(std::path::PathBuf::from(&path));
     }
     // related files sharing the same session uuid (mirror) + agent-log task file
-    let (_, task_by_uuid, _) = sessions::subagent_index();
+    let (_, task_by_uuid, _, _) = sessions::subagent_index();
     if !id.is_empty() {
         if let Ok(rd) = std::fs::read_dir(sessions::sessions_dir()) {
             for e in rd.flatten() {
@@ -666,11 +666,17 @@ fn start_remote_pi(host: &str, cwd: &str, session_path: &str) -> Result<String, 
     if check.trim() == "YES" {
         return Ok(sess_name);
     }
-    let sess_file = format!("$HOME/.pi/agent/{rel}");
+    // This command is passed through two shells: ssh's remote shell and then
+    // the shell rmux starts for the pane. Keep $HOME quoted for expansion by
+    // the *second* shell; shell_quote(&inner) below protects it from the first.
+    // Quoting the whole "$HOME/..." as a literal made pi resolve it relative
+    // to cwd (e.g. /project/$HOME/.pi/agent/...) and silently start a different
+    // session outside the tree synced by the desktop.
+    let sess_file = format!("\"$HOME\"/.pi/agent/{}", shell_quote(&rel));
     let inner = format!(
         "cd {} && pi --session {}",
         shell_quote(cwd),
-        shell_quote(&sess_file)
+        sess_file
     );
     remote::ssh_run(
         host,

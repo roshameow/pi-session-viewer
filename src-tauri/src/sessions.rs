@@ -352,7 +352,7 @@ pub fn list_projects() -> Vec<Project> {
     cleanup_dead_rmux_windows();
     let root = sessions_dir();
     let mut out = Vec::new();
-    let (_, task_by_uuid, _) = subagent_index();
+    let (_, task_by_uuid, _, _) = subagent_index();
     let alive = alive_task_ids();
     let rmux_map = rmux_runtime_map();
     // alive_terminal_pis() spawns ps+lsof; compute once, not per project
@@ -485,6 +485,36 @@ fn first_line(p: &Path) -> Option<String> {
     s.lines().next().map(|l| l.to_string())
 }
 
+/// Durable subagent logs may start with a `pi_subagent_task` metadata record,
+/// especially after reload, so the child session header is not necessarily the
+/// first line. Read a bounded preamble and return both the child session UUID
+/// and the explicit parent UUID marker.
+fn agent_log_preamble(p: &Path) -> (Option<String>, Option<String>) {
+    use std::io::Read;
+    let Ok(mut f) = fs::File::open(p) else { return (None, None) };
+    let mut buf = vec![0u8; 64 * 1024];
+    let Ok(n) = f.read(&mut buf) else { return (None, None) };
+    let text = String::from_utf8_lossy(&buf[..n]);
+    let mut session_id = None;
+    let mut parent_id = None;
+    for line in text.lines().take(64) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        match v.get("type").and_then(|x| x.as_str()) {
+            Some("session") if session_id.is_none() => {
+                session_id = v.get("id").and_then(|x| x.as_str()).map(str::to_string);
+            }
+            Some("pi_subagent_parent") if parent_id.is_none() => {
+                parent_id = v.get("parentId").and_then(|x| x.as_str()).map(str::to_string);
+            }
+            _ => {}
+        }
+        if session_id.is_some() && parent_id.is_some() {
+            break;
+        }
+    }
+    (session_id, parent_id)
+}
+
 /// Look up a model's context window from `~/.pi/agent/models.json`
 /// (provider catalog). Result is cached per process.
 fn model_context_window(model_id: &str) -> Option<u64> {
@@ -559,7 +589,7 @@ pub fn full_path() -> String {
 
 /// Is this session uuid one of the subagent uuids (from mirrors / agent-logs)?
 pub fn is_subagent_uuid(id: &str) -> bool {
-    let (uuids, _, _) = subagent_index();
+    let (uuids, _, _, _) = subagent_index();
     uuids.contains(id)
 }
 
@@ -617,6 +647,7 @@ type SubIdx = (
     HashSet<String>,
     HashMap<String, Vec<String>>,
     HashMap<String, Vec<String>>,
+    HashMap<String, String>, // child session uuid -> explicit parent session uuid
 );
 static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
 
@@ -643,6 +674,9 @@ fn build_subagent_index() -> SubIdx {
     // first messages — matching tries each, since the earliest (original
     // Task) is the one that matches the parent's subagent call.
     let mut match_text_by_uuid: HashMap<String, Vec<String>> = HashMap::new();
+    // Explicit linkage written by the durable extension. Keep the marker from
+    // the newest reload log when a child session has had several task IDs.
+    let mut parent_claims: HashMap<String, (i64, String)> = HashMap::new();
     // session uuid -> creation time of its (normal-named) session file.
     // A subagent mirror/agent-log whose header id points to a session created
     // long BEFORE the mirror is corrupted: a buggy reload ran the subagent
@@ -690,12 +724,9 @@ fn build_subagent_index() -> SubIdx {
             for f in fd.flatten() {
                 let name = f.file_name().to_string_lossy().to_string();
                 if !name.starts_with("task-") || !name.ends_with(".jsonl") { continue; }
-                if let Some(line) = first_line(&f.path()) {
-                    if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                            claim(id, fmetadata(&f.path()).map(|m| m.created).unwrap_or(0));
-                        }
-                    }
+                let (session_id, _) = agent_log_preamble(&f.path());
+                if let Some(id) = session_id {
+                    claim(&id, fmetadata(&f.path()).map(|m| m.created).unwrap_or(0));
                 }
             }
         }
@@ -738,17 +769,24 @@ fn build_subagent_index() -> SubIdx {
                 .strip_prefix("task-")
                 .and_then(|s| s.strip_suffix(".jsonl"))
                 .map(|s| s.to_string());
-            if let Some(line) = first_line(&f.path()) {
-                if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                    if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                        if corrupted_log(id) {
-                            continue; // corrupted log: session id is a main session
-                        }
-                        if let Some(t) = &task_id {
-                            by_uuid.entry(id.to_string()).or_default().push(t.clone());
-                        } else {
-                            by_uuid.entry(id.to_string()).or_default();
-                        }
+            let (session_id, parent_id) = agent_log_preamble(&f.path());
+            if let Some(id) = session_id {
+                if corrupted_log(&id) {
+                    continue; // corrupted log: session id is a main session
+                }
+                if let Some(t) = &task_id {
+                    by_uuid.entry(id.clone()).or_default().push(t.clone());
+                } else {
+                    by_uuid.entry(id.clone()).or_default();
+                }
+                if let Some(parent) = parent_id {
+                    let mtime = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
+                    let replace = parent_claims
+                        .get(&id)
+                        .map(|(old_mtime, _)| mtime >= *old_mtime)
+                        .unwrap_or(true);
+                    if replace {
+                        parent_claims.insert(id, (mtime, parent));
                     }
                 }
             }
@@ -829,7 +867,11 @@ fn build_subagent_index() -> SubIdx {
         }
     }
     let uuids: HashSet<String> = by_uuid.keys().cloned().collect();
-    (uuids, by_uuid, match_text_by_uuid)
+    let parent_by_uuid = parent_claims
+        .into_iter()
+        .map(|(child, (_, parent))| (child, parent))
+        .collect();
+    (uuids, by_uuid, match_text_by_uuid, parent_by_uuid)
 }
 
 /// Task lifecycle, process-alive aware:
@@ -1001,7 +1043,7 @@ pub struct RunningSession {
 /// "finished" | "unknown". Used to classify a session that left the running set.
 pub fn session_status(path: String) -> String {
     let id = session_id(&path).unwrap_or_default();
-    let (_, task_by_uuid, _) = subagent_index();
+    let (_, task_by_uuid, _, _) = subagent_index();
     let alive = alive_task_ids();
     if let Some(tid) = task_by_uuid.get(&id).and_then(|tasks| pick_task(tasks, &alive)) {
         return match task_status(tid, &alive) {
@@ -1023,7 +1065,7 @@ pub fn list_running() -> Vec<RunningSession> {
     let mut out = Vec::new();
     let root = sessions_dir();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
-    let (sub_uuids, task_by_uuid, _) = subagent_index();
+    let (sub_uuids, task_by_uuid, _, _) = subagent_index();
     let alive = alive_task_ids();
     let mut seen: HashSet<String> = HashSet::new();
     if let Ok(rd) = fs::read_dir(&root) {
@@ -1971,7 +2013,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
     let alive = alive_task_ids();
     let rmux_map = rmux_runtime_map();
-    let (sub_uuids, task_by_uuid, match_text_by_uuid) = subagent_index();
+    let (sub_uuids, task_by_uuid, match_text_by_uuid, parent_by_uuid) = subagent_index();
 
     if let Ok(fd) = fs::read_dir(&dir) {
         for f in fd.flatten() {
@@ -2109,29 +2151,44 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     }
     let mut out: Vec<SessionMeta> = by_id.into_values().collect();
 
-    // parent linkage: match subagent first message against the parent session's
-    // subagent tool calls (task text), within this project.
+    // Parent linkage: prefer the durable extension's explicit
+    // pi_subagent_parent marker. Text matching remains only for legacy logs
+    // that predate that marker; reload prompts often differ enough to make a
+    // heuristic association missing or, worse, attach to the wrong main.
+    let main_path_by_id: HashMap<String, String> = out
+        .iter()
+        .filter(|m| !m.is_subagent)
+        .map(|m| (m.id.clone(), m.path.clone()))
+        .collect();
     let parent_calls = collect_parent_calls(project_key);
     let parent_sig = parent_calls_signature(&parent_calls);
     for m in out.iter_mut() {
-        if m.is_subagent {
-            let match_texts = match_text_by_uuid
-                .get(&m.id)
-                .cloned()
-                .filter(|v| !v.is_empty())
-                .or_else(|| m.first_message.clone().map(|f| vec![f]));
-            if let Some(texts) = match_texts {
-                for fm in texts {
-                    if let Some(p) = match_parent_cached(
-                        project_key,
-                        &m.id,
-                        &fm,
-                        parent_sig,
-                        &parent_calls,
-                    ) {
-                        m.parent_session_path = Some(p);
-                        break;
-                    }
+        if !m.is_subagent {
+            continue;
+        }
+        if let Some(parent_id) = parent_by_uuid.get(&m.id) {
+            m.parent_session_id = Some(parent_id.clone());
+            m.parent_session_path = main_path_by_id.get(parent_id).cloned();
+            // An explicit marker is authoritative. If its parent file is not
+            // in the synced session tree, show an orphan instead of guessing.
+            continue;
+        }
+        let match_texts = match_text_by_uuid
+            .get(&m.id)
+            .cloned()
+            .filter(|v| !v.is_empty())
+            .or_else(|| m.first_message.clone().map(|f| vec![f]));
+        if let Some(texts) = match_texts {
+            for fm in texts {
+                if let Some(p) = match_parent_cached(
+                    project_key,
+                    &m.id,
+                    &fm,
+                    parent_sig,
+                    &parent_calls,
+                ) {
+                    m.parent_session_path = Some(p);
+                    break;
                 }
             }
         }
@@ -2772,7 +2829,7 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         active = chain;
     }
 
-    let (_, task_by_uuid, _) = subagent_index();
+    let (_, task_by_uuid, _, _) = subagent_index();
     let task_id = task_by_uuid.get(&header_id).and_then(|tasks| tasks.first().cloned());
     let (mtime, size) = fmetadata(Path::new(path))
         .map(|m| (m.mtime, m.size))
@@ -2991,6 +3048,32 @@ mod tests {
         assert_eq!(parse_iso_ts("2026-08-10T02:43:05.649Z"), Some(1786329785));
         assert_eq!(parse_iso_ts("1785814651241"), Some(1785814651));
         assert_eq!(parse_iso_ts(""), None);
+    }
+
+    #[test]
+    fn test_agent_log_preamble_after_reload_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "pi-session-viewer-preamble-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"pi_subagent_task\",\"taskId\":\"task-new\"}\n",
+                "{\"type\":\"session\",\"id\":\"child-session\"}\n",
+                "{\"type\":\"pi_subagent_parent\",\"parentId\":\"main-session\"}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            agent_log_preamble(&path),
+            (Some("child-session".into()), Some("main-session".into()))
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]
