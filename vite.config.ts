@@ -3,7 +3,12 @@ import react from "@vitejs/plugin-react";
 
 const host = process.env.TAURI_DEV_HOST;
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  base: mode === 'demo' ? './' : '/',
+  build: mode === 'demo' ? {
+    outDir: 'dist-demo',
+    rollupOptions: { input: 'demo.html' },
+  } : {},
   plugins: [react()],
   clearScreen: false,
   server: {
@@ -21,4 +26,4 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
-});
+}));

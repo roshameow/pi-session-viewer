@@ -254,10 +254,12 @@ export function Thread({
   detail,
   liveBlocks,
   running,
+  preview = false,
 }: {
   detail: SessionDetail;
   liveBlocks: LiveBlock[];
   running: boolean;
+  preview?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -506,7 +508,7 @@ export function Thread({
                   )}
                 </div>
               </div>
-              <div className="session-head-actions">
+              {!preview && <div className="session-head-actions">
                 <button
                   className="export-btn"
                   onClick={doAttach}
@@ -529,7 +531,7 @@ export function Thread({
                 >
                   {exporting ? "Exporting…" : "⬇ Export HTML"}
                 </button>
-              </div>
+              </div>}
             </div>
             {exportMsg && <div className="export-msg">{exportMsg}</div>}
           </div>
