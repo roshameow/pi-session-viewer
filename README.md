@@ -6,6 +6,12 @@ Pi coding agent 的桌面会话工作台：按项目浏览历史对话，查看�
 
 ## 先看演示
 
+![Pi Desktop 功能示意动画：项目会话、工具调用、父子会话与运行状态](docs/assets/walkthrough-illustrated.gif)
+
+[观看 / 下载 MP4](docs/assets/walkthrough-illustrated.mp4) · [静态图](docs/assets/walkthrough-illustrated.png) · [动画说明与生成脚本](docs/illustrated-walkthrough.md)
+
+这段 20 秒动画使用示例数据和简化图示介绍功能，**不是实际操作录屏**。如需体验真实界面组件，可运行下面的交互演示。
+
 使用合成会话浏览真实的侧边栏与对话组件，不需要安装 Pi、RMUX 或配置模型：
 
 ```bash

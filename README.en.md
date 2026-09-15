@@ -4,6 +4,14 @@
 
 A desktop workspace for Pi coding-agent sessions: browse projects and conversations, follow parent/child agents, locate running terminals and continue a session through your local Pi installation.
 
+## Illustrated walkthrough
+
+![Pi Desktop concept animation: projects, tool calls, child sessions and runtime status](docs/assets/walkthrough-illustrated.gif)
+
+[Watch / download MP4](docs/assets/walkthrough-illustrated.mp4) · [Still image](docs/assets/walkthrough-illustrated.png) · [Animation details and renderer](docs/illustrated-walkthrough.md)
+
+This 20-second animation explains the workflow with synthetic data and simplified diagrams. **It is not an application screen recording.** Try the interactive demo below to explore the actual UI components.
+
 ## Try a local demo
 
 ```bash
