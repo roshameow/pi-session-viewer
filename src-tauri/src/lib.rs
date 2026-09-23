@@ -655,15 +655,21 @@ fn start_remote_pi(host: &str, cwd: &str, session_path: &str) -> Result<String, 
         .collect();
     let id12: String = id.chars().take(12).collect();
     let sess_name = format!("pi-{clean}-{id12}");
-    // already exists on the host (e.g. created by a previous transfer) → reuse
+    // Reuse an existing remote rmux session only when at least one pane is
+    // alive. With remain-on-exit, `has-session` also succeeds for a dead pane;
+    // returning it here made Open TUI attach to the retained crash screen
+    // forever instead of restarting pi from the original JSONL. Remove an
+    // all-dead session before creating its replacement under the same name.
+    let target = shell_quote(&sess_name);
     let check = remote::ssh_run(
         host,
         &format!(
-            "rmux has-session -t {} 2>/dev/null && echo YES || true",
-            shell_quote(&sess_name)
+            "if rmux has-session -t {target} 2>/dev/null; then \
+             if rmux list-panes -t {target} -F '#{{pane_dead}}' 2>/dev/null | grep -q '^0$'; then \
+             echo ALIVE; else rmux kill-session -t {target} 2>/dev/null || true; echo DEAD; fi; fi"
         ),
     )?;
-    if check.trim() == "YES" {
+    if check.lines().any(|line| line.trim() == "ALIVE") {
         return Ok(sess_name);
     }
     // This command is passed through two shells: ssh's remote shell and then
