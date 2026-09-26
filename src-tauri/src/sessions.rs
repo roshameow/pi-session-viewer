@@ -1315,6 +1315,7 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
         }
     }
     let dir = pi_agent_dir().join("runtime");
+    let remote = crate::remote::current_host().is_some();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1332,13 +1333,26 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             };
             let Ok(text) = fs::read_to_string(&p) else { continue };
             let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
-            let Some(session_path) = v
+            let Some(mut session_path) = v
                 .get("sessionPath")
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string())
             else {
                 continue;
             };
+            // A remote runtime registry contains host-side absolute paths.
+            // Translate them into the local rsync cache namespace, otherwise
+            // Path::is_file() rejects the strongest pid→session evidence and
+            // the mapper falls back to a stale/polluted @pi_session option.
+            if remote {
+                if let Some(i) = session_path.find("/.pi/agent/") {
+                    let rel = &session_path[i + "/.pi/agent/".len()..];
+                    session_path = crate::remote::agent_root()
+                        .join(rel)
+                        .to_string_lossy()
+                        .into_owned();
+                }
+            }
             // 扩展写 Date.now()(毫秒),归一化为秒(旧格式可能已是秒)
             let started_at_raw = v.get("startedAt").and_then(|x| x.as_i64()).unwrap_or(0);
             let started_at = if started_at_raw > 10_000_000_000 {
@@ -1346,14 +1360,23 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             } else {
                 started_at_raw
             };
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .env("PATH", full_path())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            // Remote pids do not exist on the desktop machine. Validate them
+            // against the ps snapshot captured on the host; local kill -0 was
+            // deleting every valid remote runtime entry from the cache.
+            let alive = if remote {
+                pid_alive(pid)
+            } else {
+                std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .env("PATH", full_path())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            };
             if !alive {
-                let _ = fs::remove_file(&p);
+                if !remote {
+                    let _ = fs::remove_file(&p);
+                }
                 continue;
             }
             parsed.push((pid, started_at, RuntimeEntry {
@@ -1467,6 +1490,24 @@ fn pid_line(pid: u32) -> Option<String> {
 fn batch_ps(pids: &[u32]) -> HashMap<u32, (i64, String)> {
     let mut out = HashMap::new();
     if pids.is_empty() {
+        return out;
+    }
+    if crate::remote::current_host().is_some() {
+        let wanted: HashSet<u32> = pids.iter().copied().collect();
+        // Remote snapshot format: pid tty etime command...
+        for line in ps_lines() {
+            let mut it = line.split_whitespace();
+            let (Some(pid_s), Some(_tty), Some(etime_s)) = (it.next(), it.next(), it.next()) else {
+                continue;
+            };
+            let Ok(pid) = pid_s.parse::<u32>() else { continue };
+            if !wanted.contains(&pid) {
+                continue;
+            }
+            let etime = parse_etime(etime_s).unwrap_or(0);
+            let cmd = it.collect::<Vec<_>>().join(" ");
+            out.insert(pid, (etime, cmd));
+        }
         return out;
     }
     let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
@@ -3301,6 +3342,36 @@ mod remote_tests {
         assert!(!pid_alive(99999));
         // cleanup
         let _ = std::fs::remove_dir_all(crate::remote::remote_agent_dir("test-host"));
+        crate::remote::set_current_host(None);
+    }
+
+    #[test]
+    #[ignore]
+    fn remote_runtime_registry_uses_snapshot_and_cache_path() {
+        crate::remote::set_current_host(Some("test-runtime-host".into()));
+        let root = crate::remote::agent_root();
+        let rel = "sessions/--Users-test-project--/test_session.jsonl";
+        let cached_session = root.join(rel);
+        std::fs::create_dir_all(cached_session.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+        std::fs::write(
+            &cached_session,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"test-session\",\"cwd\":\"/Users/test/project\"}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("ps_snapshot.txt"), "4242 ttys001 01:02 pi\n").unwrap();
+        std::fs::write(
+            root.join("runtime/4242.jsonl"),
+            format!(
+                "{{\"type\":\"pi_runtime\",\"pid\":4242,\"panePid\":4242,\"sessionPath\":\"/Users/test/.pi/agent/{rel}\",\"cwd\":\"/Users/test/project\",\"startedAt\":0,\"tty\":\"ttys001\"}}"
+            ),
+        )
+        .unwrap();
+        let registry = runtime_registry();
+        let entry = registry.get(&4242).expect("remote pid should be alive via snapshot");
+        assert_eq!(entry.session_path, cached_session.to_string_lossy());
+        assert!(root.join("runtime/4242.jsonl").is_file(), "cache registry must not be deleted");
+        let _ = std::fs::remove_dir_all(crate::remote::remote_agent_dir("test-runtime-host"));
         crate::remote::set_current_host(None);
     }
 }
