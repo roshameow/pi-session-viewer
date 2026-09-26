@@ -1401,7 +1401,11 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
         if started_at > 0 {
             if let Some(etime) = etime_map.get(&pid).map(|(e, _)| *e) {
                 let age = now - started_at;
-                if etime < age - 30 {
+                // Session startup can spend well over 30s loading extensions,
+                // restoring a large JSONL, and registering its pane. Keep a
+                // five-minute allowance; pid reuse still produces a much
+                // larger age mismatch in practice.
+                if etime < age - 300 {
                     continue; // pid reused by an unrelated younger process
                 }
             }
@@ -1802,14 +1806,16 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             }
         }
         let win = target.split(':').nth(1).unwrap_or("").to_string();
-        // Window names like pi-<cwd>-<id12> carry the session's id12 exactly.
-        // If the recorded @pi_session option conflicts with it, the NAME wins:
-        // a terminal pi (not in tmux) resolves `rmux display-message` to the
-        // last-active rmux window and can pollute that window's @pi_session
-        // with its own session path.
-        let win_id12 = win.rsplit('-').next().and_then(|s| {
-            if s.len() == 12
-                && s.as_bytes().get(8) == Some(&b'-')
+        // Desktop-created sessions carry the id12 at the end of the SESSION
+        // name (`pi-<cwd>-<id12>`) while some older layouts put it in the
+        // window name. Check both. This is an important fallback when a
+        // foreign terminal pi has polluted @pi_session.
+        let trailing_id12 = |name: &str| -> Option<String> {
+            if name.len() < 12 {
+                return None;
+            }
+            let s = &name[name.len() - 12..];
+            if s.as_bytes().get(8) == Some(&b'-')
                 && s[..8].chars().all(|c| c.is_ascii_hexdigit())
                 && s[9..].chars().all(|c| c.is_ascii_hexdigit())
             {
@@ -1817,7 +1823,8 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             } else {
                 None
             }
-        });
+        };
+        let win_id12 = trailing_id12(&win).or_else(|| trailing_id12(&sess));
         // remote snapshots record the HOST-side absolute path (~/.pi/agent/...);
         // map it into our local cache dir so is_file() and the map key match
         // the paths the UI passes (cache-relative session_path).
