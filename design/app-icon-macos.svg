@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Pi Desktop macOS icon</title>
+  <desc id="desc">A cyan terminal chevron paired with three balanced conversation lanes on a midnight-blue macOS squircle.</desc>
+  <defs>
+    <filter id="tile-shadow" x="-25%" y="-25%" width="150%" height="160%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="blur"/>
+      <feOffset in="blur" dx="0" dy="18" result="offset"/>
+      <feFlood flood-color="#050812" flood-opacity="0.32" result="color"/>
+      <feComposite in="color" in2="offset" operator="in" result="shadow"/>
+      <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="mark-shadow" x="-30%" y="-30%" width="170%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10" result="blur"/>
+      <feOffset in="blur" dx="0" dy="10" result="offset"/>
+      <feFlood flood-color="#020810" flood-opacity="0.28" result="color"/>
+      <feComposite in="color" in2="offset" operator="in" result="shadow"/>
+      <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- No background rectangle: everything outside the icon remains transparent. -->
+  <path d="M232 72H792C880 72 952 144 952 232V792C952 880 880 952 792 952H232C144 952 72 880 72 792V232C72 144 144 72 232 72Z"
+        fill="#111827" filter="url(#tile-shadow)"/>
+
+  <!-- A terminal prompt and three detached lanes: one visual system, not a typed character. -->
+  <path d="M304 344L492 512L304 680"
+        fill="none" stroke="#00d7ff" stroke-width="86"
+        stroke-linecap="round" stroke-linejoin="round"
+        filter="url(#mark-shadow)"/>
+  <g fill="none" stroke="#00d7ff" stroke-width="86" stroke-linecap="round"
+     filter="url(#mark-shadow)">
+    <path d="M588 384H704"/>
+    <path d="M588 512H752"/>
+    <path d="M588 640H680"/>
+  </g>
+</svg>
