@@ -1675,7 +1675,12 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     let mut alive_pids: HashSet<u32> = HashSet::new();
     if remote {
         for pid in &pane_pids {
-            if pid_alive(*pid) {
+            // The rmux pane root is often a shell/node process while the
+            // registered pi is its child. The remote ps snapshot intentionally
+            // contains only pi processes, so the pane root pid may be absent.
+            // A validated runtime entry whose panePid matches is equally strong
+            // evidence that the pane is alive.
+            if pid_alive(*pid) || registry.values().any(|e| e.pane_pid == Some(*pid)) {
                 alive_pids.insert(*pid);
             }
         }
@@ -3370,14 +3375,24 @@ mod remote_tests {
         std::fs::write(
             root.join("runtime/4242.jsonl"),
             format!(
-                "{{\"type\":\"pi_runtime\",\"pid\":4242,\"panePid\":4242,\"sessionPath\":\"/Users/test/.pi/agent/{rel}\",\"cwd\":\"/Users/test/project\",\"startedAt\":0,\"tty\":\"ttys001\"}}"
+                "{{\"type\":\"pi_runtime\",\"pid\":4242,\"panePid\":4343,\"sessionPath\":\"/Users/test/.pi/agent/{rel}\",\"cwd\":\"/Users/test/project\",\"startedAt\":0,\"tty\":\"ttys001\"}}"
             ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("rmux_snapshot.txt"),
+            "pi-Users-test-project-test-sessio:main.0 4343 0 /Users/test/.pi/agent/sessions/--Users-other--/wrong.jsonl\n",
         )
         .unwrap();
         let registry = runtime_registry();
         let entry = registry.get(&4242).expect("remote pid should be alive via snapshot");
         assert_eq!(entry.session_path, cached_session.to_string_lossy());
         assert!(root.join("runtime/4242.jsonl").is_file(), "cache registry must not be deleted");
+        let map = rmux_runtime_map();
+        let rt = map
+            .get(&cached_session.to_string_lossy().into_owned())
+            .expect("live pane root should map through registered child pi");
+        assert!(!rt.dead);
         let _ = std::fs::remove_dir_all(crate::remote::remote_agent_dir("test-runtime-host"));
         crate::remote::set_current_host(None);
     }
