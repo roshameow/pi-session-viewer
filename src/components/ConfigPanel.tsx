@@ -28,7 +28,7 @@ function CollapseGroup({
   );
 }
 
-function McpCard({ s }: { s: McpServer }) {
+export function McpCard({ s }: { s: McpServer }) {
   const source =
     s.source === "global" ? "global" : s.source.split("/").filter(Boolean).slice(-2).join("/");
   return (
@@ -36,9 +36,19 @@ function McpCard({ s }: { s: McpServer }) {
       <div className="cfg-card-line1">
         <span className="cfg-icon">🔌</span>
         <span className="cfg-name">{s.name}</span>
-        {s.enabled === false && <span className="badge err">disabled</span>}
+        {s.enabled === false && <span className="badge err">native disabled</span>}
+        {s.disabled === true && <span className="badge err">adapter disabled</span>}
+        <span className="badge">{s.dialect === "adapter" ? "adapter" : "mcpServers"}</span>
         <span className="cfg-source">{source}</span>
       </div>
+      <div className="cfg-card-meta dim">native exposure: {s.exposure ?? "codemode (default)"}</div>
+      {s.toolExposure && Object.entries(s.toolExposure).map(([name, exposure]) => (
+        <div className="cfg-card-meta mono dim" key={name}>toolExposure: {name} → {exposure}</div>
+      ))}
+      {s.directTools !== undefined && s.directTools !== null && (
+        <div className="cfg-card-meta mono dim">adapter directTools: {JSON.stringify(s.directTools)}</div>
+      )}
+      {s.configPath && <div className="cfg-card-meta dim">{s.configPath}</div>}
       {s.command && <div className="cfg-card-meta mono">{s.command}</div>}
       {s.args.length > 0 && (
         <div className="cfg-card-meta mono dim">{s.args.join(" ")}</div>
@@ -106,9 +116,10 @@ export function ConfigPanel() {
         {cfg && (
           <>
             <CollapseGroup title="MCP Servers" count={cfg.mcp.length} accent="var(--cyan)">
+              <div className="cfg-card-meta dim">Configuration inventory, not connection status. Trusted project .pi/mcp.json entries replace global names; legacy .mcp.json is adapter-only. Extensions may replace built-in MCP or add session-only servers.</div>
               {cfg.mcp.length === 0 && <div className="empty">No MCP servers configured</div>}
               {cfg.mcp.map((s) => (
-                <McpCard key={s.name} s={s} />
+                <McpCard key={`${s.configPath ?? s.source}:${s.name}`} s={s} />
               ))}
             </CollapseGroup>
 

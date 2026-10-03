@@ -751,19 +751,19 @@ fn existing_rmux_session(session_path: &str) -> Option<String> {
     if rt.dead {
         return None;
     }
-    // target = "session:window.pane" -> attach target "session:window" so the
-    // user lands on THIS pane, not the session's active window (which may be
-    // a different session's window)
-    let t = rt
-        .target
-        .rsplit_once('.')
-        .map(|(w, _)| w)
-        .unwrap_or(&rt.target);
-    if t.is_empty() {
-        None
-    } else {
-        Some(t.to_string())
-    }
+    rmux_window_target(&rt.target)
+}
+
+// Attach is a location action: dead panes and ended shells are still useful
+// historical views. Open TUI retains its separate restart/reuse behavior.
+fn historical_rmux_session(session_path: &str) -> Option<String> {
+    let map = sessions::rmux_runtime_map();
+    rmux_window_target(&map.get(session_path)?.target)
+}
+
+fn rmux_window_target(target: &str) -> Option<String> {
+    let window = target.rsplit_once('.').map(|(w, _)| w).unwrap_or(target);
+    (!window.is_empty()).then(|| window.to_string())
 }
 /// Attach to the rmux session a session belongs to (pi-agents for subagents,
 /// pi-<project> for main sessions).
@@ -782,11 +782,11 @@ fn attach_session_sync(session_path: &str) -> Result<String, String> {
         // 远程:ssh -t 到主机 attach 对应 rmux target(经同步缓存的 map)。
         // 快照是 sync 时抓的——新起的 pane(如刚转移的 session)不在其中,
         // 所以找不到时先重新 sync 一次再查,仍无则报错。
-        let sess = match existing_rmux_session(session_path) {
+        let sess = match historical_rmux_session(session_path) {
             Some(s) => Some(s),
             None => {
                 remote::sync_remote(&host)?;
-                existing_rmux_session(session_path)
+                historical_rmux_session(session_path)
             }
         }
         .ok_or("session is not running in an rmux window on this host")?;
@@ -796,7 +796,7 @@ fn attach_session_sync(session_path: &str) -> Result<String, String> {
     }
     let id = sessions::session_id(session_path).unwrap_or_default();
     let is_sub = sessions::is_subagent_uuid(&id);
-    let sess = if let Some(s) = existing_rmux_session(session_path) {
+    let sess = if let Some(s) = historical_rmux_session(session_path) {
         // already alive in an rmux pane (incl. pim short-name sessions)
         s
     } else if is_sub {
@@ -883,4 +883,15 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running pi-session-viewer");
+}
+
+#[cfg(test)]
+mod adaptation_tests {
+    use super::*;
+    #[test]
+    fn historical_attach_keeps_exact_window_target() {
+        assert_eq!(rmux_window_target("pi-agents:worker-task-muabcdef-1234.0"),
+            Some("pi-agents:worker-task-muabcdef-1234".into()));
+        assert_eq!(rmux_window_target(""), None);
+    }
 }

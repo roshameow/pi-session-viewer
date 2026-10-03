@@ -38,6 +38,7 @@ function sameSessions(a: SessionMeta[], b: SessionMeta[]): boolean {
       x.termAlive !== y.termAlive ||
       x.rmuxAttached !== y.rmuxAttached ||
       x.rmuxDead !== y.rmuxDead ||
+      x.rmuxPiAlive !== y.rmuxPiAlive ||
       x.sleeping !== y.sleeping ||
       x.interrupted !== y.interrupted ||
       x.isSubagent !== y.isSubagent ||
@@ -338,6 +339,10 @@ export default function App() {
     liveTimerRef.current = 0;
     const channel = new Channel<PiEvent>();
     channel.onmessage = (ev) => {
+      if (ev.type === "diagnostic") {
+        setError(`Pi: ${String(ev.line ?? "").slice(-2000)}`);
+        return;
+      }
       pendingEventsRef.current.push(ev);
       if (ev.type === "process_exit") {
         onTurnDone(activePathRef.current);

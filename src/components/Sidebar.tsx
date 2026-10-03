@@ -82,21 +82,29 @@ function SessionItem({
         {(s.running || s.inRmux || s.termAlive) && (
           <span
             className={`runtime-chip ${s.inRmux ? "rmux" : "term"} ${
-              s.inRmux ? (s.rmuxDead ? "dead" : s.rmuxAttached ? "attached" : "detached") : ""
+              s.inRmux ? (s.rmuxDead || s.rmuxPiAlive === false ? "dead" : s.rmuxPiAlive === null ? "unknown" : s.rmuxAttached ? "attached" : "detached") : ""
             }`}
             title={
               s.inRmux
                 ? s.rmuxDead
-                  ? `rmux · exited (pi was killed here; window kept) — Attach/Open TUI to restart · id: ${s.id}`
+                  ? `rmux · pane exited; retained historical location · id: ${s.id}`
+                  : s.rmuxPiAlive === false
+                    ? `rmux · worker ended; shell/window retained (Attach to browse) · id: ${s.id}`
+                    : s.rmuxPiAlive === null
+                      ? `rmux · historical location; Pi process identity unknown · id: ${s.id}`
                   : s.rmuxAttached
                     ? `rmux · attached (${s.rmuxTarget ?? ""}) — detach: Ctrl+G or close the tab · id: ${s.id}`
-                    : `rmux · detached (${s.rmuxTarget ?? ""}) — running in background, attach to view · id: ${s.id}`
+                    : `rmux · detached (${s.rmuxTarget ?? ""}) — attach to view · id: ${s.id}`
                 : `terminal window · pi process alive (closing the tab kills pi) · id: ${s.id}`
             }
           >
             {s.inRmux
               ? s.rmuxDead
                 ? "✕ rmux"
+                : s.rmuxPiAlive === false
+                  ? "ended rmux"
+                  : s.rmuxPiAlive === null
+                    ? "? rmux"
                 : s.rmuxAttached
                   ? "● rmux"
                   : "○ rmux"

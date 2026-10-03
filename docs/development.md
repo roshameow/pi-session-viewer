@@ -10,7 +10,7 @@ GitHub: https://github.com/roshameow/pi-session-viewer
 - 💬 **会话浏览**:消息树渲染 — 用户/助手消息、可折叠的 thinking、工具调用卡片、bash 输出、上下文压缩、模型切换、标签;搜索 + 过滤(全部/仅用户/隐藏工具/仅标签)
 - 🕸️ **子代理嵌套**:`pi-subagent-durable` 扩展生成的子代理会话自动挂在父会话下(镜像文件 header `id` == 父会话 uuid 精确关联)
 - ⏳ **实时续聊**:输入消息 → Rust 直接 spawn `pi --session <file> --mode json`,增量事件流式渲染(text_delta / tool_execution),pi 自动把新消息写回原 JSONL
-- 🟢 **运行状态 chip**(每会话):`● rmux` 已附着 / `○ rmux` 分离后台跑 / `✕ rmux` pi 已退出(remain-on-exit 保留窗口)/ `● term` 在终端窗口里跑 — **运行状态与位置解耦**:空闲的 rmux 显示位置 chip 但不显示 running
+- 🟢 **运行状态 chip**(每会话):`● rmux` 已附着 / `○ rmux` 分离 / `ended rmux` worker 已结束但 shell 留存 / `? rmux` Pi 身份未知 / `✕ rmux` pane 已退出 / `● term` 在终端窗口里跑 — **运行状态与位置解耦**:空闲的 rmux 显示位置 chip 但不显示 running
 - ⚡ **rmux 集成**:Attach(附着)、右键 Detach(rmux 内 `Ctrl+G` 或关标签页)、Open TUI(在现有 Terminal 窗口开**标签页**,而不是新窗口)
 - ⚙️ **Config 面板**:MCP 服务器 / Agents(全局 + 项目级 `.pi/agents`)/ Skills(全局 + 项目级)
 - 📤 导出 HTML、右键删除会话、搜索、可拖拽侧边栏、toast
@@ -19,10 +19,10 @@ GitHub: https://github.com/roshameow/pi-session-viewer
 
 pi 会清理自己的 argv(只剩 `pi`),`ps -o command=` 永远看不到 `--session`。所以定位靠:
 - **每 pi 一个独立 rmux 会话**:`pi-<编码cwd>-<id12>`(uuid 前 12 位,含第 8 位破折号,避免 id8 前缀碰撞),窗口固定 `main`。attach 一个 pi 只影响它自己的会话,tmux 的 attach 不会让其他 pi 的窗口跟着跳
-- **@pi_session 窗口选项(权威归属)**:每个 pi 在 `session_start` 时用 `getSessionFile()` 把自己注册进所在窗口的 `@pi_session` 选项(扩展自注册);desktop 建窗口时也写入。map 读选项即可精确归属,不依赖启发式
+- **@pi_session 窗口选项(历史归属)**:每个 pi 在 `session_start` 时用 `getSessionFile()` 把自己注册进所在窗口的 `@pi_session` 选项(扩展自注册);desktop 建窗口时也写入。map 读选项保留位置；只有通过存活/PID 复用校验的独立 runtime slot 才是更强的当前归属证据。选项本身不能证明 worker 进程仍活着
 - **子代理**:在独立 `pi-agents` 会话里,每个子代理一个窗口 `<agent>-task-<taskId>`;map 归到镜像路径,list_sessions 去重时把 rmux 状态合并给真实会话
 - **终端 pi**:`comm=pi` 且 tty 不属于任何 rmux pane(`#{pane_tty}` 排除)→ 映射到项目内最新非 rmux 主会话
-- **死窗口**:`remain-on-exit` 保留崩溃画面;map 中活窗口优先于死窗口;刷新时自动清理死亡超过 6 小时的死窗口
+- **死窗口**:`remain-on-exit` 保留崩溃画面;map 中活窗口优先于死窗口;浏览刷新不自动删除窗口或 runtime 文件；清理由 durable owner 或用户显式操作负责
 
 ## macOS 标签页(Open TUI)
 
@@ -39,15 +39,18 @@ Open TUI 通过 bundle 内的 `tab-open-helper` 发送 `Cmd+T`,在现有 Termina
 
 ## 代码签名
 
-本地构建的 adhoc 签名 app 每次重建二进制 hash 都变,会反复丢失 TCC 授权。仓库配置了**稳定自签名证书** `Pi Session Viewer Dev Signing`(tauri.conf.json → `bundle.macOS.signingIdentity`)。新环境需要先在登录钥匙串建好该身份:
+本地 ad-hoc 签名 app 的二进制 hash 随重建变化，TCC 授权可能需要重新确认。仓库保留维护者的既有签名身份 `Pi Session Viewer Dev Signing`（tauri.conf.json → `bundle.macOS.signingIdentity`），但不包含证书或私钥，也不要求新环境创建该身份。
 
 ```bash
-# 一次性创建自签名 code-signing 证书并导入登录钥匙串
-openssl req -x509 -newkey rsa:2048 -keyout /tmp/psv.key -out /tmp/psv.pem -days 3650 -nodes \
-  -config <(printf '[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=Pi Session Viewer Dev Signing\n[v3]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=codeSigning\nsubjectKeyIdentifier=hash\n')
-openssl pkcs12 -export -out /tmp/psv.p12 -inkey /tmp/psv.key -in /tmp/psv.pem -passout pass:psv -legacy
-security import /tmp/psv.p12 -k ~/Library/Keychains/login.keychain-db -P psv -T /usr/bin/codesign
+# 已有该 identity：保留默认签名配置，只打 .app，不生成 DMG
+npm run tauri -- build --bundles app --ci
+# 没有该 identity：覆盖签名配置，适合本机验证；不是公证发行包
+npm run build:unsigned -- --bundles app --ci
 ```
+
+构建不安装、不启动应用。不要为构建自动创建证书或修改钥匙串；是否替换已安装、正在运行的应用由用户另行决定。可用 `codesign --verify --deep --strict <bundle.app>` 验证本地签名完整性，但通过不代表 Apple 公证或 Gatekeeper 信任。
+
+本地验证注意：`security find-identity -v -p codesigning` 的有效列表可能不列出既有自签名 identity，不能仅凭这一列表判断身份不存在；普通 `find-identity -p codesigning` 可确认 presence。本次既有身份的正常 app-only 构建与严格签名验证通过，而 unsigned 配置产生的 linker ad-hoc 签名缺少 bundle resource seal，严格验证失败。Unsigned 构建只用于开发，不应冒充签名验收通过的发行包。
 
 ## 架构
 
@@ -85,10 +88,30 @@ npm run tauri dev          # 开发模式
 npm run tauri build        # 打包(需 rustup 工具链:$HOME/.cargo/bin)
 ```
 
-需要:Node ≥ 18、Rust ≥ 1.88(建议 rustup stable)、本机装有 `pi`(从 PATH 或 /opt/homebrew/bin 解析)、`rmux`。
+需要:Node ≥ 22、Rust ≥ 1.88（选择已有合适工具链）、本机装有 `pi`（从 PATH 或 /opt/homebrew/bin 解析）；RMUX 功能需另装 `rmux`。隔离测试与构建不需要启动 Pi 或 RMUX。
 
 ## 测试
 
 ```bash
 cd src-tauri && cargo test   # 解析层:ISO 时间、真实会话列表/详情、子代理关联率(需本机有会话数据)
 ```
+
+## Native MCP 与运行状态兼容（2026-10-04）
+
+- Config 面板是**配置清单，不是连接状态**。读取全局 `mcp.json`、会话 header 的真实 cwd 下 `.pi/mcp.json`，保留旧 adapter 的 `.mcp.json`。项目路径不再从编码目录名反推（路径含 `-` 会失真）。同名 global/project 行分别显示来源文件；Pi 在**可信项目**中按项目条目替换全局条目。
+- 显示 native `enabled`、`exposure`（缺省 codemode）、`toolExposure`，并分别显示 adapter `disabled`、`socket`、`directTools`。Adapter 的 disabled/directTools 不是 native 选项；不要把清单展示当成已切换 backend。禁用 builtin:mcp 或由 adapter 注册 `/mcp` 替换内建时，实际行为由 Pi 决定；扩展动态注册的 session-only servers 不在静态文件清单内。远程仅展示已同步的全局配置，不探测本机上的远程 cwd。
+- 续聊使用 **Pi CLI JSON 模式，不是 SDK**；显式对齐进程 cwd（已核实当前 Pi CLI 也从 SessionManager header 重建 runtime/resource cwd；进程 cwd 是防御性对齐 bootstrap 与相对 CLI 路径），不限制 tools、不禁用扩展，保留 Pi 内建 MCP/codemode/tool_search 的发现与替换机制。stderr 并行读取并显示诊断，避免 MCP 启动日志堵塞管道。若未来改用 `createAgentSession`，SDK 不自动加载 builtin：应在 `DefaultResourceLoader.extensionFactories` 添加 `createMcpExtension()`、`createCodemodeExtension()`、`createToolSearchExtension()`，reload 后 bindExtensions；以实际 Pi SDK 文档和 replaceable/builtin 语义为准，勿直接混用 CLI 假设。
+- `mcp__<server>__<tool>`、`codemode`、`tool_search` 和旧 adapter 工具名均保留原名渲染。实时 nested/parallel 调用按 `toolCallId` 关联 update/end，不再改写“最后一个工具”的结果；展开可看完整参数（包含 script code）。持久化 transcript 不会伪造 nested 子调用条目。
+- `rmuxDead` 仅表示 `pane_dead=1`；`rmuxPiAlive` 是 true/false/null。独立 PID runtime slot / 实际 Pi task argv 是存活证据；shell、tee、tail 或 `read` wrapper 中提到 task 路径不算 worker alive。已结束 worker 的留存 shell 显示 `ended rmux`；缺进程快照或无可验证 SDK/runtime 身份显示 `? rmux`，而非 dead/running。正常 idle TUI 和仍有精确存活身份的 settled worker **不会**因 agent_end/agent_settled 被判死。历史 pane 仍可 attach 浏览（Attach 可浏览 dead pane；Open TUI 重建仍走既有用户操作）。
+
+### 隔离回归验证（不启动 Pi / MCP / rmux / SSH / desktop）
+
+```bash
+npm run test:adaptation
+npm run build
+PATH="$HOME/.cargo/bin:$PATH" cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
+```
+
+新增 Unix fake CLI 用 Python 3，输出超过 1MiB stderr；复用真实 command builder 与 stderr drainer，以 5 秒本地超时验证 cwd 与退出，不执行真实 send_message。macOS 临时目录可能以 `/var` 或 `/private/var` 表示，测试用 canonicalize 比较 cwd。
+
+全量旧 Rust 测试包含读取真实本机会话、调用 rmux 的 smoke/dump 测试，**不适用于 mock-only 验收**。选已安装的 Rust ≥1.88 工具链；无需升级依赖。私有检查点、源码审计和构建日志保存在被忽略的 `/artifacts/`，不随源码发布。

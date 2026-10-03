@@ -23,6 +23,15 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.1 compatibility update
+
+- Inventory native `.pi/mcp.json` and legacy adapter `.mcp.json`, including source and exposure; this is not live connection status or project trust.
+- Preserve native MCP / codemode / tool_search names, match nested and parallel results by `toolCallId`, and show full arguments when expanded.
+- Distinguish `ended rmux` (finished worker, retained shell), `? rmux` (unknown identity), and exited panes. Browsing no longer automatically cleans up windows or runtime files.
+- Continue through Pi CLI JSON mode with the session cwd and concurrent stderr diagnostics, without overriding model, extension, or tool settings.
+
+Regression coverage uses mocks / a fake CLI, not live MCP, RMUX, SSH, or model integration.
+
 ## Desktop setup
 
 Source builds are available; there is no verified official binary release yet. macOS is the primary development platform. Linux and Windows have partial code paths but are not claimed as fully tested desktop targets.
@@ -34,7 +43,17 @@ npm ci
 npm run tauri dev
 ```
 
-Install RMUX separately to use persistent terminal features. `npm run build:unsigned` builds a local macOS app without requiring the maintainer's named signing certificate; it is not a notarized distribution. See [development notes](docs/development.md) for stable signing and accessibility permissions.
+Install RMUX separately to use persistent terminal features. `npm run build:unsigned -- --bundles app --ci` builds only a local `.app` (no DMG) without requiring the maintainer's named signing certificate; it is not a notarized distribution. Maintainers with the existing signing identity can use `npm run tauri -- build --bundles app --ci`. Neither command installs or launches the app. See [development notes](docs/development.md) for stable signing and accessibility permissions.
+
+## Isolated verification
+
+```bash
+npm run test:adaptation
+npm run build
+cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
+```
+
+The Unix fake CLI test requires Python 3. On macOS, prefix the Rust command with `PATH="$HOME/.cargo/bin:$PATH"` to select an already-installed rustup toolchain if needed; Rust ≥1.88 is required, not dependency upgrades. Full `cargo test` includes local-data / RMUX tests and is not an isolated acceptance check.
 
 Features include project grouping, message/tool rendering, nested subagents, terminal status, local Pi continuation, configuration browsing and HTML export.
 

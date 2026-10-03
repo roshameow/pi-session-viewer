@@ -8,7 +8,7 @@ import { api } from "../api";
 export type LiveBlock =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; thinking: string; done: boolean }
-  | { kind: "tool"; name: string; args: string; result: string; isError: boolean; done: boolean };
+  | { kind: "tool"; toolCallId?: string; parentToolCallId?: string; name: string; args: string; result: string; isError: boolean; done: boolean };
 
 export function appendLiveEvents(previous: LiveBlock[], events: any[]): LiveBlock[] {
   // Process only the newly arrived events. Rebuilding from the complete event
@@ -21,6 +21,10 @@ export function appendLiveEvents(previous: LiveBlock[], events: any[]): LiveBloc
       blocks[blocks.length - 1] = { ...last, done: true };
     }
   };
+
+  const toolIndex = (ev: any) => ev.toolCallId
+    ? blocks.findIndex((b) => b.kind === "tool" && b.toolCallId === ev.toolCallId)
+    : blocks.length - 1; // compatibility with old streams without ids
 
   for (const ev of events) {
     switch (ev.type) {
@@ -56,9 +60,10 @@ export function appendLiveEvents(previous: LiveBlock[], events: any[]): LiveBloc
         break;
       }
       case "tool_execution_start": {
-        finishLast();
         blocks.push({
           kind: "tool",
+          toolCallId: ev.toolCallId,
+          parentToolCallId: ev.parentToolCallId,
           name: ev.toolName ?? "tool",
           args: stringify(ev.args),
           result: "",
@@ -68,17 +73,19 @@ export function appendLiveEvents(previous: LiveBlock[], events: any[]): LiveBloc
         break;
       }
       case "tool_execution_update": {
-        const last = blocks[blocks.length - 1];
+        const index = toolIndex(ev);
+        const last = blocks[index];
         if (last?.kind === "tool") {
           const result = stringify(ev.partialResult);
-          if (result) blocks[blocks.length - 1] = { ...last, result };
+          if (result) blocks[index] = { ...last, result };
         }
         break;
       }
       case "tool_execution_end": {
-        const last = blocks[blocks.length - 1];
+        const index = toolIndex(ev);
+        const last = blocks[index];
         if (last?.kind === "tool") {
-          blocks[blocks.length - 1] = {
+          blocks[index] = {
             ...last,
             result: stringify(ev.result),
             isError: !!ev.isError,
@@ -219,6 +226,8 @@ function ToolRow({
         )}
         {hideResult && <span className="tool-expand muted">(output hidden)</span>}
       </button>
+      {open && arg && <pre className="tool-output">{name}
+{arg}</pre>}
       {open && output && !hideResult && (
         <pre className="tool-output" onClick={(e) => e.stopPropagation()}>
           {output}

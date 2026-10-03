@@ -1,10 +1,11 @@
 {
   "name": "pi-session-viewer",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test:adaptation": "node scripts/test-viewer-adaptation.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

@@ -34,6 +34,7 @@ export interface SessionMeta {
   rmuxTarget: string | null;
   rmuxAttached: boolean;
   rmuxDead: boolean;
+  rmuxPiAlive?: boolean | null; // null = location only; process identity unknown
   termAlive: boolean;
   size: number;
 }
@@ -102,6 +103,12 @@ export interface McpServer {
   socket: string | null;
   url: string | null;
   source: string;
+  configPath?: string;
+  dialect?: string;
+  disabled?: boolean | null;
+  exposure?: string | null;
+  toolExposure?: Record<string, string>;
+  directTools?: unknown;
 }
 
 export interface AgentInfo {

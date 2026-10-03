@@ -109,6 +109,14 @@ fn session_file_running(path: &Path) -> bool {
     now.saturating_sub(mtime).as_secs() < RUNNING_FRESH_SECS
 }
 
+fn main_file_running(path: &Path, map: &HashMap<String, RmuxRuntime>) -> bool {
+    let key = path.to_string_lossy();
+    if let Some(rt) = map.get(key.as_ref()) {
+        if rt.pi_alive != Some(true) { return false; }
+    }
+    session_file_running(path)
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -146,6 +154,7 @@ pub struct SessionMeta {
     pub in_rmux: bool,
     pub rmux_target: Option<String>, // e.g. "pi-Users-...:s<id8>"
     pub rmux_attached: bool, // a terminal client is attached to the rmux session
+    pub rmux_pi_alive: Option<bool>, // Some = identity evidence; None = location only
     pub rmux_dead: bool,     // rmux window kept by remain-on-exit, pane process exited
     pub term_alive: bool,    // an alive pi process runs this session in a terminal window
     pub size: u64,
@@ -277,53 +286,6 @@ fn task_id_from_filename(name: &str) -> Option<String> {
 // Listing
 // ---------------------------------------------------------------------------
 
-/// Purge rmux windows whose pane died more than 6h ago. remain-on-exit keeps
-/// them so the crash output stays visible and the desktop shows the dead
-/// state, but without a cleanup they accumulate forever. Killing a dead
-/// window is safe: the session FILE persists, only the stale pane goes away.
-/// Runs at most once every 5 minutes (guarded) inside list_projects.
-fn cleanup_dead_rmux_windows() {
-    use std::sync::OnceLock;
-    static LAST: OnceLock<Mutex<u64>> = OnceLock::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    {
-        let mut last = LAST.get_or_init(|| Mutex::new(0)).lock().unwrap();
-        if now.saturating_sub(*last) < 300 {
-            return;
-        }
-        *last = now;
-    }
-    let Ok(out) = std::process::Command::new("rmux")
-        .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name} #{pane_dead} #{pane_dead_time}"])
-        .env("PATH", full_path())
-        .output()
-    else {
-        return;
-    };
-    const THRESHOLD: u64 = 6 * 3600;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let mut it = line.splitn(3, ' ');
-        let (target, dead, dead_time) = (
-            it.next().unwrap_or("").trim(),
-            it.next().unwrap_or("").trim(),
-            it.next().unwrap_or("").trim(),
-        );
-        if dead != "1" || target.is_empty() {
-            continue;
-        }
-        let Ok(dt) = dead_time.parse::<u64>() else { continue };
-        if dt > 0 && now.saturating_sub(dt) > THRESHOLD {
-            let _ = std::process::Command::new("rmux")
-                .args(["kill-window", "-t", target])
-                .env("PATH", full_path())
-                .output();
-        }
-    }
-}
-
 /// 目录指纹:所有会话文件 + agent-log 的最新 mtime。会话写入/新会话/子代理
 /// 活动都会触发变化;纯进程状态变化(attach/detach)由 TTL 兜底。
 fn agent_state_fingerprint() -> (u64, u64) {
@@ -349,7 +311,6 @@ pub fn list_projects() -> Vec<Project> {
             }
         }
     }
-    cleanup_dead_rmux_windows();
     let root = sessions_dir();
     let mut out = Vec::new();
     let (_, task_by_uuid, _, _) = subagent_index();
@@ -407,12 +368,12 @@ pub fn list_projects() -> Vec<Project> {
                                     }
                                 } else {
                                     // main session
-                                    if session_file_running(&f.path()) {
+                                    if main_file_running(&f.path(), &rmux_map) {
                                         running_count += 1;
                                     }
                                     let spath = f.path().to_string_lossy().into_owned();
                                     if let Some(rt) = rmux_map.get(&spath) {
-                                        if !rt.dead {
+                                        if rt.pi_alive == Some(true) {
                                             rmux_count += 1;
                                         }
                                     }
@@ -897,27 +858,49 @@ fn alive_task_ids() -> HashSet<String> {
     // 下来的 ps_snapshot.txt(ps_lines() 已做远程适配);本地模式仍走实时 ps。
     let lines = ps_lines();
     for line in lines.iter() {
-        // task ids appear as path suffixes, e.g. .../agent-logs/task-<id>.jsonl
-        let bytes = line.as_bytes();
-        let mut i = 0usize;
-        while i + 5 <= bytes.len() {
-            if &bytes[i..i + 5] == b"task-" {
-                let rest = &line[i + 5..];
-                if let Some(idx) = rest.find(".jsonl") {
-                    let id = &rest[..idx];
-                    if !id.is_empty()
-                        && id.len() <= 48
-                        && id
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-                    {
-                        out.insert(id.to_string());
-                        i += 5 + idx + 6;
-                        continue;
-                    }
+        let command = line.split_whitespace().skip(3).collect::<Vec<_>>().join(" ");
+        out.extend(command_task_ids(&command));
+    }
+    // Scrubbed argv no longer carries task ids. A validated private PID slot
+    // is stronger than shell argv or a leftover @pi_session option. Attribute
+    // one current task per UUID, not all historical reloads of that UUID.
+    let (_, tasks_by_uuid, _, _) = subagent_index();
+    for entry in runtime_registry().values() {
+        if let Some(id) = session_id(&entry.session_path) {
+            if let Some(tasks) = tasks_by_uuid.get(&id) {
+                if let Some(task) = tasks.iter().max_by_key(|t| {
+                    fmetadata(&pi_agent_dir().join("agent-logs").join(format!("task-{t}.jsonl")))
+                        .map(|m| m.mtime).unwrap_or(0)
+                }) { out.insert(task.clone()); }
+            }
+        }
+    }
+    out
+}
+
+// Match the executable, not mentions of pi/tasks inside bash -c, tee, tail,
+// or a print-worker wrapper waiting on read. Unknown SDK runners stay unknown.
+fn is_pi_command(command: &str) -> bool {
+    let mut args = command.split_whitespace();
+    let Some(exe) = args.next() else { return false };
+    let base = Path::new(exe).file_name().and_then(|x| x.to_str()).unwrap_or("");
+    base == "pi" || (matches!(base, "node" | "bun") && args.next().is_some_and(|script| {
+        script.contains("pi-coding-agent/") && script.ends_with("/cli.js")
+    }))
+}
+
+fn command_task_ids(command: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if !is_pi_command(command) { return out; }
+    let mut args = command.split_whitespace();
+    while let Some(arg) = args.next() {
+        if matches!(arg, "--session" | "--append-system-prompt" | "--system-prompt") {
+            if let Some(path) = args.next() {
+                let path = path.trim_matches(['\'', '"']);
+                if (path.ends_with(".jsonl") || path.ends_with(".md")) && path.contains("task-") {
+                    if let Some(task) = extract_task_id(path) { out.insert(task); }
                 }
             }
-            i += 1;
         }
     }
     out
@@ -1054,7 +1037,8 @@ pub fn session_status(path: String) -> String {
             TaskStatus::Unknown => "unknown".into(),
         };
     }
-    if session_file_running(Path::new(&path)) {
+    if running_set().lock().map(|s| s.contains(&path)).unwrap_or(false)
+        || main_file_running(Path::new(&path), &rmux_runtime_map()) {
         "running".into()
     } else {
         "finished".into()
@@ -1067,6 +1051,7 @@ pub fn list_running() -> Vec<RunningSession> {
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
     let (sub_uuids, task_by_uuid, _, _) = subagent_index();
     let alive = alive_task_ids();
+    let rmux_map = rmux_runtime_map();
     let mut seen: HashSet<String> = HashSet::new();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
@@ -1103,7 +1088,7 @@ pub fn list_running() -> Vec<RunningSession> {
                             .map(|t| alive.contains(t))
                             .unwrap_or(false)
                     } else {
-                        session_file_running(&path)
+                        main_file_running(&path, &rmux_map)
                     };
                     if !is_running && !running.contains(&spath) {
                         continue;
@@ -1150,7 +1135,8 @@ fn extract_task_id(s: &str) -> Option<String> {
 pub struct RmuxRuntime {
     pub target: String, // e.g. "pi-Users-...:s<id8>"
     pub attached: bool, // a terminal client is currently attached (has UI)
-    pub dead: bool,     // the pane process has exited (window kept by remain-on-exit)
+    pub dead: bool,     // pane_dead only: shell/wrapper lifetime is NOT Pi lifetime
+    pub pi_alive: Option<bool>, // true exact/runtime or Pi evidence; false ended; None unknown
 }
 
 /// Map of session file path -> rmux runtime info for sessions running inside
@@ -1299,8 +1285,8 @@ fn parse_etime(s: &str) -> Option<i64> {
 /// pane_pid) straight to its session: no shared mutable state, no heuristics
 /// for registered pis. Validation: kill -0 liveness + elapsed-time vs
 /// registry-age consistency (rejects pid reuse: a fresh process would be
-/// younger than the registry by more than the startup latency). Dead entries
-/// are pruned.
+/// younger than the registry by more than the startup latency). Invalid entries
+/// are ignored, never deleted by this read-only inventory.
 fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
     // 2s TTL:list_sessions 会经 rmux map + 终端检测各扫一次,每条目还要
     // kill + ps 两个子进程,不加缓存会放大子进程开销
@@ -1333,6 +1319,7 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             };
             let Ok(text) = fs::read_to_string(&p) else { continue };
             let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+            if v.get("pid").and_then(Value::as_u64).is_some_and(|p| p != pid as u64) { continue; }
             let Some(mut session_path) = v
                 .get("sessionPath")
                 .and_then(|x| x.as_str())
@@ -1374,10 +1361,7 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
                     .unwrap_or(false)
             };
             if !alive {
-                if !remote {
-                    let _ = fs::remove_file(&p);
-                }
-                continue;
+                continue; // browsing must not remove runtime slots or windows
             }
             parsed.push((pid, started_at, RuntimeEntry {
                 pid,
@@ -1408,6 +1392,8 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
                 if etime < age - 300 {
                     continue; // pid reused by an unrelated younger process
                 }
+            } else {
+                continue; // degraded snapshot cannot validate this identity
             }
         }
         out.insert(pid, entry);
@@ -1619,6 +1605,31 @@ pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
     mains.iter().take(term_n).any(|(_, p)| p == session_path)
 }
 
+// agent_settled/idle ends a TURN, not a TUI process. Only use worker-log
+// completion to correct a historical fallback lacking any live Pi evidence.
+fn pane_pi_liveness(dead: bool, exact: bool, task_alive: bool, worker: bool,
+    terminal: bool, pane_command: Option<&str>) -> Option<bool> {
+    if dead { return Some(false); }
+    if exact || task_alive { return Some(true); }
+    if !worker && pane_command.is_some_and(is_pi_command) { return Some(true); }
+    if worker && terminal && pane_command.is_some_and(|cmd| !is_pi_command(cmd)) {
+        return Some(false);
+    }
+    None // missing snapshot, unregistered shell/SDK runner: NOT dead
+}
+
+fn runtime_rank(dead: bool, pi_alive: Option<bool>) -> u8 {
+    if dead { 0 } else {
+        match pi_alive { Some(true) => 3, None => 2, Some(false) => 1 }
+    }
+}
+
+fn insert_runtime(out: &mut HashMap<String, RmuxRuntime>, path: String, rt: RmuxRuntime) {
+    if out.get(&path).is_some_and(|old| runtime_rank(old.dead, old.pi_alive)
+        >= runtime_rank(rt.dead, rt.pi_alive)) { return; }
+    out.insert(path, rt);
+}
+
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     type RmuxCache = Option<(std::time::Instant, HashMap<String, RmuxRuntime>)>;
     static CACHE: OnceLock<Mutex<RmuxCache>> = OnceLock::new();
@@ -1657,7 +1668,6 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             }
         }
     };
-    let pid_alive = pid_alive;
 
     // ---------- batched process liveness / etime / command ----------
     // local: ONE `ps -p <all pane pids>` covers liveness + etime + command
@@ -1671,23 +1681,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             pane_pids.push(pid);
         }
     }
-    let mut ps_info: HashMap<u32, (i64, String)> = HashMap::new();
-    let mut alive_pids: HashSet<u32> = HashSet::new();
-    if remote {
-        for pid in &pane_pids {
-            // The rmux pane root is often a shell/node process while the
-            // registered pi is its child. The remote ps snapshot intentionally
-            // contains only pi processes, so the pane root pid may be absent.
-            // A validated runtime entry whose panePid matches is equally strong
-            // evidence that the pane is alive.
-            if pid_alive(*pid) || registry.values().any(|e| e.pane_pid == Some(*pid)) {
-                alive_pids.insert(*pid);
-            }
-        }
-    } else {
-        ps_info = batch_ps(&pane_pids);
-        alive_pids = ps_info.keys().copied().collect();
-    }
+    let ps_info = batch_ps(&pane_pids);
     // attached clients: ONE `rmux list-clients -F` call (this rmux lists ALL
     // clients by default — unlike tmux, it has no `-a` flag, which errors).
     // Was one `list-clients -t <session>` subprocess per session (~32 spawns).
@@ -1772,17 +1766,20 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         }
     }
 
-    // a LIVE window wins over a DEAD one for the same session: after the user
-    // kills a window and reopens the session, a stale dead pane (with its
-    // leftover @pi_session option) must not override the new live pane
-    let add = |path: String, target: String, sess: &str, dead: bool, out: &mut HashMap<String, RmuxRuntime>| {
-        if let Some(existing) = out.get(&path) {
-            if !existing.dead {
-                return; // already have a live window — ignore dead duplicates
-            }
-        }
-        let attached = attached_sess.contains(sess);
-        out.insert(path, RmuxRuntime { target, attached, dead });
+    let alive_tasks = alive_task_ids();
+    // Identity-proven live panes outrank unknown/historical locations.
+    let add = |path: String, target: String, sess: &str, pid: u32, dead: bool, out: &mut HashMap<String, RmuxRuntime>| {
+        let exact = registry.values().any(|e| e.session_path == path
+            && (e.pid == pid || e.pane_pid == Some(pid)));
+        let task = Path::new(&path).file_name().and_then(|n| n.to_str()).and_then(task_id_from_filename)
+            .or_else(|| extract_task_id(&target));
+        let terminal = task.as_ref().is_some_and(|t| matches!(last_task_event(
+            &pi_agent_dir().join("agent-logs").join(format!("task-{t}.jsonl"))), LastTaskEvent::Terminal));
+        let task_alive = task.as_ref().is_some_and(|t| alive_tasks.contains(t));
+        let cmd = ps_info.get(&pid).map(|(_, cmd)| cmd.as_str());
+        let pi_alive = pane_pi_liveness(dead, exact, task_alive, task.is_some(), terminal, cmd);
+        let rt = RmuxRuntime { target, attached: attached_sess.contains(sess), dead, pi_alive };
+        insert_runtime(out, path, rt);
     };
 
     for line in String::from_utf8_lossy(&res.stdout).lines() {
@@ -1791,22 +1788,19 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         let dead = parts.next().unwrap_or("").trim() == "1";
         let opt = parts.next().unwrap_or("").trim().to_string();
         let Ok(pid) = pid_s.parse::<u32>() else { continue };
-        if !dead && !alive_pids.contains(&pid) {
-            continue;
-        }
         let sess = target.split(':').next().unwrap_or("").to_string();
         // pid 注册表直连(最硬证据):pane 的 pid 或 pane_pid 在注册表里 →
         // 直接归属该会话,胜过任何选项/窗口名/启发式。会话文件必须仍存在
         // (被 /new 删除的会话不应吞掉真实归属,落到下方兜底)。
         if let Some(entry) = registry.get(&pid) {
             if Path::new(&entry.session_path).is_file() {
-                add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out);
+                add(entry.session_path.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 continue;
             }
         }
         if let Some(entry) = registry.values().find(|e| e.pane_pid == Some(pid)) {
             if Path::new(&entry.session_path).is_file() {
-                add(entry.session_path.clone(), target.to_string(), &sess, dead, &mut out);
+                add(entry.session_path.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 continue;
             }
         }
@@ -1863,20 +1857,20 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // which misattributes windows when two sessions share the first 8
         // chars of their uuid. A conflicting option is treated as absent.
         if opt_is_file && (win_id12.is_none() || opt_matches_win) {
-            add(opt_effective.clone(), target.to_string(), &sess, dead, &mut out);
+            add(opt_effective.clone(), target.to_string(), &sess, pid, dead, &mut out);
             continue;
         }
         // name-based id12 lookup (option missing or polluted by a foreign pi)
         if let Some(id12) = &win_id12 {
             if let Some(p) = id12_map.get(id12) {
-                add(p.clone(), target.to_string(), &sess, dead, &mut out);
+                add(p.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 continue;
             }
             // the window names a session whose file no longer exists; the
             // recorded option is still a valid file — prefer it over the weak
             // cwd/freshness heuristics below
             if opt_is_file {
-                add(opt_effective.clone(), target.to_string(), &sess, dead, &mut out);
+                add(opt_effective.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 continue;
             }
         }
@@ -1884,7 +1878,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         if let Some(id8) = win.strip_prefix('s') {
             if id8.len() >= 8 && id8[..8].chars().all(|c| c.is_ascii_hexdigit()) {
                 if let Some(p) = id8_map.get(&id8[..8]) {
-                    add(p.clone(), target.to_string(), &sess, dead, &mut out);
+                    add(p.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 }
                 continue;
             }
@@ -1892,7 +1886,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // subagent: window <agent>-<taskId>
         if let Some(tid) = extract_task_id(&win) {
             if let Some(p) = task_map.get(&tid) {
-                add(p.clone(), target.to_string(), &sess, dead, &mut out);
+                add(p.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 continue;
             }
         }
@@ -1912,7 +1906,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         if let Some((etime, cmd)) = bare_cmd {
             if cmd.trim() == "pi" {
                 if let Some(p) = pane_cwd_session(&pid, (etime > 0).then_some(etime), &out) {
-                    add(p, target.to_string(), &sess, dead, &mut out);
+                    add(p, target.to_string(), &sess, pid, dead, &mut out);
                     continue;
                 }
             }
@@ -1922,7 +1916,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 }
                 let clean = tok.trim_matches('\'');
                 if clean.ends_with(".jsonl") && clean.contains("sessions/") {
-                    add(clean.to_string(), target.to_string(), &sess, dead, &mut out);
+                    add(clean.to_string(), target.to_string(), &sess, pid, dead, &mut out);
                     break;
                 }
             }
@@ -2077,6 +2071,9 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             }
             if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid, &alive) {
                 if m.is_subagent {
+                    m.running = running.contains(&m.path);
+                    m.sleeping = false;
+                    m.interrupted = false;
                     if let Some(tid) = &m.task_id {
                         match task_status(tid, &alive) {
                             TaskStatus::Running => m.running = true,
@@ -2085,15 +2082,15 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                             _ => {}
                         }
                     }
-                    // subagents live in rmux pi-agents when running or sleeping
-                    if m.running || m.sleeping {
+                    // Location survives task completion; do not fabricate an
+                    // rmux target when durable already removed the dead pane.
+                    if let Some(rt) = rmux_map.get(&m.path) {
                         m.in_rmux = true;
-                        if let Some(rt) = rmux_map.get(&m.path) {
-                            m.rmux_target = Some(rt.target.clone());
-                            m.rmux_attached = rt.attached;
-                        } else {
-                            m.rmux_target = Some("pi-agents".to_string());
-                        }
+                        m.rmux_target = Some(rt.target.clone());
+                        m.rmux_attached = rt.attached;
+                        m.rmux_dead = rt.dead;
+                        m.rmux_pi_alive = rt.pi_alive;
+                        if rt.pi_alive == Some(true) { m.running = !m.sleeping; m.interrupted = false; }
                     }
                 } else if let Some(rt) = rmux_map.get(&m.path) {
                     // runtime location is independent of the task state: an idle
@@ -2102,10 +2099,9 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                     m.rmux_target = Some(rt.target.clone());
                     m.rmux_attached = rt.attached;
                     m.rmux_dead = rt.dead;
-                    if !rt.dead {
-                        // running = pi actively writing (mtime fresh)
-                        m.running = session_file_running(&path);
-                    }
+                    m.rmux_pi_alive = rt.pi_alive;
+                    m.running = running.contains(&m.path) ||
+                        (rt.pi_alive == Some(true) && session_file_running(&path));
                 } else {
                     // not in rmux: running = pi actively writing in a terminal
                     m.running = session_file_running(&path);
@@ -2165,13 +2161,14 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             by_id.insert(m.id.clone(), m);
             continue;
         }
-        let (cur_is_real, cur_in_rmux, cur_attached, cur_dead, cur_size, cur_target) = {
+        let (cur_is_real, cur_in_rmux, cur_attached, cur_dead, cur_pi_alive, cur_size, cur_target) = {
             let c = by_id.get(&m.id).unwrap();
             (
                 !c.path.contains("subagent-task-"),
                 c.in_rmux,
                 c.rmux_attached,
                 c.rmux_dead,
+                c.rmux_pi_alive,
                 c.size,
                 c.rmux_target.clone(),
             )
@@ -2180,22 +2177,26 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
         if cur_is_real && !m_is_real {
             // keep the real; if the mirror carries rmux state the real lacks,
             // merge it over (mirror processed second)
-            if m.in_rmux && !cur_in_rmux {
+            if m.in_rmux && (!cur_in_rmux || runtime_rank(m.rmux_dead, m.rmux_pi_alive)
+                > runtime_rank(cur_dead, cur_pi_alive)) {
                 let c = by_id.get_mut(&m.id).unwrap();
                 c.in_rmux = true;
                 c.rmux_target = m.rmux_target.clone();
                 c.rmux_attached = m.rmux_attached;
                 c.rmux_dead = m.rmux_dead;
+                c.rmux_pi_alive = m.rmux_pi_alive;
             }
         } else if !cur_is_real && m_is_real {
             // replace the mirror with the real, carrying rmux state over
             // (mirror processed first)
             let mut real = m;
-            if cur_in_rmux && !real.in_rmux {
+            if cur_in_rmux && (!real.in_rmux || runtime_rank(cur_dead, cur_pi_alive)
+                > runtime_rank(real.rmux_dead, real.rmux_pi_alive)) {
                 real.in_rmux = true;
                 real.rmux_target = cur_target;
                 real.rmux_attached = cur_attached;
                 real.rmux_dead = cur_dead;
+                real.rmux_pi_alive = cur_pi_alive;
             }
             by_id.insert(real.id.clone(), real);
         } else if m.size > cur_size {
@@ -2276,7 +2277,13 @@ fn parse_meta(
         if let Some((mt, sz, m)) = cache.get(&pstr) {
             if let Some(md) = fmetadata(path) {
                 if md.mtime == *mt && md.size == *sz {
-                    return Some(m.clone());
+                    let mut current = m.clone();
+                    current.running = running.contains(&pstr);
+                    if current.is_subagent {
+                        current.task_id = task_id_from_filename(fname).or_else(|| task_by_uuid
+                            .get(&current.id).and_then(|tasks| pick_task(tasks, alive).cloned()));
+                    }
+                    return Some(current);
                 }
             }
         }
@@ -2324,6 +2331,7 @@ fn parse_meta(
         rmux_target: None,
         rmux_attached: false,
         rmux_dead: false,
+        rmux_pi_alive: None,
         term_alive: false,
         size,};
     META_CACHE
@@ -3423,5 +3431,83 @@ mod perf_tests {
         let t1b = std::time::Instant::now();
         let _ = list_sessions("--Users-wenliu-Code-python-quantnight--");
         println!("list_sessions 2nd: {:?}", t1b.elapsed());
+    }
+}
+
+// Pure mock regressions only: these tests never call rmux, ps, SSH, or Pi.
+#[cfg(test)]
+mod adaptation_tests {
+    use super::*;
+
+    #[test]
+    fn native_and_adapter_tool_names_survive_jsonl_parsing() {
+        for name in ["codemode", "tool_search", "mcp__demo__read", "mcpScript", "mcp__quant_night"] {
+            let entry = parse_entry("message", &serde_json::json!({"id":"mock", "type":"message", "message":{
+                "role":"assistant", "content":[{"type":"toolCall", "id":"call", "name":name,
+                    "arguments":{"code":"return tools.mcp__demo__read({})"}}]
+            }})).unwrap();
+            match &entry.content[0] {
+                ContentBlock::ToolCall { name: parsed, arguments, .. } => {
+                    assert_eq!(parsed, name);
+                    assert!(arguments.contains("mcp__demo__read"));
+                }
+                _ => panic!("tool call was not preserved"),
+            }
+        }
+    }
+
+    #[test]
+    fn shell_print_wrapper_is_not_a_worker_process() {
+        let task = "muabcdef-1234";
+        assert!(command_task_ids(&format!("/bin/bash -c 'pi --session /agent-logs/task-{task}.jsonl; read answer'")).is_empty());
+        assert!(command_task_ids(&format!("tee /agent-logs/task-{task}.jsonl")).is_empty());
+        assert!(command_task_ids(&format!("pi 'inspect /agent-logs/task-{task}.jsonl'")).is_empty());
+        assert!(command_task_ids(&format!("pi --session /agent-logs/task-{task}.jsonl")).contains(task));
+        assert!(command_task_ids(&format!("node /pkg/pi-coding-agent/dist/cli.js --append-system-prompt /tmp/pi-task-{task}.md")).contains(task));
+    }
+
+    #[test]
+    fn ended_wrapper_keeps_location_without_pi_liveness() {
+        assert_eq!(pane_pi_liveness(false, false, false, true, true, Some("/bin/bash -c read")), Some(false));
+        assert_eq!(pane_pi_liveness(true, false, false, true, true, None), Some(false));
+        // A live private PID slot or direct task process wins over a settled log.
+        assert_eq!(pane_pi_liveness(false, true, false, true, true, Some("bash")), Some(true));
+        assert_eq!(pane_pi_liveness(false, false, true, true, true, Some("bash")), Some(true));
+    }
+
+    #[test]
+    fn idle_tui_and_degraded_unknown_do_not_become_dead() {
+        assert_eq!(pane_pi_liveness(false, false, false, false, true, Some("pi")), Some(true));
+        assert_eq!(pane_pi_liveness(false, true, false, false, true, Some("bash")), Some(true));
+        // Missing ps snapshot (remote excludes pane shells), unknown SDK wrapper,
+        // or unregistered worker TUI: no proof of process death.
+        assert_eq!(pane_pi_liveness(false, false, false, true, true, None), None);
+        assert_eq!(pane_pi_liveness(false, false, false, true, true, Some("pi")), None);
+        assert_eq!(pane_pi_liveness(false, false, false, false, false, Some("node custom-sdk.js")), None);
+    }
+
+    #[test]
+    fn precise_live_runtime_wins_over_stale_locations_in_both_orders() {
+        let make = |target: &str, dead, pi_alive| RmuxRuntime { target: target.into(), attached: false, dead, pi_alive };
+        for reverse in [false, true] {
+            let mut panes = vec![make("stale", false, Some(false)), make("unknown", false, None),
+                make("live", false, Some(true)), make("dead", true, Some(false))];
+            if reverse { panes.reverse(); }
+            let mut map = HashMap::new();
+            for pane in panes { insert_runtime(&mut map, "session".into(), pane); }
+            assert_eq!(map["session"].target, "live");
+        }
+    }
+
+    #[test]
+    fn ended_or_unknown_rmux_does_not_count_file_freshness_as_running() {
+        for pi_alive in [None, Some(false)] {
+            let mut map = HashMap::new();
+            insert_runtime(&mut map, "/mock/session.jsonl".into(), RmuxRuntime {
+                target: "history".into(), attached: false, dead: false, pi_alive,
+            });
+            assert!(!main_file_running(Path::new("/mock/session.jsonl"), &map));
+            assert!(!map["/mock/session.jsonl"].dead); // attachable location != dead pane
+        }
     }
 }

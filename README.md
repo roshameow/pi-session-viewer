@@ -31,6 +31,15 @@ npm run demo
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
 
+## 0.1.1 兼容更新
+
+- MCP 清单支持 native `.pi/mcp.json` 与旧 adapter `.mcp.json`；展示来源和 exposure，不冒充实时连接状态或项目 trust。
+- 保留 native MCP / codemode / tool_search 工具名，按 `toolCallId` 关联并行与嵌套结果；展开显示完整参数。
+- 区分 `ended rmux`（worker 已结束、shell 留存）、`? rmux`（身份未知）与退出 pane；浏览刷新不自动清理窗口或 runtime 文件。
+- 续聊仍使用 Pi CLI JSON 模式：对齐会话 cwd，并行读取 stderr 诊断；不覆盖模型、扩展或工具配置。
+
+本次回归使用 mock / fake CLI，不代表真实 MCP、RMUX、SSH 或模型联调通过。
+
 ## 安装状态与平台
 
 目前提供源码构建，尚无已验证的正式安装包。不要将本地自签名构建视为已公证的 macOS 发行版。
@@ -50,7 +59,17 @@ npm ci
 npm run tauri dev
 ```
 
-macOS 本地打包可运行 `npm run build:unsigned`；它覆盖开发者证书配置，不需要创建同名私有签名身份。用于分发的签名、公证及系统授权仍需自行处理。已有稳定签名配置的维护者可继续使用 `npm run tauri build`。
+macOS 本地打包可运行 `npm run build:unsigned -- --bundles app --ci`（只构建 `.app`，不生成 DMG）；它覆盖开发者证书配置，不需要创建同名私有签名身份。用于分发的签名、公证及系统授权仍需自行处理。已有稳定签名配置的维护者可使用 `npm run tauri -- build --bundles app --ci`。这些命令不会安装或启动应用。
+
+## 隔离验证
+
+```bash
+npm run test:adaptation
+npm run build
+cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
+```
+
+Unix fake CLI 测试需要 Python 3。macOS 如已有 rustup 工具链，可在 Rust 命令前加 `PATH="$HOME/.cargo/bin:$PATH"`；选择已安装的 Rust ≥1.88，无需升级依赖。不要将包含本机数据 / RMUX 测试的全量 `cargo test` 当作隔离验收。
 
 ## 开发与反馈
 
