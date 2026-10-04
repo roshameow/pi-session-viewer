@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2 — 2026-10-04
+
+- Infer yellow busy from verified Pi identity plus the last pending user / assistant toolUse / toolResult transcript message, not live SDK `isStreaming`; long thinking / tools no longer expire solely at 60 seconds without JSONL writes. Final assistant stop / error / abort stays idle.
+- Keep UNKNOWN identity as a short fresh-transcript weak fallback; an explicitly dead Pi / retained shell stays false.
+- Recognize anchored modern `pi-subagent-task-*` titles while rejecting shell mentions; skip normal `pi_subagent_exit(exitCode=0)` metadata when finding `agent_settled`.
+- Capture remote host time alongside process snapshots, use fixed snapshot mtime for legacy age guards, and include modern worker titles in sync filtering. Remote state is still the latest manual sync, not real-time.
+- Add five pure running regressions and an opt-in, project-scoped read-only inventory. Coverage does not guarantee auto-retry, compaction, oversized JSON, SSH degradation, or GUI / remote end-to-end behavior.
+- Synchronize application / root lockfile versions to 0.1.2 without dependency changes; retain the existing development signing identity.
+
 ## 0.1.1 — 2026-10-04
 
 - Inventory native MCP configuration from session cwd and retain legacy adapter options, with separate source, enablement, and exposure semantics.

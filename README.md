@@ -31,6 +31,15 @@ npm run demo
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
 
+## 0.1.2 运行黄点修复
+
+- 黄点（busy）是**已验证 Pi 身份 + transcript 最后一条有效消息仍 pending** 的兼容推断（user、assistant `toolUse` / toolCall、toolResult），**不是 SDK 实时 `isStreaming`**。已验证 Pi 的长思考或工具执行，不会仅因超过 60 秒未写 JSONL 而失去黄点；最后 assistant 为 stop / error / abort 等完成状态时，不点亮 idle TUI。
+- UNKNOWN 身份只允许短暂 fresh transcript 的弱兜底；明确已结束 Pi / 留存 dead shell 仍为 false，不把终端存活当 busy。
+- 识别 anchored `pi-subagent-task-*` 进程标题，不匹配 shell / tee 内的文本；正常 `pi_subagent_exit(exitCode=0)` 元信息不掩盖此前 `agent_settled`。
+- 远程 PID age guard 使用采集时的源主机时间；旧快照使用固定 snapshot mtime。同步过滤包含 `pi-subagent` 标题，但远程仍是**最近一次手动同步的快照，不是实时状态**。
+
+兼容推断无法全面保证 auto-retry、compaction、超大 / 截断 JSON 或 SSH 降级场景；纯回归和一次本机只读 inventory 不等于 GUI / 远程端到端验收。
+
 ## 0.1.1 兼容更新
 
 - MCP 清单支持 native `.pi/mcp.json` 与旧 adapter `.mcp.json`；展示来源和 exposure，不冒充实时连接状态或项目 trust。
@@ -66,6 +75,7 @@ macOS 本地打包可运行 `npm run build:unsigned -- --bundles app --ci`（只
 ```bash
 npm run test:adaptation
 npm run build
+cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory
 cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
 ```
 

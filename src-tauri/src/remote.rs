@@ -155,7 +155,7 @@ pub fn sync_remote(host: &str) -> Result<(), String> {
     //    ps format: `pid tty etime command` (matches sessions.rs ps_lines)
     let snap = ssh_run(
         host,
-        "echo '---PS---'; ps -eo pid=,tty=,etime=,command= | grep -E '[p]i([ ]|$)' || true; echo '---RMUX---'; rmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}' 2>/dev/null || true",
+        "echo '---TIME---'; date +%s; echo '---PS---'; ps -eo pid=,tty=,etime=,command= | grep -E '[p]i([ -]|$)' || true; echo '---RMUX---'; rmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}' 2>/dev/null || true",
     )?;
     let (ps_part, rmux_part) = snap
         .split_once("---RMUX---")

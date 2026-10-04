@@ -109,12 +109,74 @@ fn session_file_running(path: &Path) -> bool {
     now.saturating_sub(mtime).as_secs() < RUNNING_FRESH_SECS
 }
 
+// A transcript is not a streaming heartbeat: Pi persists at message_end.
+// Only extend a pending turn beyond freshness when this exact Pi is alive.
+// This is a compatibility inference, not a read of the SDK's isStreaming.
+fn message_turn_pending(v: &Value) -> Option<bool> {
+    if v.get("type")?.as_str()? != "message" { return None; }
+    let m = v.get("message")?;
+    match m.get("role")?.as_str()? {
+        "user" | "toolResult" => Some(true),
+        "assistant" => Some(match m.get("stopReason").and_then(Value::as_str) {
+            Some("error" | "aborted" | "stop" | "length") => false,
+            Some("toolUse") => true,
+            _ => m.get("content").and_then(Value::as_array)
+                .is_some_and(|blocks| blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("toolCall"))),
+        }),
+        _ => None,
+    }
+}
+
+fn session_turn_pending(path: &Path) -> Option<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    type Cache = HashMap<String, (i64, u64, Option<bool>)>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let md = fmetadata(path)?;
+    let key = path.to_string_lossy().into_owned();
+    {
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+        if let Some((mtime, size, pending)) = cache.get(&key) {
+            if *mtime == md.mtime && *size == md.size { return *pending; }
+        }
+    }
+    let pending = (|| {
+        let mut file = fs::File::open(path).ok()?;
+        let start = md.size.saturating_sub(256 * 1024);
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).ok()?;
+        let text = String::from_utf8_lossy(&data);
+        // The first line may be clipped; never mistake that fragment for a
+        // message. Later malformed/partial records are unknown, not idle.
+        let text = if start > 0 { text.split_once('\n')?.1 } else { &text };
+        for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
+            let v: Value = serde_json::from_str(line).ok()?;
+            if let Some(pending) = message_turn_pending(&v) { return Some(pending); }
+        }
+        None
+    })();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    if cache.len() > 4096 { cache.clear(); }
+    cache.insert(key, (md.mtime, md.size, pending));
+    pending
+}
+
+fn inferred_main_running(live: Option<bool>, pending: Option<bool>, fresh: bool) -> bool {
+    match live {
+        Some(false) => false,
+        Some(true) => pending.unwrap_or(fresh),
+        None => fresh && pending != Some(false),
+    }
+}
+
 fn main_file_running(path: &Path, map: &HashMap<String, RmuxRuntime>) -> bool {
     let key = path.to_string_lossy();
-    if let Some(rt) = map.get(key.as_ref()) {
-        if rt.pi_alive != Some(true) { return false; }
-    }
-    session_file_running(path)
+    let live = map.get(key.as_ref()).map(|rt| rt.pi_alive).unwrap_or_else(|| {
+        runtime_registry().values().any(|e| e.session_path == key).then_some(true)
+    });
+    let fresh = session_file_running(path);
+    if live == Some(false) || (live.is_none() && !fresh) { return false; }
+    inferred_main_running(live, session_turn_pending(path), fresh)
 }
 
 #[derive(Serialize, Clone)]
@@ -884,14 +946,27 @@ fn is_pi_command(command: &str) -> bool {
     let mut args = command.split_whitespace();
     let Some(exe) = args.next() else { return false };
     let base = Path::new(exe).file_name().and_then(|x| x.to_str()).unwrap_or("");
-    base == "pi" || (matches!(base, "node" | "bun") && args.next().is_some_and(|script| {
+    base == "pi" || worker_title_task(base).is_some() || (matches!(base, "node" | "bun") && args.next().is_some_and(|script| {
         script.contains("pi-coding-agent/") && script.ends_with("/cli.js")
     }))
+}
+
+fn worker_title_task(title: &str) -> Option<String> {
+    let task = title.strip_prefix("pi-subagent-task-")?;
+    let (id, suffix) = task.split_once('-')?;
+    if id.is_empty() || suffix.is_empty() || task.len() > 48 ||
+        !task.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        return None;
+    }
+    Some(task.to_string())
 }
 
 fn command_task_ids(command: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     if !is_pi_command(command) { return out; }
+    if let Some(task) = command.split_whitespace().next().and_then(worker_title_task) {
+        out.insert(task);
+    }
     let mut args = command.split_whitespace();
     while let Some(arg) = args.next() {
         if matches!(arg, "--session" | "--append-system-prompt" | "--system-prompt") {
@@ -941,10 +1016,9 @@ fn last_task_event(path: &Path) -> LastTaskEvent {
         let mut data = Vec::with_capacity((md.size - start) as usize);
         file.read_to_end(&mut data).ok()?;
         let text = String::from_utf8_lossy(&data);
-        let last = text.lines().rev().find(|line| !line.trim().is_empty())?;
-        // If one JSON event itself exceeds 64 KiB, the bounded chunk starts in
-        // the middle and parsing safely falls back to Other.
-        let v = serde_json::from_str::<Value>(last).ok()?;
+        // A successful shell exit marker follows agent_settled; it is not a
+        // new unfinished agent event.
+        let v = task_tail_event_value(&text)?;
         if matches!(
             v.get("type").and_then(|x| x.as_str()),
             Some("agent_end") | Some("agent_settled")
@@ -973,6 +1047,16 @@ fn last_task_event(path: &Path) -> LastTaskEvent {
     }
     cache.insert(key, (md.mtime, md.size, event));
     event
+}
+
+fn task_tail_event_value(text: &str) -> Option<Value> {
+    for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
+        let v: Value = serde_json::from_str(line).ok()?;
+        if v.get("type").and_then(Value::as_str) == Some("pi_subagent_exit")
+            && v.get("exitCode").and_then(Value::as_i64) == Some(0) { continue; }
+        return Some(v);
+    }
+    None
 }
 
 /// 一个 uuid 有多个任务时(reload 留下旧死任务 + 新活任务),选**活着**的
@@ -1384,7 +1468,9 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
     for (pid, started_at, entry) in parsed {
         if started_at > 0 {
             if let Some(etime) = etime_map.get(&pid).map(|(e, _)| *e) {
-                let age = now - started_at;
+                // Remote etime is frozen at capture, not today's desktop clock.
+                let observed_now = if remote { remote_process_observed_at().unwrap_or(now) } else { now };
+                let age = observed_now - started_at;
                 // Session startup can spend well over 30s loading extensions,
                 // restoring a large JSONL, and registering its pane. Keep a
                 // five-minute allowance; pid reuse still produces a much
@@ -1401,6 +1487,21 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
         Some((std::time::Instant::now(), out.clone()));
     out
+}
+
+fn remote_process_observed_at() -> Option<i64> {
+    let path = crate::remote::agent_root().join("ps_snapshot.txt");
+    let text = fs::read_to_string(&path).ok()?;
+    if let Some(time) = snapshot_source_time(&text) { return Some(time); }
+    // Legacy capture: file mtime is fixed, unlike an advancing desktop now.
+    Some(fs::metadata(path).ok()?.modified().ok()?
+        .duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64)
+}
+
+fn snapshot_source_time(text: &str) -> Option<i64> {
+    let mut lines = text.lines();
+    if lines.next()? != "---TIME---" { return None; }
+    lines.next()?.trim().parse().ok()
 }
 
 /// Registered terminal pis, registry-driven: entries with panePid == None
@@ -2100,11 +2201,10 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                     m.rmux_attached = rt.attached;
                     m.rmux_dead = rt.dead;
                     m.rmux_pi_alive = rt.pi_alive;
-                    m.running = running.contains(&m.path) ||
-                        (rt.pi_alive == Some(true) && session_file_running(&path));
+                    m.running = running.contains(&m.path) || main_file_running(&path, &rmux_map);
                 } else {
                     // not in rmux: running = pi actively writing in a terminal
-                    m.running = session_file_running(&path);
+                    m.running = running.contains(&m.path) || main_file_running(&path, &rmux_map);
                 }
                 out.push(m);
             }
@@ -3508,6 +3608,82 @@ mod adaptation_tests {
             });
             assert!(!main_file_running(Path::new("/mock/session.jsonl"), &map));
             assert!(!map["/mock/session.jsonl"].dead); // attachable location != dead pane
+        }
+    }
+}
+
+#[cfg(test)]
+mod running_diagnostics {
+    use super::*;
+
+    #[test]
+    fn pending_main_outlives_mtime_but_needs_exact_live_pi() {
+        assert!(inferred_main_running(Some(true), Some(true), false));
+        assert!(!inferred_main_running(Some(false), Some(true), true));
+        assert!(!inferred_main_running(None, Some(true), false));
+        assert!(inferred_main_running(None, Some(true), true));
+        assert!(!inferred_main_running(Some(true), Some(false), true));
+        assert!(!inferred_main_running(Some(true), Some(false), false));
+    }
+
+    #[test]
+    fn message_roles_classify_pending_and_finished_turns() {
+        let message = |role: &str, stop: &str| serde_json::json!({"type":"message","message":{"role":role,"stopReason":stop,"content":[]}});
+        for role in ["user", "toolResult"] { assert_eq!(message_turn_pending(&message(role,"")), Some(true)); }
+        assert_eq!(message_turn_pending(&message("assistant","toolUse")), Some(true));
+        for stop in ["stop", "error", "aborted", "length"] { assert_eq!(message_turn_pending(&message("assistant",stop)), Some(false)); }
+        assert_eq!(message_turn_pending(&serde_json::json!({"type":"custom"})), None);
+    }
+
+    #[test]
+    fn modern_worker_titles_are_anchored_not_shell_mentions() {
+        let task = "mut3mcp5-fzwx";
+        assert!(command_task_ids(&format!("pi-subagent-task-{task}    ")).contains(task));
+        for cmd in [format!("bash -c pi-subagent-task-{task}"),format!("tee pi-subagent-task-{task}"),"pi-subagent-task-".into(),"pi-subagent-task-a-!!!".into()] {
+            assert!(command_task_ids(&cmd).is_empty());
+        }
+    }
+
+    #[test]
+    fn successful_exit_marker_does_not_hide_settlement_but_crash_does() {
+        let settled = r#"{"type":"agent_settled"}"#;
+        let tail = format!("{settled}\n{{\"type\":\"pi_subagent_exit\",\"exitCode\":0}}\n");
+        assert_eq!(task_tail_event_value(&tail).unwrap()["type"], "agent_settled");
+        let crash = format!("{settled}\n{{\"type\":\"pi_subagent_exit\",\"exitCode\":137}}\n");
+        assert_eq!(task_tail_event_value(&crash).unwrap()["type"], "pi_subagent_exit");
+        assert!(task_tail_event_value("partial JSON").is_none());
+    }
+
+    #[test]
+    fn remote_snapshot_uses_a_fixed_source_clock() {
+        let text = "---TIME---\n101000\n---PS---\n4242 tty001 16:40 pi-subagent-task-test-abcd\n";
+        let captured = snapshot_source_time(text).unwrap();
+        let started = 100000;
+        let elapsed = 1000;
+        assert!(elapsed >= captured - started - 300);
+        // A moving desktop clock would incorrectly reject this same PID.
+        assert!(elapsed < captured + 301 - started - 300);
+        assert_eq!(snapshot_source_time("4242 tty001 16:40 pi\n"), None);
+    }
+
+    // Read-only opt-in: no prompts, config writes, cleanup, attach or model calls.
+    #[test]
+    #[ignore]
+    fn live_running_inventory() {
+        let registry = runtime_registry();
+        let map = rmux_runtime_map();
+        println!("DIAG runtime={} rmux={} host={:?}", registry.len(), map.len(), crate::remote::current_host());
+        for e in registry.values() {
+            let rt = map.get(&e.session_path);
+            println!("DIAG identity pid={} pane={:?} id={:?} fresh={} map={:?}",
+                e.pid, e.pane_pid, session_id(&e.session_path), session_file_running(Path::new(&e.session_path)),
+                rt.map(|r| (&r.target,r.dead,r.pi_alive)));
+        }
+        if let Ok(key) = std::env::var("PI_VIEWER_DIAGNOSTIC_PROJECT") {
+            let rows = list_sessions(&key);
+            let live: Vec<_> = rows.iter().filter(|s| s.running).collect();
+            println!("DIAG sessionRunning={}", live.len());
+            for s in live { println!("DIAG running id={} sub={} piAlive={:?}",s.id,s.is_subagent,s.rmux_pi_alive); }
         }
     }
 }

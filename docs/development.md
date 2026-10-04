@@ -115,3 +115,14 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --offline --manifest-path src-tauri/Car
 新增 Unix fake CLI 用 Python 3，输出超过 1MiB stderr；复用真实 command builder 与 stderr drainer，以 5 秒本地超时验证 cwd 与退出，不执行真实 send_message。macOS 临时目录可能以 `/var` 或 `/private/var` 表示，测试用 canonicalize 比较 cwd。
 
 全量旧 Rust 测试包含读取真实本机会话、调用 rmux 的 smoke/dump 测试，**不适用于 mock-only 验收**。选已安装的 Rust ≥1.88 工具链；无需升级依赖。私有检查点、源码审计和构建日志保存在被忽略的 `/artifacts/`，不随源码发布。
+
+## 0.1.2 黄点兼容推断边界
+
+- 黄点（busy）是**已验证 Pi 身份 + transcript 最后一条有效消息仍 pending** 的兼容推断（user、assistant `toolUse` / toolCall、toolResult），**不是 SDK 实时 `isStreaming`**。已验证 Pi 的长思考或工具执行，不会仅因超过 60 秒未写 JSONL 而失去黄点；最后 assistant 为 stop / error / abort 等完成状态时，不点亮 idle TUI。
+- UNKNOWN 身份只允许短暂 fresh transcript 的弱兜底；明确已结束 Pi / 留存 dead shell 仍为 false，不把终端存活当 busy。
+- 识别 anchored `pi-subagent-task-*` 进程标题，不匹配 shell / tee 内的文本；正常 `pi_subagent_exit(exitCode=0)` 元信息不掩盖此前 `agent_settled`。
+- 远程 PID age guard 使用采集时的源主机时间；旧快照使用固定 snapshot mtime。同步过滤包含 `pi-subagent` 标题，但远程仍是**最近一次手动同步的快照，不是实时状态**。
+
+兼容推断无法全面保证 auto-retry、compaction、超大 / 截断 JSON 或 SSH 降级场景；纯回归和一次本机只读 inventory 不等于 GUI / 远程端到端验收。
+
+隔离检查另加 `cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory`（5 个纯回归）。`live_running_inventory` 默认 ignored；经授权可用 `PI_VIEWER_DIAGNOSTIC_PROJECT=<编码项目目录名>` 只读核验该项目，不调用全项目 `list_projects` / `list_running`，不启动或控制 Pi / RMUX。

@@ -23,6 +23,15 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.2 running-indicator fix
+
+- Yellow (busy) is a **compatibility inference from verified Pi identity and the last relevant pending transcript message** (user, assistant `toolUse` / toolCall, or toolResult), **not live SDK `isStreaming`**. Long thinking or tool execution with a verified Pi no longer loses yellow solely because JSONL has not changed for 60 seconds. A final assistant stop / error / abort does not light up an idle TUI.
+- UNKNOWN identity permits only a short fresh-transcript weak fallback. An explicitly ended Pi / retained dead shell remains false; terminal presence is not busy activity.
+- Match anchored `pi-subagent-task-*` process titles, not shell / tee mentions. Normal `pi_subagent_exit(exitCode=0)` metadata no longer hides preceding `agent_settled`.
+- Remote PID age guards use captured source-host time, or fixed snapshot mtime for legacy captures; sync filtering includes `pi-subagent` titles. Remote state remains **the latest manually synced snapshot, not live status**.
+
+This inference does not fully guarantee auto-retry, compaction, oversized / truncated JSON, or SSH-degradation behavior. Pure regressions and one local read-only inventory are not GUI / remote end-to-end acceptance.
+
 ## 0.1.1 compatibility update
 
 - Inventory native `.pi/mcp.json` and legacy adapter `.mcp.json`, including source and exposure; this is not live connection status or project trust.
@@ -50,6 +59,7 @@ Install RMUX separately to use persistent terminal features. `npm run build:unsi
 ```bash
 npm run test:adaptation
 npm run build
+cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory
 cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
 ```
 
