@@ -137,3 +137,12 @@ export interface PiEvent {
   type: string;
   [key: string]: unknown;
 }
+
+// ready is the last completed full sync, not live/atomic telemetry.
+export interface RemoteSyncStatus {
+  host: string;
+  phase: "idle" | "syncing-history" | "capturing-snapshots" | "ready" | "error";
+  lastSuccessAt: number | null; // epoch seconds, like SessionMeta.updatedAt
+  error: string | null;
+  usableCache: boolean;
+}

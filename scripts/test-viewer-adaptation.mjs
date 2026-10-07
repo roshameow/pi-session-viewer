@@ -99,9 +99,12 @@ try {
   large.some = () => { throw Error('Sidebar must use its main-path Set'); };
   large.find = () => { throw Error('Sidebar must use its parent-path Map'); };
   const largeHtml = render(Sidebar,{...sidebarProps,sessions:large});
-  assert.equal((largeHtml.match(/parent: /g)??[]).length,3999);
+  const renderedParents = (largeHtml.match(/parent: /g)??[]).length;
+  assert.ok(renderedParents > 0 && renderedParents <= 100, 'large folders must render a bounded first page');
   assert.doesNotMatch(largeHtml,/no parent/);
-  assert.match(largeHtml,/parent: Worker 3998 · large-39/);
+  const selectedHtml = render(Sidebar,{...sidebarProps,sessions:large,
+    selectedSessionPath:'/mock/large-3999.jsonl'});
+  assert.match(selectedHtml,/parent: Worker 3998 · large-39/);
   const sidebarSource = await readFile(path.join(root,'src/components/Sidebar.tsx'),'utf8');
   assert.match(sidebarSource,/mainPaths\.has\(s\.parentSessionPath\)/);
   assert.match(sidebarSource,/sessionsByPath\.get\(path\)/);
@@ -109,5 +112,5 @@ try {
   const sessionSource = await readFile(path.join(root,'src-tauri/src/sessions.rs'),'utf8');
   assert.match(sessionSource,/let parent_calls = legacy_parent_calls\(&out, &parent_by_uuid, \|\|/);
   assert.match(sessionSource,/m\.is_subagent && !parents\.contains_key\(&m\.id\)/);
-  console.log('PASS indexed 4000-row Sidebar, duplicate/orphan labels + lazy collector wiring');
+  console.log('PASS indexed/paged 4000-row Sidebar, selected/duplicate/orphan labels + lazy collector wiring');
 } finally { await rm(scratch,{recursive:true,force:true}); }

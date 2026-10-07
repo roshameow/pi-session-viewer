@@ -203,10 +203,21 @@ fn inferred_main_running(live: Option<bool>, pending: Option<bool>, fresh: bool)
 }
 
 fn main_file_running(path: &Path, map: &HashMap<String, RmuxRuntime>) -> bool {
+    // Targeted callers preserve the old lazy registry lookup for non-rmux paths.
+    let paths = if map.contains_key(path.to_string_lossy().as_ref()) {
+        HashSet::new()
+    } else {
+        runtime_registry().values().map(|e| e.session_path.clone()).collect()
+    };
+    main_file_running_with_paths(path, map, &paths)
+}
+
+fn main_file_running_with_paths(
+    path: &Path, map: &HashMap<String, RmuxRuntime>, registered_paths: &HashSet<String>,
+) -> bool {
     let key = path.to_string_lossy();
-    let live = map.get(key.as_ref()).map(|rt| rt.pi_alive).unwrap_or_else(|| {
-        runtime_registry().values().any(|e| e.session_path == key).then_some(true)
-    });
+    let live = map.get(key.as_ref()).map(|rt| rt.pi_alive)
+        .unwrap_or_else(|| registered_paths.contains(key.as_ref()).then_some(true));
     let fresh = session_file_running(path);
     if live == Some(false) || (live.is_none() && !fresh) { return false; }
     inferred_main_running(live, session_turn_pending(path), fresh)
@@ -384,6 +395,7 @@ fn task_id_from_filename(name: &str) -> Option<String> {
 /// 目录指纹:所有会话文件 + agent-log 的最新 mtime。会话写入/新会话/子代理
 /// 活动都会触发变化;纯进程状态变化(attach/detach)由 TTL 兜底。
 fn agent_state_fingerprint() -> (u64, u64) {
+    #[cfg(test)] switching_tests::record("fingerprint");
     (
         newest_mtime_secs(&sessions_dir()),
         newest_mtime_secs(&pi_agent_dir().join("agent-logs")),
@@ -399,8 +411,9 @@ pub fn list_projects() -> Vec<Project> {
     static PJ_CACHE: OnceLock<Mutex<PjCache>> = OnceLock::new();
     let source = inventory_source();
     let fp = agent_state_fingerprint();
+    // Serialize cold misses as well as hits; equivalent concurrent readers share one fill.
+    let mut cache = PJ_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     {
-        let cache = PJ_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
         if let Some((at, prev_source, prev_fp, res)) = cache.as_ref() {
             if at.elapsed() < std::time::Duration::from_secs(12) && *prev_source == source && *prev_fp == fp {
                 return res.clone();
@@ -409,13 +422,14 @@ pub fn list_projects() -> Vec<Project> {
     }
     let root = sessions_dir();
     let mut out = Vec::new();
-    let (_, task_by_uuid, _, _) = subagent_index();
-    let alive = alive_task_ids();
-    let rmux_map = rmux_runtime_map();
+    let evidence = ListEvidence::read(source.clone(), fp);
+    let (_, task_by_uuid, _, _) = &evidence.index;
+    let alive = &evidence.alive;
+    let rmux_map = &evidence.rmux;
     // alive_terminal_pis() spawns ps+lsof; compute once, not per project
     let term_alive = alive_terminal_pis();
     // registry-driven terminal pis (primary enumeration)
-    let reg_term = registry_terminal_pis();
+    let reg_term = registry_terminal_pis_with_registry(&evidence.registry);
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let path = e.path();
@@ -464,7 +478,7 @@ pub fn list_projects() -> Vec<Project> {
                                     }
                                 } else {
                                     // main session
-                                    if main_file_running(&f.path(), &rmux_map) {
+                                    if main_file_running_with_paths(&f.path(), rmux_map, &evidence.registered_paths) {
                                         running_count += 1;
                                     }
                                     let spath = f.path().to_string_lossy().into_owned();
@@ -528,7 +542,7 @@ pub fn list_projects() -> Vec<Project> {
         }
     }
     out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
-    *PJ_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+    *cache =
         Some((std::time::Instant::now(), source, fp, out.clone()));
     out
 }
@@ -769,13 +783,17 @@ type SubIdx = (
 static SUB_IDX: OnceLock<Mutex<Option<(InventorySource, u64, SubIdx)>>> = OnceLock::new();
 
 pub fn subagent_index() -> SubIdx {
-    let mut source = inventory_source();
+    subagent_index_with_fingerprint(inventory_source(), agent_state_fingerprint())
+}
+
+fn subagent_index_with_fingerprint(mut source: InventorySource, fp: (u64, u64)) -> SubIdx {
+    #[cfg(test)] switching_tests::record("index");
     // Header/log association depends on the data tree, not process snapshots.
     // A PS-only refresh must not trigger another global header rebuild.
     source.ps = None;
     source.rmux = None;
     let mut cache = SUB_IDX.get_or_init(|| Mutex::new(None)).lock().unwrap();
-    let key = newest_mtime_secs(&sessions_dir()) ^ newest_mtime_secs(&pi_agent_dir().join("agent-logs"));
+    let key = fp.0 ^ fp.1;
     if let Some((prev_source, k, idx)) = cache.as_ref() {
         if *prev_source == source && *k == key {
             return idx.clone();
@@ -1008,6 +1026,13 @@ pub enum TaskStatus {
 /// `task-<id>.jsonl` (or the `pi-task-<id>.md` system-prompt arg) in the
 /// command line. One ps call covers every task.
 fn alive_task_ids() -> HashSet<String> {
+    let (_, tasks_by_uuid, _, _) = subagent_index();
+    alive_task_ids_with_registry(&tasks_by_uuid, &runtime_registry())
+}
+
+fn alive_task_ids_with_registry(
+    tasks_by_uuid: &HashMap<String, Vec<String>>, registry: &HashMap<u32, RuntimeEntry>,
+) -> HashSet<String> {
     let mut out = HashSet::new();
     // 远程主机:子代理进程只存在于 host 上,本机 ps 永远看不到——必须读同步
     // 下来的 ps_snapshot.txt(ps_lines() 已做远程适配);本地模式仍走实时 ps。
@@ -1019,8 +1044,7 @@ fn alive_task_ids() -> HashSet<String> {
     // Scrubbed argv no longer carries task ids. A validated private PID slot
     // is stronger than shell argv or a leftover @pi_session option. Attribute
     // one current task per UUID, not all historical reloads of that UUID.
-    let (_, tasks_by_uuid, _, _) = subagent_index();
-    for entry in runtime_registry().values() {
+    for entry in registry.values() {
         if let Some(id) = session_id(&entry.session_path) {
             if let Some(tasks) = tasks_by_uuid.get(&id) {
                 if let Some(task) = tasks.iter().max_by_key(|t| {
@@ -1222,13 +1246,34 @@ pub fn session_status(path: String) -> String {
     }
 }
 
+// One copy of current validated ownership and association evidence per list.
+// All existing source/2s/age guards remain in the underlying readers.
+struct ListEvidence {
+    index: SubIdx,
+    registry: HashMap<u32, RuntimeEntry>,
+    registered_paths: HashSet<String>,
+    alive: HashSet<String>,
+    rmux: HashMap<String, RmuxRuntime>,
+}
+impl ListEvidence {
+    fn read(source: InventorySource, fp: (u64, u64)) -> Self {
+        let index = subagent_index_with_fingerprint(source, fp);
+        let registry = runtime_registry();
+        let registered_paths = registry.values().map(|e| e.session_path.clone()).collect();
+        let alive = alive_task_ids_with_registry(&index.1, &registry);
+        let rmux = rmux_runtime_map_with_evidence(Some(&registry), Some(&alive));
+        Self { index, registry, registered_paths, alive, rmux }
+    }
+}
+
 pub fn list_running() -> Vec<RunningSession> {
     let mut out = Vec::new();
     let root = sessions_dir();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
-    let (sub_uuids, task_by_uuid, _, _) = subagent_index();
-    let alive = alive_task_ids();
-    let rmux_map = rmux_runtime_map();
+    let evidence = ListEvidence::read(inventory_source(), agent_state_fingerprint());
+    let (sub_uuids, task_by_uuid, _, _) = &evidence.index;
+    let alive = &evidence.alive;
+    let rmux_map = &evidence.rmux;
     let mut seen: HashSet<String> = HashSet::new();
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
@@ -1265,7 +1310,7 @@ pub fn list_running() -> Vec<RunningSession> {
                             .map(|t| alive.contains(t))
                             .unwrap_or(false)
                     } else {
-                        main_file_running(&path, &rmux_map)
+                        main_file_running_with_paths(&path, rmux_map, &evidence.registered_paths)
                     };
                     if !is_running && !running.contains(&spath) {
                         continue;
@@ -1342,8 +1387,9 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
     let source = inventory_source();
     type TermCache = Option<(std::time::Instant, InventorySource, Vec<(u32, String)>)>;
     static CACHE: OnceLock<Mutex<TermCache>> = OnceLock::new();
+    // Serialize cold misses as well as hits; equivalent concurrent readers share one fill.
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     {
-        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
         if let Some((at, prev_source, res)) = cache.as_ref() {
             if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return res.clone();
@@ -1353,19 +1399,7 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
     let mut out = Vec::new();
     let mut pending: Vec<u32> = Vec::new();
     // tty devices owned by rmux panes (normalized to "ttysNNN")
-    let mut pane_ttys: HashSet<String> = HashSet::new();
-    if let Ok(res) = inventory_command("rmux")
-        .args(["list-panes", "-a", "-F", "#{pane_tty}"])
-        .env("PATH", full_path())
-        .output()
-    {
-        for line in String::from_utf8_lossy(&res.stdout).lines() {
-            let t = line.trim().trim_start_matches("/dev/");
-            if !t.is_empty() {
-                pane_ttys.insert(t.to_string());
-            }
-        }
-    }
+    let pane_ttys = local_pane_ttys();
     for line in ps_lines() {
         let mut it = line.split_whitespace();
         // ps_lines 格式:pid tty etime command
@@ -1405,7 +1439,7 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
             }
         }
     }
-    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+    *cache =
         Some((std::time::Instant::now(), source, out.clone()));
     out
 }
@@ -1472,12 +1506,14 @@ fn parse_etime(s: &str) -> Option<i64> {
 /// younger than the registry by more than the startup latency). Invalid entries
 /// are ignored, never deleted by this read-only inventory.
 fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
+    #[cfg(test)] switching_tests::record("registry");
     // One batch per source-scoped 2s inventory, never per-entry kill/ps.
     let source = inventory_source();
     type RegCache = Option<(std::time::Instant, InventorySource, HashMap<u32, RuntimeEntry>)>;
     static CACHE: OnceLock<Mutex<RegCache>> = OnceLock::new();
+    // Serialize cold misses as well as hits; equivalent concurrent readers share one fill.
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     {
-        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
         if let Some((at, prev_source, res)) = cache.as_ref() {
             if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return res.clone();
@@ -1545,7 +1581,7 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             batch_ps(pids)
         }
     });
-    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+    *cache =
         Some((std::time::Instant::now(), source, out.clone()));
     out
 }
@@ -1705,8 +1741,9 @@ fn ps_lines() -> Vec<String> {
     let source = inventory_source();
     type PsCache = Option<(std::time::Instant, InventorySource, Vec<String>)>;
     static CACHE: OnceLock<Mutex<PsCache>> = OnceLock::new();
+    // Serialize cold misses as well as hits; equivalent concurrent readers share one fill.
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     {
-        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
         if let Some((at, prev_source, lines)) = cache.as_ref() {
             if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return lines.clone();
@@ -1724,7 +1761,7 @@ fn ps_lines() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
-    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+    *cache =
         Some((std::time::Instant::now(), source, lines.clone()));
     lines
 }
@@ -1792,11 +1829,16 @@ pub fn pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-fn registry_terminal_pis() -> Vec<(u32, String, String)> {
-    if crate::remote::current_host().is_some() {
-        let source = inventory_source();
-        let registry = runtime_registry();
-        return remote_terminal_inventory(&source.root, &registry);
+fn local_pane_ttys() -> HashSet<String> {
+    type PaneCache = Option<(std::time::Instant, InventorySource, HashSet<String>)>;
+    static CACHE: OnceLock<Mutex<PaneCache>> = OnceLock::new();
+    let source = inventory_source();
+    if source.remote { return HashSet::new(); }
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if let Some((at, previous, ttys)) = cache.as_ref() {
+        if *previous == source && at.elapsed() < std::time::Duration::from_secs(2) {
+            return ttys.clone();
+        }
     }
     let mut pane_ttys: HashSet<String> = HashSet::new();
     if let Ok(res) = inventory_command("rmux")
@@ -1811,8 +1853,22 @@ fn registry_terminal_pis() -> Vec<(u32, String, String)> {
             }
         }
     }
+    *cache = Some((std::time::Instant::now(), source, pane_ttys.clone()));
+    pane_ttys
+}
+
+fn registry_terminal_pis() -> Vec<(u32, String, String)> {
+    registry_terminal_pis_with_registry(&runtime_registry())
+}
+
+fn registry_terminal_pis_with_registry(registry: &HashMap<u32, RuntimeEntry>) -> Vec<(u32, String, String)> {
+    if crate::remote::current_host().is_some() {
+        let source = inventory_source();
+        return remote_terminal_inventory(&source.root, registry);
+    }
+    let pane_ttys = local_pane_ttys();
     let mut out = Vec::new();
-    for e in runtime_registry().values() {
+    for e in registry.values() {
         if e.pane_pid.is_some() {
             continue;
         }
@@ -1900,11 +1956,18 @@ fn insert_runtime(out: &mut HashMap<String, RmuxRuntime>, path: String, rt: Rmux
 }
 
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
+    rmux_runtime_map_with_evidence(None, None)
+}
+
+fn rmux_runtime_map_with_evidence(
+    registry: Option<&HashMap<u32, RuntimeEntry>>, alive: Option<&HashSet<String>>,
+) -> HashMap<String, RmuxRuntime> {
     let source = inventory_source();
     type RmuxCache = Option<(std::time::Instant, InventorySource, HashMap<String, RmuxRuntime>)>;
     static CACHE: OnceLock<Mutex<RmuxCache>> = OnceLock::new();
+    // Serialize cold misses as well as hits; equivalent concurrent readers share one fill.
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
     {
-        let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
         if let Some((at, prev_source, res)) = cache.as_ref() {
             if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return res.clone();
@@ -1912,7 +1975,11 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         }
     }
     let mut out = HashMap::new();
-    let registry = runtime_registry();
+    let owned_registry;
+    let registry = match registry {
+        Some(registry) => registry,
+        None => { owned_registry = runtime_registry(); &owned_registry }
+    };
     let res: std::process::Output = if crate::remote::current_host().is_some() {
         // 远程:读同步时的 rmux 快照(格式与本地 list-panes 一致)
         let snap = crate::remote::agent_root().join("rmux_snapshot.txt");
@@ -1923,6 +1990,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 stderr: Vec::new(),
             },
             _ => {
+                *cache = Some((std::time::Instant::now(), source, out.clone()));
                 return out;
             }
         }
@@ -1934,6 +2002,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         {
             Ok(o) => o,
             Err(_) => {
+                *cache = Some((std::time::Instant::now(), source, out.clone()));
                 return out;
             }
         }
@@ -2036,7 +2105,11 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         }
     }
 
-    let alive_tasks = alive_task_ids();
+    let owned_alive;
+    let alive_tasks = match alive {
+        Some(alive) => alive,
+        None => { owned_alive = alive_task_ids(); &owned_alive }
+    };
     // Identity-proven live panes outrank unknown/historical locations.
     let add = |path: String, target: String, sess: &str, pid: u32, dead: bool, out: &mut HashMap<String, RmuxRuntime>| {
         let exact = registry.values().any(|e| e.session_path == path
@@ -2184,7 +2257,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
             }
         }
     }
-    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+    *cache =
         Some((std::time::Instant::now(), source, out.clone()));
     out
 }
@@ -2284,27 +2357,55 @@ fn dir_fingerprint(dir: &std::path::Path) -> Option<Vec<(String, i64, u64)>> {
     Some(v)
 }
 
+type SessionFingerprint = Vec<(String, i64, u64)>;
+struct SessionListEntry {
+    at: std::time::Instant,
+    source: InventorySource,
+    project: String,
+    fingerprint: SessionFingerprint,
+    running: HashSet<String>,
+    result: Vec<SessionMeta>,
+}
+#[derive(Default)]
+struct SessionListsCache(std::collections::VecDeque<SessionListEntry>);
+impl SessionListsCache {
+    fn get(&mut self, source: &InventorySource, project: &str,
+        fp: Option<&SessionFingerprint>, running: &HashSet<String>) -> Option<Vec<SessionMeta>> {
+        let position = self.0.iter().position(|entry| &entry.source == source && entry.project == project)?;
+        let entry = self.0.remove(position)?;
+        // MRU touches must NOT extend the original inventory freshness window.
+        let valid = entry.at.elapsed() < std::time::Duration::from_secs(2)
+            && Some(&entry.fingerprint) == fp && &entry.running == running;
+        let result = valid.then(|| entry.result.clone());
+        if valid { self.0.push_back(entry); }
+        result
+    }
+    fn put(&mut self, source: InventorySource, project: &str, fp: SessionFingerprint,
+        running: HashSet<String>, result: Vec<SessionMeta>) {
+        self.0.retain(|entry| entry.source != source || entry.project != project);
+        if self.0.len() >= 8 { self.0.pop_front(); }
+        self.0.push_back(SessionListEntry { at: std::time::Instant::now(), source,
+            project: project.to_owned(), fingerprint: fp, running, result });
+    }
+}
+
 pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let root = sessions_dir();
     let dir = root.join(project_key);
-    // 结果级缓存:目录指纹不变直接返回(每 10s 轮询不再全扫 4-6s)
-    type ListCache = Option<(std::time::Instant, InventorySource, String, Vec<(String, i64, u64)>, Vec<SessionMeta>)>;
-    static LIST_CACHE: OnceLock<Mutex<ListCache>> = OnceLock::new();
+    static LIST_CACHE: OnceLock<Mutex<SessionListsCache>> = OnceLock::new();
     let source = inventory_source();
+    // Hold the miss gate through collection. No list reader calls list_sessions;
+    // equivalent concurrent requests cannot publish duplicate fills.
+    let mut cache = LIST_CACHE.get_or_init(|| Mutex::new(SessionListsCache::default())).lock().unwrap();
     let fp = dir_fingerprint(&dir);
-    {
-        let cache = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, prev_source, prev_project, prev_fp, res)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(2) && *prev_source == source && prev_project == project_key && Some(prev_fp) == fp.as_ref() {
-                return res.clone();
-            }
-        }
-    }
-    let mut out = Vec::new();
     let running = running_set().lock().map(|s| s.clone()).unwrap_or_default();
-    let alive = alive_task_ids();
-    let rmux_map = rmux_runtime_map();
-    let (sub_uuids, task_by_uuid, match_text_by_uuid, parent_by_uuid) = subagent_index();
+    if let Some(result) = cache.get(&source, project_key, fp.as_ref(), &running) { return result; }
+    #[cfg(test)] switching_tests::record("session_miss");
+    let mut out = Vec::new();
+    let evidence = ListEvidence::read(source.clone(), agent_state_fingerprint());
+    let alive = &evidence.alive;
+    let rmux_map = &evidence.rmux;
+    let (sub_uuids, task_by_uuid, match_text_by_uuid, parent_by_uuid) = &evidence.index;
 
     if let Ok(fd) = fs::read_dir(&dir) {
         for f in fd.flatten() {
@@ -2344,10 +2445,10 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                     m.rmux_attached = rt.attached;
                     m.rmux_dead = rt.dead;
                     m.rmux_pi_alive = rt.pi_alive;
-                    m.running = running.contains(&m.path) || main_file_running(&path, &rmux_map);
+                    m.running = running.contains(&m.path) || main_file_running_with_paths(&path, rmux_map, &evidence.registered_paths);
                 } else {
                     // not in rmux: running = pi actively writing in a terminal
-                    m.running = running.contains(&m.path) || main_file_running(&path, &rmux_map);
+                    m.running = running.contains(&m.path) || main_file_running_with_paths(&path, rmux_map, &evidence.registered_paths);
                 }
                 out.push(m);
             }
@@ -2357,7 +2458,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     // the pi is idle). registered pis (pid registry, pane_pid == None) map
     // straight to their session; unregistered ones fall back to marking the
     // freshest non-rmux main sessions.
-    let reg_term = registry_terminal_pis();
+    let reg_term = registry_terminal_pis_with_registry(&evidence.registry);
     let reg_pids: HashSet<u32> = reg_term.iter().map(|(p, _, _)| *p).collect();
     let term_alive = alive_terminal_pis();
     let mut direct_term: Vec<String> = Vec::new();
@@ -2415,8 +2516,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
         b.updated_at.cmp(&a.updated_at).then_with(|| a.path.cmp(&b.path))
     });
     if let Some(f) = fp {
-        *LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-            Some((std::time::Instant::now(), source, project_key.to_string(), f, out.clone()));
+        cache.put(source, project_key, f, running, out.clone());
     }
     out
 }
@@ -3493,6 +3593,10 @@ fn parse_content(content: Option<&Value>, _ctx: Option<&str>) -> Vec<ContentBloc
     }
     out
 }
+
+#[cfg(test)]
+#[path = "sessions_switching_tests.rs"]
+mod switching_tests;
 
 #[cfg(test)]
 #[path = "sessions_performance_tests.rs"]

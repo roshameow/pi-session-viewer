@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5 — 2026-10-07
+
+- Bound initial Sidebar DOM with 100-row progressive pages and explicit show-more; search still covers all loaded sessions, total counts/grouping/parent labels remain intact and off-page selection stays visible.
+- Retain source/project-qualified session results in an eight-entry LRU with the original 2s freshness/fingerprint and desktop-running invalidation. Coalesce equivalent cold inventory fills and share request evidence rather than repeatedly cloning/probing per row.
+- Guard source/project/detail replies with request generations, coalesce equivalent requests and stop canceled polls from publishing stale sessions, errors or completion toasts. Preserve source-qualified unsent drafts.
+- Select usable remote cached history before background refresh; expose initial-sync readiness, cached timestamp, refresh phase/error and non-live-snapshot status. Bound/coalesce refresh and restrict sync to managed browsing files; preserve excluded cache files and existing SSH configuration.
+- Pin each traversal to its source. Cache refresh is not a transactionally atomic history/runtime snapshot; partial failure is reported without claiming freshness or whole-tree completeness.
+- Large directories can still take seconds on first cold load. Cache/backend fixtures are not installed GUI latency guarantees; no history pruning, worker/process termination or network-route changes.
+
 ## 0.1.4 — 2026-10-07
 
 - Index Sidebar parent lookups instead of repeated per-worker session scans; retain nested worker labels and direct-main grouping.

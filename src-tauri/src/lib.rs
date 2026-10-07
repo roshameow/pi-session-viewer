@@ -16,19 +16,19 @@ use tauri::async_runtime::spawn_blocking;
 
 #[tauri::command]
 async fn list_projects() -> Vec<sessions::Project> {
-    spawn_blocking(sessions::list_projects).await.unwrap_or_default()
+    spawn_blocking(|| remote::with_current_source(sessions::list_projects)).await.unwrap_or_default()
 }
 
 #[tauri::command]
 async fn list_sessions(project_key: String) -> Vec<sessions::SessionMeta> {
-    spawn_blocking(move || sessions::list_sessions(&project_key))
+    spawn_blocking(move || remote::with_current_source(|| sessions::list_sessions(&project_key)))
         .await
         .unwrap_or_default()
 }
 
 #[tauri::command]
 async fn session_detail(path: String) -> Result<sessions::SessionDetail, String> {
-    spawn_blocking(move || sessions::session_detail(&path))
+    spawn_blocking(move || remote::with_current_source(|| sessions::session_detail(&path)))
         .await
         .map_err(|e| format!("session_detail task failed: {e}"))?
 }
@@ -559,19 +559,13 @@ fn kill_rmux_session_sync(session_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Switch the desktop's agent source (None = local). Syncs the remote host's
-/// agent tree into the local cache first so sessions.rs readers work.
+/// Cached sources select without network I/O; unseen sources require initial sync.
 #[tauri::command]
 async fn set_remote_host(host: Option<String>) -> Result<(), String> {
-    spawn_blocking(move || {
-        if let Some(h) = &host {
-            remote::sync_remote(h)?;
-        }
-        remote::set_current_host(host);
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let epoch = remote::begin_source_selection();
+    spawn_blocking(move || remote::select_source(host, epoch))
+        .await
+        .map_err(|_| "Source selection task failed".to_string())?
 }
 
 /// Configured remote hosts (ssh aliases from ~/.pi-session-viewer.json).
@@ -586,15 +580,24 @@ fn get_remote_host() -> Option<String> {
     remote::current_host()
 }
 
-/// Re-sync the currently selected remote host (refresh button).
+/// Capture the requested host so a source switch cannot redirect pending sync.
+/// Omitted host retains the existing current-source API behavior.
 #[tauri::command]
-async fn refresh_remote() -> Result<(), String> {
-    spawn_blocking(|| match remote::current_host() {
+async fn refresh_remote(host: Option<String>) -> Result<(), String> {
+    let host = host.or_else(remote::current_host);
+    spawn_blocking(move || match host {
         Some(h) => remote::sync_remote(&h),
         None => Ok(()),
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|_| "Remote refresh task failed".to_string())?
+}
+
+#[tauri::command]
+async fn remote_sync_status(host: String) -> Result<remote::RemoteSyncStatus, String> {
+    spawn_blocking(move || remote::sync_status(&host))
+        .await
+        .map_err(|_| "Remote status task failed".to_string())?
 }
 
 /// Transfer a local session (+ its subagent sessions) to a remote host and
@@ -843,7 +846,7 @@ fn apple_escape(s: &str) -> String {
 /// "finished" | "unknown". Wraps sessions::session_status off-thread.
 #[tauri::command]
 async fn session_status(path: String) -> String {
-    spawn_blocking(move || sessions::session_status(path))
+    spawn_blocking(move || remote::with_current_source(|| sessions::session_status(path)))
         .await
         .unwrap_or_else(|_| "unknown".into())
 }
@@ -851,7 +854,7 @@ async fn session_status(path: String) -> String {
 /// Lightweight snapshot of currently running sessions across ALL projects.
 #[tauri::command]
 async fn list_running() -> Vec<sessions::RunningSession> {
-    spawn_blocking(sessions::list_running).await.unwrap_or_default()
+    spawn_blocking(|| remote::with_current_source(sessions::list_running)).await.unwrap_or_default()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -874,6 +877,7 @@ pub fn run() {
             list_remote_hosts,
             get_remote_host,
             refresh_remote,
+            remote_sync_status,
             transfer_session_to_remote,
             session_status,
             list_running,

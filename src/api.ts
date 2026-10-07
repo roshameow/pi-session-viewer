@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView } from "./types";
+import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, RemoteSyncStatus } from "./types";
 
 export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
@@ -22,7 +22,8 @@ export const api = {
     invoke<string>("transfer_session_to_remote", { sessionPath, host, remoteCwd, prompt }),
   listRemoteHosts: () => invoke<string[]>("list_remote_hosts"),
   getRemoteHost: () => invoke<string | null>("get_remote_host"),
-  refreshRemote: () => invoke<void>("refresh_remote"),
+  refreshRemote: (host?: string | null) => invoke<void>("refresh_remote", { host: host ?? null }),
+  remoteSyncStatus: (host: string) => invoke<RemoteSyncStatus>("remote_sync_status", { host }),
   sendMessage: (sessionPath: string, message: string, channel: Channel<PiEvent>) =>
     invoke<void>("send_message", { sessionPath, message, onEvent: channel }),
   abortMessage: (sessionPath: string) => invoke<void>("abort_message", { sessionPath }),

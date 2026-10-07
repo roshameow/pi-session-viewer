@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { Project, SessionMeta } from "../types";
+import { SESSION_PAGE_SIZE, sessionPage, useScopedState } from "./sidebarPaging";
 
 const MIN_SIDEBAR = 200;
 const MAX_SIDEBAR = 640;
@@ -129,6 +130,20 @@ function SessionItem({
   );
 }
 
+function SessionPageControl({ shown, total, onMore }: {
+  shown: number;
+  total: number;
+  onMore: () => void;
+}) {
+  if (total <= SESSION_PAGE_SIZE) return null;
+  return <div className="subagent-parent">
+    <div>Showing {shown} of {total} sessions (includes selected row when outside the page)</div>
+    {shown < total && <button type="button" className="project-item" onClick={onMore}>
+      Show up to {Math.min(SESSION_PAGE_SIZE, total - shown)} more ({total - shown} remaining)
+    </button>}
+  </div>;
+}
+
 export const Sidebar = React.memo(function Sidebar({
   projects,
   sessions,
@@ -175,8 +190,13 @@ export const Sidebar = React.memo(function Sidebar({
   const [collapsedMain, setCollapsedMain] = useState(false);
   const [collapsedSub, setCollapsedSub] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [sessionQuery, setSessionQuery] = useState("");
+  const sourceScope = JSON.stringify([remoteHost, selectedProject]);
+  const [expandedGroups, setExpandedGroups] = useScopedState(sourceScope, () => new Set<string>());
+  const [sessionQuery, setSessionQuery] = useScopedState(sourceScope, () => "");
+  const pageScope = JSON.stringify([sourceScope, sessionQuery.trim().toLowerCase()]);
+  const [mainLimit, setMainLimit] = useScopedState(pageScope, () => SESSION_PAGE_SIZE);
+  const [subLimit, setSubLimit] = useScopedState(pageScope, () => SESSION_PAGE_SIZE);
+  const [groupLimits, setGroupLimits] = useScopedState(pageScope, () => new Map<string, number>());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; s: SessionMeta } | null>(null);
   const [confirmingKill, setConfirmingKill] = useState(false);
   const [remoteMenu, setRemoteMenu] = useState(false);
@@ -291,6 +311,17 @@ export const Sidebar = React.memo(function Sidebar({
     }
     return { mainSessions: main, childrenMap: children, subagents: subs };
   }, [sessions, sessionQuery, mainPaths]);
+
+  const visibleMain = useMemo(() => sessionPage(mainSessions, mainLimit, selectedSessionPath),
+    [mainSessions, mainLimit, selectedSessionPath]);
+  const visibleSubs = useMemo(() => sessionPage(subagents, subLimit, selectedSessionPath),
+    [subagents, subLimit, selectedSessionPath]);
+  const selectedSession = selectedSessionPath ? sessionsByPath.get(selectedSessionPath) : undefined;
+  const selectedInLists =
+    (!collapsedMain && visibleMain.some((s) => s.path === selectedSessionPath)) ||
+    (!collapsedSub && visibleSubs.some((s) => s.path === selectedSessionPath)) ||
+    (!collapsedMain && visibleMain.some((s) => expandedGroups.has(s.path) &&
+      (childrenMap.get(s.path) ?? []).some((sub) => sub.path === selectedSessionPath)));
 
   const justFinishedFn = (path: string): boolean => {
     // persists until the session is opened or the app restarts
@@ -469,10 +500,30 @@ export const Sidebar = React.memo(function Sidebar({
             value={sessionQuery}
             onChange={(e) => setSessionQuery(e.target.value)}
           />
+          <div className="subagent-parent">
+            Lists initially show {SESSION_PAGE_SIZE} sessions. Show more adds up to {SESSION_PAGE_SIZE} rows; search checks all sessions.
+            {selectedSessionPath && " The selected session is kept visible."}
+          </div>
           {loadingSessions ? (
             <div className="empty">Loading…</div>
           ) : (
             <>
+              {selectedSession && !selectedInLists && (
+                <>
+                  <div className="subagent-parent">Selected session (outside search results or in a collapsed section)</div>
+                  <SessionItem s={selectedSession} depth={0} selected onSelect={onSelectSession}
+                    justFinished={justFinishedFn(selectedSession.path)}
+                    onContextMenu={(s, x, y) => {
+                      setConfirmingDelete(false);
+                      setCtxMenu({ x, y, s });
+                    }} />
+                  {selectedSession.isSubagent && <div className="subagent-parent">
+                    {parentTitle(selectedSession.parentSessionPath)
+                      ? <>parent: {parentTitle(selectedSession.parentSessionPath)}</>
+                      : <span className="orphan">no parent</span>}
+                  </div>}
+                </>
+              )}
               {/* main sessions */}
               <div
                 className={`section-head ${collapsedMain ? "collapsed" : ""}`}
@@ -493,12 +544,14 @@ export const Sidebar = React.memo(function Sidebar({
                 )}
               </div>
               {!collapsedMain &&
-                mainSessions.map((s) => {
+                visibleMain.map((s) => {
                   const subs = childrenMap.get(s.path) ?? [];
                   const runningSubs = subs.filter((x) => x.running).length;
                   const sleepingSubs = subs.filter((x) => x.sleeping).length;
                   const interruptedSubs = subs.filter((x) => x.interrupted).length;
                   const groupCollapsed = !expandedGroups.has(s.path);
+                  const groupLimit = groupLimits.get(s.path) ?? SESSION_PAGE_SIZE;
+                  const visibleChildren = groupCollapsed ? [] : sessionPage(subs, groupLimit, selectedSessionPath);
                   return (
                     <React.Fragment key={s.path}>
                       <SessionItem
@@ -537,7 +590,7 @@ export const Sidebar = React.memo(function Sidebar({
                             )}
                           </div>
                           {!groupCollapsed &&
-                            subs.map((sub) => (
+                            visibleChildren.map((sub) => (
                               <SessionItem
                                 key={sub.path}
                                 s={sub}
@@ -551,11 +604,20 @@ export const Sidebar = React.memo(function Sidebar({
                                 justFinished={justFinishedFn(sub.path)}
                               />
                             ))}
+                          {!groupCollapsed && <SessionPageControl shown={visibleChildren.length} total={subs.length}
+                            onMore={() => setGroupLimits((previous) => {
+                              const next = new Map(previous);
+                              next.set(s.path, groupLimit + SESSION_PAGE_SIZE);
+                              return next;
+                            })} />}
                         </div>
                       )}
                     </React.Fragment>
                   );
                 })}
+
+              {!collapsedMain && <SessionPageControl shown={visibleMain.length} total={mainSessions.length}
+                onMore={() => setMainLimit((limit) => limit + SESSION_PAGE_SIZE)} />}
 
               {/* subagent sessions (dedicated section) */}
               <div
@@ -572,7 +634,7 @@ export const Sidebar = React.memo(function Sidebar({
                 )}
               </div>
               {!collapsedSub &&
-                subagents.map((s) => {
+                visibleSubs.map((s) => {
                   const pt = parentTitle(s.parentSessionPath);
                   return (
                     <React.Fragment key={s.path}>
@@ -594,6 +656,9 @@ export const Sidebar = React.memo(function Sidebar({
                     </React.Fragment>
                   );
                 })}
+
+              {!collapsedSub && <SessionPageControl shown={visibleSubs.length} total={subagents.length}
+                onMore={() => setSubLimit((limit) => limit + SESSION_PAGE_SIZE)} />}
 
               {mainSessions.length === 0 && subagents.length === 0 && (
                 <div className="empty">

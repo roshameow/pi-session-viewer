@@ -1,169 +1,358 @@
-//! Remote pi agents over SSH (e.g. a mac-mini running daily SPC jobs).
-//!
-//! The desktop keeps a LOCAL cache of a remote host's `~/.pi/agent` tree:
-//!   ~/.pi/remote/<host>/agent/...
-//! mirrored from the host via `rsync` (sessions, agent-logs, runtime
-//! registry) plus live snapshots (ps output, rmux pane list) captured at
-//! sync time. All existing sessions.rs readers keep working unchanged —
-//! `pi_agent_dir()` returns the cache dir while a remote host is selected.
-//! Attach / open-in-terminal run `ssh -t <host> ...` in a local terminal.
+//! Remote browsing uses a host-qualified local cache. Selection is cache-first;
+//! historical sync is incremental rsync, but still enumerates all allowed history.
+//! Captured runtime status is not live telemetry or an atomic history snapshot.
 
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::io::{BufRead, Read};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 pub const REMOTE_BASE: &str = ".pi/remote";
 
-static CURRENT_HOST: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+#[derive(Default)]
+struct SourceSelection { host: Option<String>, epoch: u64 }
+static CURRENT_HOST: OnceLock<Mutex<SourceSelection>> = OnceLock::new();
+thread_local! {
+    static READ_SOURCE: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+}
+fn source_state() -> &'static Mutex<SourceSelection> {
+    CURRENT_HOST.get_or_init(|| Mutex::new(SourceSelection::default()))
+}
 
 pub fn current_host() -> Option<String> {
-    CURRENT_HOST
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap()
-        .clone()
+    READ_SOURCE.with(|source| source.borrow().clone())
+        .unwrap_or_else(|| source_state().lock().unwrap().host.clone())
 }
 
-/// Switch the desktop's agent source. None = local machine.
+/// Capture one source for a complete blocking traversal, including helper reads.
+/// Nested calls restore their previous context even during unwinding.
+pub fn with_current_source<T>(read: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Option<String>>);
+    impl Drop for Restore {
+        fn drop(&mut self) { READ_SOURCE.with(|s| *s.borrow_mut() = self.0.take()); }
+    }
+    let captured = current_host();
+    let old = READ_SOURCE.with(|s| s.replace(Some(captured)));
+    let _restore = Restore(old);
+    read()
+}
+
 pub fn set_current_host(host: Option<String>) {
-    *CURRENT_HOST.get_or_init(|| Mutex::new(None)).lock().unwrap() = host;
+    let mut source = source_state().lock().unwrap();
+    source.epoch = source.epoch.wrapping_add(1);
+    source.host = host;
 }
 
-/// Home dir of the current host's agent cache (remote) or the real ~/.pi.
+pub fn begin_source_selection() -> u64 {
+    let mut source = source_state().lock().unwrap();
+    source.epoch = source.epoch.wrapping_add(1);
+    source.epoch
+}
+fn commit_source(host: Option<String>, epoch: u64) -> Result<(), String> {
+    let mut source = source_state().lock().unwrap();
+    if source.epoch != epoch { return Err("Source selection superseded".into()); }
+    source.host = host;
+    Ok(())
+}
+
+fn select_source_with(
+    host: Option<String>, epoch: u64,
+    usable: impl FnOnce(&str) -> bool,
+    sync: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(h) = &host {
+        validate_host(h)?;
+        if !usable(h) { sync(h)?; }
+    }
+    commit_source(host, epoch)
+}
+pub fn select_source(host: Option<String>, epoch: u64) -> Result<(), String> {
+    select_source_with(host, epoch, |h| usable_cache(&remote_agent_dir(h)), sync_remote)
+}
+
 pub fn agent_root() -> PathBuf {
     match current_host() {
         Some(h) => remote_agent_dir(&h),
-        None => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            PathBuf::from(home).join(".pi").join("agent")
+        None => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+            .join(".pi").join("agent"),
+    }
+}
+pub fn remote_agent_dir(host: &str) -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+        .join(REMOTE_BASE).join(host).join("agent")
+}
+pub fn remote_hosts_path() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+        .join(".pi-session-viewer.json")
+}
+pub fn list_remote_hosts() -> Vec<String> {
+    let Ok(data) = std::fs::read_to_string(remote_hosts_path()) else { return vec![] };
+    serde_json::from_str::<serde_json::Value>(&data).ok()
+        .and_then(|v| v.get("remoteHosts").and_then(|x| x.as_array()).cloned())
+        .unwrap_or_default().iter().filter_map(|v| v.as_str())
+        .filter(|h| validate_host(h).is_ok()).map(str::to_string).collect()
+}
+
+// SSH aliases must not escape the cache namespace or become command options.
+fn validate_host(host: &str) -> Result<(), String> {
+    if host.is_empty() || host.len() > 200 || !host.as_bytes()[0].is_ascii_alphanumeric()
+        || !host.chars().all(|c| c.is_ascii_alphanumeric() || "._-@".contains(c))
+        || host.matches('@').count() > 1 || host.ends_with('@') {
+        return Err("Invalid remote host alias".into());
+    }
+    Ok(())
+}
+fn ssh_master_args() -> Vec<String> {
+    ["-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-o", "ControlMaster=auto",
+     "-o", "ControlPersist=600", "-o", "ControlPath=/tmp/pi-remote-%r@%h:%p"]
+        .into_iter().map(str::to_string).collect()
+}
+
+/// Deliberately never return remote stderr/argv (which may contain credentials).
+fn run_command(name: &str, args: &[String]) -> Result<String, String> {
+    let seconds = if name == "rsync" { 30 * 60 } else { 30 };
+    run_command_bounded(name, args, std::time::Duration::from_secs(seconds))
+}
+fn run_command_bounded(name: &str, args: &[String], timeout: std::time::Duration) -> Result<String, String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(name).args(args)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+        .map_err(|_| "Remote command could not be started".to_string())?;
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut data = Vec::new(); let mut buf = [0u8; 8192]; let mut overflow = false;
+        let result = loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => break if overflow { Err("Remote command output exceeded limit".to_string()) } else { Ok(data) },
+                Ok(n) => {
+                    if data.len() + n <= 8 * 1024 * 1024 { data.extend_from_slice(&buf[..n]); }
+                    else { overflow = true; }
+                }
+                Err(_) => break Err("Remote command output unavailable".into()),
+            }
+        };
+        let _ = send.send(result);
+    });
+    // Drain, but never retain/export stderr or command arguments.
+    std::thread::spawn(move || { let _ = std::io::copy(&mut stderr, &mut std::io::sink()); });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill(); let _ = child.wait();
+                return Err("Remote command timed out or became unavailable".into());
+            }
+        }
+    };
+    if !status.success() { return Err("Remote command failed".into()); }
+    let output = receive.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "Remote command output did not close".to_string())??;
+    String::from_utf8(output).map_err(|_| "Remote command returned invalid UTF-8".into())
+}
+pub fn ssh_run(host: &str, cmd: &str) -> Result<String, String> {
+    validate_host(host)?;
+    let mut args = ssh_master_args();
+    args.push(host.into()); args.push(cmd.into());
+    run_command("ssh", &args)
+}
+
+const MANIFEST: &str = ".viewer-last-sync.json";
+const INITIALIZING: &str = ".viewer-initializing";
+
+/// Legacy populated caches remain browsable, but have unknown sync timestamp.
+/// A failed new initial sync is never adopted merely because rsync left files.
+fn usable_cache(root: &Path) -> bool {
+    if root.join(INITIALIZING).exists() { return false; }
+    let sessions = root.join("sessions");
+    if !std::fs::symlink_metadata(&sessions).is_ok_and(|m| m.file_type().is_dir()) { return false; }
+    let Ok(projects) = std::fs::read_dir(sessions) else { return false };
+    for project in projects.flatten() {
+        let name = project.file_name();
+        if !name.to_string_lossy().starts_with("--")
+            || !project.file_type().is_ok_and(|t| t.is_dir()) { continue; }
+        let Ok(files) = std::fs::read_dir(project.path()) else { continue };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().is_none_or(|e| e != "jsonl")
+                || std::fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_file()) { continue; }
+            let Ok(file) = std::fs::File::open(path) else { continue };
+            let mut line = String::new();
+            if std::io::BufReader::new(file.take(16 * 1024)).read_line(&mut line).is_err() { continue; }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            if v["type"] == "session" && v["id"].as_str().is_some_and(|id| !id.is_empty()) {
+                return true;
+            }
         }
     }
+    false
+}
+fn last_success(root: &Path) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(root.join(MANIFEST)).ok()?)
+        .ok()?.get("lastSuccessAt")?.as_u64()
 }
 
-/// Cache dir for a remote host's agent tree: ~/.pi/remote/<host>/agent
-pub fn remote_agent_dir(host: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join(REMOTE_BASE)
-        .join(host)
-        .join("agent")
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSyncStatus {
+    pub host: String,
+    pub phase: String,
+    pub last_success_at: Option<u64>,
+    pub error: Option<String>,
+    pub usable_cache: bool,
+}
+struct Completion { result: Mutex<Option<Result<(), String>>>, changed: Condvar }
+struct HostState { active: Option<Arc<Completion>>, status: RemoteSyncStatus }
+struct HostEntry { state: Mutex<HostState> }
+static SYNC_HOSTS: OnceLock<Mutex<HashMap<PathBuf, Arc<HostEntry>>>> = OnceLock::new();
+fn host_entry(host: &str, root: &Path) -> Arc<HostEntry> {
+    SYNC_HOSTS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+        .entry(root.to_path_buf()).or_insert_with(|| Arc::new(HostEntry {
+            state: Mutex::new(HostState { active: None, status: RemoteSyncStatus {
+                host: host.into(), phase: "idle".into(), last_success_at: last_success(root),
+                error: None, usable_cache: usable_cache(root),
+            }}),
+        })).clone()
+}
+pub fn sync_status(host: &str) -> Result<RemoteSyncStatus, String> {
+    validate_host(host)?;
+    let root = remote_agent_dir(host);
+    let entry = host_entry(host, &root);
+    let status = entry.state.lock().unwrap().status.clone();
+    Ok(status)
+}
+fn phase(entry: &HostEntry, value: &str) {
+    entry.state.lock().unwrap().status.phase = value.into();
 }
 
-/// Config file listing remote hosts (plain JSON array of ssh aliases).
-pub fn remote_hosts_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".pi-session-viewer.json")
+/// Include managed leaf files, never arbitrary resource support trees or secrets.
+/// Excluded receiver files are protected; DO NOT add --delete-excluded.
+fn rsync_args(host: &str, dst: &Path) -> Vec<String> {
+    let mut args: Vec<String> = ["-az", "--no-links", "--delete", "--delay-updates", "--timeout=60",
+        "--filter=P /ps_snapshot.txt", "--filter=P /rmux_snapshot.txt",
+        "--filter=P /.viewer-last-sync.json", "--filter=P /.viewer-initializing",
+        "--exclude=.git/", "--exclude=packages/", "--exclude=artifacts/", "--exclude=npm/",
+        "--include=/sessions/", "--include=/sessions/--*/", "--include=/sessions/--*/*.jsonl",
+        "--include=/agent-logs/", "--include=/agent-logs/task-*.jsonl",
+        "--include=/runtime/", "--include=/runtime/*.jsonl",
+        "--include=/agents/", "--include=/agents/*.md",
+        "--include=/skills/", "--include=/skills/*/", "--include=/skills/*/SKILL.md",
+        "--exclude=*"] .into_iter().map(str::to_string).collect();
+    args.push("-e".into()); args.push(format!("ssh {}", ssh_master_args().join(" ")));
+    args.push(format!("{host}:.pi/agent/")); args.push(dst.to_string_lossy().into_owned());
+    args
 }
+const SNAPSHOT_COMMAND: &str = "echo '---TIME---'; date +%s; echo '---PS---'; ps -eo pid=,tty=,etime=,command= | grep -E '[p]i([ -]|$)' || true; echo '---RMUX---'; rmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}' 2>/dev/null";
 
-/// Read the configured remote hosts (ssh aliases from ~/.ssh/config).
-pub fn list_remote_hosts() -> Vec<String> {
-    let path = remote_hosts_path();
-    let Ok(data) = std::fs::read_to_string(&path) else {
-        return vec![];
-    };
-    match serde_json::from_str::<serde_json::Value>(&data) {
-        Ok(v) => match v.get("remoteHosts") {
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => vec![],
-        },
-        Err(_) => vec![],
+fn split_snapshot(snap: &str) -> Result<(&str, &str), String> {
+    let (ps, rmux) = snap.split_once("---RMUX---\n").ok_or("Invalid runtime snapshot")?;
+    let mut lines = ps.lines();
+    if lines.next() != Some("---TIME---")
+        || lines.next().and_then(|s| s.parse::<u64>().ok()).is_none_or(|n| n == 0)
+        || lines.next() != Some("---PS---") {
+        return Err("Invalid runtime snapshot".into());
     }
+    // Do not echo invalid captured process strings into UI errors.
+    let mut pids = std::collections::HashSet::new();
+    for line in lines.filter(|s| !s.trim().is_empty()) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 4 || !fields[0].parse::<u32>().is_ok_and(|p| p > 0 && pids.insert(p))
+            || !valid_etime(fields[2]) {
+            return Err("Invalid process snapshot".into());
+        }
+    }
+    for line in rmux.lines().filter(|s| !s.trim().is_empty()) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 3 || !fields[0].rsplit_once('.').is_some_and(|(w, i)| w.contains(':') && i.parse::<u32>().is_ok())
+            || !fields[1].parse::<u32>().is_ok_and(|p| p > 0) || !["0", "1"].contains(&fields[2]) {
+            return Err("Invalid pane snapshot".into());
+        }
+    }
+    Ok((ps, rmux))
 }
-
-/// ssh 连接复用参数:ControlMaster 持久连接,后续 ssh/rsync 秒级复用
-/// (Tailscale relay 每次握手 1-2s,复用后 ~50ms)。
-fn ssh_master_args() -> Vec<String> {
-    vec![
-        "-o".into(),
-        "ConnectTimeout=10".into(),
-        "-o".into(),
-        "BatchMode=yes".into(),
-        "-o".into(),
-        "ControlMaster=auto".into(),
-        "-o".into(),
-        "ControlPersist=600".into(),
-        "-o".into(),
-        "ControlPath=/tmp/pi-remote-%r@%h:%p".into(),
-    ]
+fn valid_etime(value: &str) -> bool {
+    let time = if let Some((days, rest)) = value.split_once('-') {
+        if days.parse::<u64>().is_err() { return false; }
+        rest
+    } else { value };
+    let parts: Vec<_> = time.split(':').collect();
+    (1..=3).contains(&parts.len()) && parts.iter().all(|p| !p.is_empty() && p.parse::<u64>().is_ok())
 }
-
-/// Run a command on the remote host over ssh. Returns stdout.
-pub fn ssh_run(host: &str, cmd: &str) -> Result<String, String> {
-    let mut args = ssh_master_args();
-    args.push(host.to_string());
-    args.push(cmd.to_string());
-    let out = std::process::Command::new("ssh")
-        .args(&args)
-        .output()
-        .map_err(|e| format!("ssh failed: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "ssh {}: {}",
-            host,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+fn write_atomic(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
+    // One writer per root. Each file is atomically replaced, not the pair/tree.
+    let temp = root.join(format!("{name}.viewer-next"));
+    std::fs::write(&temp, data).map_err(|_| "Cache write failed".to_string())?;
+    std::fs::rename(&temp, root.join(name)).map_err(|_| "Cache publish failed".to_string())
 }
-
-/// Sync the remote host's agent tree (sessions, agent-logs, runtime
-/// registry) plus live snapshots into the local cache. Must run before
-/// switching the desktop's source to this host.
-pub fn sync_remote(host: &str) -> Result<(), String> {
-    let dst = remote_agent_dir(host);
-    let dst_str = dst.to_string_lossy().into_owned();
-    if !dst.exists() {
-        std::fs::create_dir_all(&dst).map_err(|e| format!("cache mkdir: {e}"))?;
+fn perform_sync(
+    host: &str, root: &Path, entry: &HostEntry,
+    run: &mut impl FnMut(&str, &[String]) -> Result<String, String>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(root).map_err(|_| "Cache directory unavailable".to_string())?;
+    if !entry.state.lock().unwrap().status.usable_cache {
+        std::fs::write(root.join(INITIALIZING), b"initial sync incomplete\n")
+            .map_err(|_| "Cache initialization failed".to_string())?;
     }
-    // 1) agent tree via rsync over ssh (exclude the cache itself, models,
-    //    auth: desktop only needs sessions/agent-logs/runtime for browsing).
-    let mut rargs: Vec<String> = vec!["-az".into(), "--delete".into()];
-    // rsync 走同样的 ControlMaster 连接
-    let master = ssh_master_args();
-    rargs.push("-e".into());
-    rargs.push(format!("ssh {}", master.join(" ")));
-    for x in [
-        "--exclude",
-        "models.json",
-        "--exclude",
-        "auth.json",
-        "--exclude",
-        "mcp.json",
-        "--exclude",
-        "settings.json",
-        "--exclude",
-        "npm/",
-    ] {
-        rargs.push(x.into());
+    phase(entry, "syncing-history");
+    run("rsync", &rsync_args(host, root)).map_err(|_| "History sync failed; cache may be partially updated".to_string())?;
+    phase(entry, "capturing-snapshots");
+    let mut args = ssh_master_args(); args.push(host.into()); args.push(SNAPSHOT_COMMAND.into());
+    let snap = run("ssh", &args).map_err(|_| "Runtime capture failed; prior snapshots retained".to_string())?;
+    let (ps, rmux) = split_snapshot(&snap)?;
+    write_atomic(root, "ps_snapshot.txt", ps.as_bytes())?;
+    write_atomic(root, "rmux_snapshot.txt", rmux.as_bytes())?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Local clock unavailable".to_string())?.as_secs();
+    write_atomic(root, MANIFEST, serde_json::json!({"host":host,"lastSuccessAt":now}).to_string().as_bytes())?;
+    if root.join(INITIALIZING).exists() {
+        std::fs::remove_file(root.join(INITIALIZING)).map_err(|_| "Cache readiness publish failed".to_string())?;
     }
-    rargs.push(format!("{host}:.pi/agent/"));
-    rargs.push(dst_str.clone());
-    let out = std::process::Command::new("rsync")
-        .args(&rargs)
-        .output()
-        .map_err(|e| format!("rsync failed: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "rsync {}: {}",
-            host,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    // 2) live snapshots for runtime chips (ps + rmux panes), single ssh round
-    //    ps format: `pid tty etime command` (matches sessions.rs ps_lines)
-    let snap = ssh_run(
-        host,
-        "echo '---TIME---'; date +%s; echo '---PS---'; ps -eo pid=,tty=,etime=,command= | grep -E '[p]i([ -]|$)' || true; echo '---RMUX---'; rmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}' 2>/dev/null || true",
-    )?;
-    let (ps_part, rmux_part) = snap
-        .split_once("---RMUX---")
-        .map(|(p, r)| (p.trim_start_matches("---PS---\n").to_string(), r.to_string()))
-        .unwrap_or((String::new(), String::new()));
-    std::fs::write(dst.join("ps_snapshot.txt"), ps_part).map_err(|e| format!("ps snapshot: {e}"))?;
-    std::fs::write(dst.join("rmux_snapshot.txt"), rmux_part).map_err(|e| format!("rmux snapshot: {e}"))?;
     Ok(())
+}
+fn sync_remote_at(
+    host: &str, root: &Path,
+    mut run: impl FnMut(&str, &[String]) -> Result<String, String>,
+) -> Result<(), String> {
+    validate_host(host)?;
+    let entry = host_entry(host, root);
+    let (completion, owner) = {
+        let mut state = entry.state.lock().unwrap();
+        if let Some(active) = &state.active { (active.clone(), false) }
+        else {
+            let active = Arc::new(Completion { result: Mutex::new(None), changed: Condvar::new() });
+            state.active = Some(active.clone());
+            state.status.phase = "syncing-history".into(); state.status.error = None;
+            (active, true)
+        }
+    };
+    if !owner {
+        let mut result = completion.result.lock().unwrap();
+        while result.is_none() { result = completion.changed.wait(result).unwrap(); }
+        return result.as_ref().unwrap().clone();
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| perform_sync(host, root, &entry, &mut run)))
+        .unwrap_or_else(|_| Err("Remote sync interrupted".into()));
+    {
+        let mut state = entry.state.lock().unwrap();
+        state.status.phase = if result.is_ok() { "ready" } else { "error" }.into();
+        state.status.error = result.clone().err();
+        if result.is_ok() { state.status.last_success_at = last_success(root); }
+        state.status.usable_cache = usable_cache(root);
+        *completion.result.lock().unwrap() = Some(result.clone());
+        state.active = None;
+    }
+    completion.changed.notify_all();
+    result
+}
+
+/// Historical sync remains incremental but enumerates all allowed histories.
+/// Selection of usable cached sessions never needs to call this first.
+pub fn sync_remote(host: &str) -> Result<(), String> {
+    sync_remote_at(host, &remote_agent_dir(host), run_command)
 }
 
 /// Build the local-terminal command that attaches to a session on the host:
@@ -357,3 +546,7 @@ pub fn transfer_session_to_remote(
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(sess_name)
 }
+
+#[cfg(test)]
+#[path = "remote_connect_tests.rs"]
+mod remote_connect_tests;

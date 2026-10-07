@@ -23,6 +23,12 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.5 folder switching and remote cache
+
+Session sections initially show 100 rows with explicit show-more. Search covers all loaded sessions and off-page selection remains visible. Source/project caches reuse results while stale replies and canceled polls cannot overwrite a new selection.
+
+A usable remote cache displays before background refresh; the UI reports cache age, phase and errors. First-time hosts still need initial sync. Cached snapshots are not live telemetry or an atomic whole-history/process snapshot. LAN latency does not eliminate cold indexing and GUI rendering cost.
+
 ## 0.1.4 list scaling and remote sources
 
 Headers use bounded streaming reads; full-transcript legacy parent matching runs only for unmarked workers. Sidebar parent lookup is indexed. Process identity validation is batched; remote readers use only that host's captured snapshots, never desktop processes with the same PID. Caches are scoped to source, directory and snapshots.
