@@ -23,6 +23,12 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.4 list scaling and remote sources
+
+Headers use bounded streaming reads; full-transcript legacy parent matching runs only for unmarked workers. Sidebar parent lookup is indexed. Process identity validation is batched; remote readers use only that host's captured snapshots, never desktop processes with the same PID. Caches are scoped to source, directory and snapshots.
+
+No history is pruned and no Pi/worker is stopped. Remote cache state is not live telemetry. Multi-GB directories may still take seconds on their first cold load; cache-hit timing is not a universal cold-load guarantee.
+
 ## 0.1.2 running-indicator fix
 
 - Yellow (busy) is a **compatibility inference from verified Pi identity and the last relevant pending transcript message** (user, assistant `toolUse` / toolCall, or toolResult), **not live SDK `isStreaming`**. Long thinking or tool execution with a verified Pi no longer loses yellow solely because JSONL has not changed for 60 seconds. A final assistant stop / error / abort does not light up an idle TUI.

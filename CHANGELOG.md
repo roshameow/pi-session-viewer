@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4 — 2026-10-07
+
+- Index Sidebar parent lookups instead of repeated per-worker session scans; retain nested worker labels and direct-main grouping.
+- Read session headers incrementally within the original byte/line limits; collect full-transcript legacy parent calls only when an unmarked worker needs the fallback. Conflicting explicit lineage never invokes guessing.
+- Reuse parsed bounded discovery preambles per file, and retain incremental legacy-parent caches for eight source-qualified projects; unchanged A→B→A switches no longer rescan A transcripts.
+- Validate local runtime PID slots with one batched process lookup instead of per-slot subprocesses; preserve PID-reuse and private SDK owner checks.
+- Read remote runtime/terminal/RMUX state exclusively from its captured source snapshots, never desktop process/TTY/CWD lookups. Scope result caches to their source and snapshot fingerprints; missing/corrupt evidence remains unknown.
+- Keep source-build/development signing and the stable terminal helper unchanged. Remote state is still the latest synchronized snapshot, not live telemetry; no history pruning or forced Pi/worker cleanup.
+
 ## 0.1.3 — 2026-10-07
 
 - Resolve explicit nested subagent parents against all canonical sessions, so a grandchild points to its worker parent rather than showing “no parent”. Keep real-session preference over mirrors.

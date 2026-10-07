@@ -1,7 +1,7 @@
 // Offline mock-only regression runner. No desktop, Pi, MCP or rmux is started.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
@@ -79,4 +79,35 @@ try {
   assert.match(lineage,/parent: Worker · worker-u/);
   assert.doesNotMatch(lineage,/no parent/);
   console.log('PASS nested worker parent label in dedicated subagent section');
+
+  const sidebarProps = {projects:[{key:'mock',cwd:'/mock',sessionCount:3,subagentCount:2,
+    updatedAt:0,runningCount:0,rmuxCount:0,termCount:0}],selectedProject:'mock',
+    selectedSessionPath:null,finishedAt:{},remoteHosts:[],onSelectProject:()=>{},onSelectSession:()=>{}};
+  // Preserve find's first-entry semantics, including an unfiltered parent.
+  const duplicate = {...main,name:'Wrong duplicate'};
+  const duplicateHtml = render(Sidebar,{...sidebarProps,sessions:[main,duplicate,worker,grandchild]});
+  assert.match(duplicateHtml,/parent: Main · main-uui/);
+  assert.doesNotMatch(duplicateHtml,/parent: Wrong duplicate/);
+  const orphanHtml = render(Sidebar,{...sidebarProps,sessions:[main,
+    {...worker,parentSessionPath:'/mock/missing.jsonl'}, {...grandchild,parentSessionPath:null}]});
+  assert.equal((orphanHtml.match(/no parent/g)??[]).length,2);
+
+  // Fail if a future implementation reintroduces per-worker array searches.
+  const large = [main];
+  for (let i=1;i<4000;i++) large.push({...session,id:`large-${i}`,path:`/mock/large-${i}.jsonl`,
+    name:`Worker ${i}`,inRmux:false,parentSessionPath:large[i-1].path});
+  large.some = () => { throw Error('Sidebar must use its main-path Set'); };
+  large.find = () => { throw Error('Sidebar must use its parent-path Map'); };
+  const largeHtml = render(Sidebar,{...sidebarProps,sessions:large});
+  assert.equal((largeHtml.match(/parent: /g)??[]).length,3999);
+  assert.doesNotMatch(largeHtml,/no parent/);
+  assert.match(largeHtml,/parent: Worker 3998 · large-39/);
+  const sidebarSource = await readFile(path.join(root,'src/components/Sidebar.tsx'),'utf8');
+  assert.match(sidebarSource,/mainPaths\.has\(s\.parentSessionPath\)/);
+  assert.match(sidebarSource,/sessionsByPath\.get\(path\)/);
+  assert.doesNotMatch(sidebarSource,/sessions\.(some|find)\(/);
+  const sessionSource = await readFile(path.join(root,'src-tauri/src/sessions.rs'),'utf8');
+  assert.match(sessionSource,/let parent_calls = legacy_parent_calls\(&out, &parent_by_uuid, \|\|/);
+  assert.match(sessionSource,/m\.is_subagent && !parents\.contains_key\(&m\.id\)/);
+  console.log('PASS indexed 4000-row Sidebar, duplicate/orphan labels + lazy collector wiring');
 } finally { await rm(scratch,{recursive:true,force:true}); }

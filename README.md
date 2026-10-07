@@ -31,6 +31,12 @@ npm run demo
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
 
+## 0.1.4 会话列表规模与远程来源
+
+列表头部改为有上限的流式读取，只有未标记的旧子代理才触发完整正文的父节点匹配；侧栏父查找使用索引。进程身份按批次验证，远程读取只使用对应主机已同步的快照，不查询本机同号 PID。缓存按来源、目录与快照隔离。
+
+这些优化不删除历史、不关闭 Pi/worker，也不把远程缓存冒充实时状态。首次打开多 GB 历史目录仍可能耗时数秒；内存缓存命中与冷加载必须分别衡量，不能承诺所有目录瞬时加载。
+
 ## 0.1.2 运行黄点修复
 
 - 黄点（busy）是**已验证 Pi 身份 + transcript 最后一条有效消息仍 pending** 的兼容推断（user、assistant `toolUse` / toolCall、toolResult），**不是 SDK 实时 `isStreaming`**。已验证 Pi 的长思考或工具执行，不会仅因超过 60 秒未写 JSONL 而失去黄点；最后 assistant 为 stop / error / abort 等完成状态时，不点亮 idle TUI。

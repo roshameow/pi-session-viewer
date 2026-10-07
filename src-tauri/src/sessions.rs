@@ -62,6 +62,39 @@ pub fn sessions_dir() -> PathBuf {
     pi_agent_dir().join("sessions")
 }
 
+// Scope process/location caches to their source and captured snapshots. A remote
+// PID can equal a local PID; neither that identity nor a 2s cache is transferable.
+#[derive(Clone, PartialEq, Eq)]
+struct InventorySource {
+    root: PathBuf,
+    sessions: PathBuf,
+    remote: bool,
+    ps: Option<(std::time::SystemTime, u64)>,
+    rmux: Option<(std::time::SystemTime, u64)>,
+}
+fn snapshot_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let md = fs::metadata(path).ok()?;
+    Some((md.modified().ok()?, md.len()))
+}
+fn inventory_source() -> InventorySource {
+    let root = pi_agent_dir();
+    let remote = crate::remote::current_host().is_some();
+    InventorySource {
+        sessions: sessions_dir(),
+        ps: remote.then(|| snapshot_stamp(&root.join("ps_snapshot.txt"))).flatten(),
+        rmux: remote.then(|| snapshot_stamp(&root.join("rmux_snapshot.txt"))).flatten(),
+        root, remote,
+    }
+}
+fn inventory_command(name: &str) -> std::process::Command {
+    // Only isolated test children set this; never changes production binaries.
+    #[cfg(test)]
+    if let Some(dir) = std::env::var_os("PI_VIEWER_TEST_COMMAND_DIR") {
+        return std::process::Command::new(PathBuf::from(dir).join(name));
+    }
+    std::process::Command::new(name)
+}
+
 pub fn resolve_pi_bin() -> Option<String> {
     if let Ok(b) = std::env::var("PI_CODING_AGENT_BIN") {
         if !b.is_empty() {
@@ -362,13 +395,14 @@ pub fn list_projects() -> Vec<Project> {
     // (ps/rmux/lsof 子进程 + 每个会话文件头部读取)在 470+ 会话的项目上要
     // 6-8s。目录指纹不变(会话文件/agent-log 无新写入)且 12s 内就复用结果;
     // 指纹变化(有会话在写)时重新扫描。进程状态(attach/detach)最多滞后 12s。
-    type PjCache = Option<(std::time::Instant, (u64, u64), Vec<Project>)>;
+    type PjCache = Option<(std::time::Instant, InventorySource, (u64, u64), Vec<Project>)>;
     static PJ_CACHE: OnceLock<Mutex<PjCache>> = OnceLock::new();
+    let source = inventory_source();
     let fp = agent_state_fingerprint();
     {
         let cache = PJ_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, prev_fp, res)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(12) && *prev_fp == fp {
+        if let Some((at, prev_source, prev_fp, res)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(12) && *prev_source == source && *prev_fp == fp {
                 return res.clone();
             }
         }
@@ -495,33 +529,95 @@ pub fn list_projects() -> Vec<Project> {
     }
     out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     *PJ_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-        Some((std::time::Instant::now(), fp, out.clone()));
+        Some((std::time::Instant::now(), source, fp, out.clone()));
     out
 }
 
 fn first_line(p: &Path) -> Option<String> {
-    use std::io::Read;
-    let mut f = fs::File::open(p).ok()?;
-    let mut buf = vec![0u8; 16 * 1024];
-    let n = f.read(&mut buf).ok()?;
-    let s = String::from_utf8_lossy(&buf[..n]);
-    s.lines().next().map(|l| l.to_string())
+    first_line_reader(fs::File::open(p).ok()?).ok().flatten()
 }
 
-/// Durable subagent logs may start with a `pi_subagent_task` metadata record,
-/// especially after reload, so the child session header is not necessarily the
-/// first line. Read a bounded preamble and return both the child session UUID
-/// and the explicit parent UUID marker.
-fn agent_log_preamble(p: &Path) -> (Option<String>, Option<String>) {
-    use std::io::Read;
-    let Ok(mut f) = fs::File::open(p) else { return (None, None) };
-    let mut buf = vec![0u8; 64 * 1024];
-    let Ok(n) = f.read(&mut buf) else { return (None, None) };
-    let text = String::from_utf8_lossy(&buf[..n]);
+fn first_line_reader(reader: impl std::io::Read) -> std::io::Result<Option<String>> {
+    use std::io::{BufRead, BufReader};
+    // Cap the underlying reader, not just the consumer, to bound read-ahead.
+    let mut reader = BufReader::with_capacity(1024, reader.take(16 * 1024));
+    let mut row = Vec::new();
+    reader.read_until(b'\n', &mut row)?;
+    Ok(String::from_utf8_lossy(&row).lines().next().map(str::to_string))
+}
+
+type LogPreamble = (Option<String>, Option<String>);
+type PreambleCache = HashMap<PathBuf, ((std::time::SystemTime, u64), LogPreamble)>;
+static PREAMBLE_CACHE: OnceLock<Mutex<PreambleCache>> = OnceLock::new();
+
+struct PreambleRead {
+    parsed: LogPreamble,
+    cacheable: bool,
+}
+
+/// Cache only parsed IDs (never transcript text). Both global-index passes and
+/// later rebuilds reuse unchanged source-qualified files. A racing write/read,
+/// malformed preamble or unavailable metadata is never published to the cache.
+fn agent_log_preamble(p: &Path) -> LogPreamble {
+    let key = if p.is_absolute() { p.to_path_buf() } else {
+        let Ok(cwd) = std::env::current_dir() else { return (None, None) };
+        cwd.join(p)
+    };
+    let mut cache = PREAMBLE_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    cached_log_preamble(&key, &mut cache, || snapshot_stamp(&key), || {
+        agent_log_preamble_reader(fs::File::open(&key)?)
+    })
+}
+
+fn cached_log_preamble(
+    key: &Path,
+    cache: &mut PreambleCache,
+    stamp: impl Fn() -> Option<(std::time::SystemTime, u64)>,
+    read: impl FnOnce() -> std::io::Result<PreambleRead>,
+) -> LogPreamble {
+    let Some(before) = stamp() else {
+        cache.remove(key);
+        return (None, None);
+    };
+    if let Some((old_stamp, parsed)) = cache.get(key) {
+        if *old_stamp == before {
+            let parsed = parsed.clone();
+            if stamp() == Some(before) { return parsed; }
+            cache.remove(key);
+            return (None, None);
+        }
+    }
+    cache.remove(key);
+    let Ok(result) = read() else { return (None, None) };
+    if stamp() != Some(before) { return (None, None); }
+    // Marker-less legacy logs may cache their valid child ID. Unknown/malformed
+    // results and unusually large non-UUID strings remain uncached.
+    if result.cacheable && result.parsed.0.as_ref().is_some_and(|s| !s.is_empty())
+        && result.parsed.0.iter().chain(result.parsed.1.iter()).all(|s| s.len() <= 256) {
+        if cache.len() >= 16_384 { cache.clear(); }
+        cache.insert(key.to_path_buf(), (before, result.parsed.clone()));
+    }
+    result.parsed
+}
+
+/// Same 64 KiB / 64-row preamble as before, but stop actual reads once both
+/// markers exist. A clipped final JSON row retains the old lossy parse behavior.
+fn agent_log_preamble_reader(reader: impl std::io::Read) -> std::io::Result<PreambleRead> {
+    use std::io::{BufRead, BufReader};
+    let mut reader = BufReader::with_capacity(4 * 1024, reader.take(64 * 1024));
+    let mut row = Vec::new();
     let mut session_id = None;
     let mut parent_id = None;
-    for line in text.lines().take(64) {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+    let mut cacheable = true;
+    for _ in 0..64 {
+        row.clear();
+        if reader.read_until(b'\n', &mut row)? == 0 { break; }
+        let text = String::from_utf8_lossy(&row);
+        let line = text.lines().next().unwrap_or("");
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            cacheable = false;
+            continue;
+        };
         match v.get("type").and_then(|x| x.as_str()) {
             Some("session") if session_id.is_none() => {
                 session_id = v.get("id").and_then(|x| x.as_str()).map(str::to_string);
@@ -531,11 +627,9 @@ fn agent_log_preamble(p: &Path) -> (Option<String>, Option<String>) {
             }
             _ => {}
         }
-        if session_id.is_some() && parent_id.is_some() {
-            break;
-        }
+        if session_id.is_some() && parent_id.is_some() { break; }
     }
-    (session_id, parent_id)
+    Ok(PreambleRead { parsed: (session_id, parent_id), cacheable })
 }
 
 /// Look up a model's context window from `~/.pi/agent/models.json`
@@ -672,18 +766,23 @@ type SubIdx = (
     HashMap<String, Vec<String>>,
     HashMap<String, Option<String>>, // child UUID -> explicit parent UUID; None = conflicting claims
 );
-static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
+static SUB_IDX: OnceLock<Mutex<Option<(InventorySource, u64, SubIdx)>>> = OnceLock::new();
 
 pub fn subagent_index() -> SubIdx {
+    let mut source = inventory_source();
+    // Header/log association depends on the data tree, not process snapshots.
+    // A PS-only refresh must not trigger another global header rebuild.
+    source.ps = None;
+    source.rmux = None;
     let mut cache = SUB_IDX.get_or_init(|| Mutex::new(None)).lock().unwrap();
     let key = newest_mtime_secs(&sessions_dir()) ^ newest_mtime_secs(&pi_agent_dir().join("agent-logs"));
-    if let Some((k, idx)) = cache.as_ref() {
-        if *k == key {
+    if let Some((prev_source, k, idx)) = cache.as_ref() {
+        if *prev_source == source && *k == key {
             return idx.clone();
         }
     }
     let idx = build_subagent_index();
-    *cache = Some((key, idx.clone()));
+    *cache = Some((source, key, idx.clone()));
     idx
 }
 
@@ -1233,14 +1332,20 @@ pub struct RmuxRuntime {
 /// pi scrubs its argv to just "pi", so we identify them by process name and
 /// exclude anything attached to an rmux pane pty. Returns (pid, cwd).
 pub fn alive_terminal_pis() -> Vec<(u32, String)> {
+    if crate::remote::current_host().is_some() {
+        // No source cwd exists for unregistered snapshot processes. Never run
+        // desktop lsof on a host PID or guess a remote terminal's ownership.
+        return registry_terminal_pis().into_iter().map(|(pid, cwd, _)| (pid, cwd)).collect();
+    }
     // lsof/ps are ~150ms; a 2s TTL dedupes the list_projects + list_sessions
     // calls inside one refresh cycle. Attach flows stay fresh (they take >2s).
-    type TermCache = Option<(std::time::Instant, Vec<(u32, String)>)>;
+    let source = inventory_source();
+    type TermCache = Option<(std::time::Instant, InventorySource, Vec<(u32, String)>)>;
     static CACHE: OnceLock<Mutex<TermCache>> = OnceLock::new();
     {
         let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, res)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(2) {
+        if let Some((at, prev_source, res)) = cache.as_ref() {
+            if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return res.clone();
             }
         }
@@ -1249,7 +1354,7 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
     let mut pending: Vec<u32> = Vec::new();
     // tty devices owned by rmux panes (normalized to "ttysNNN")
     let mut pane_ttys: HashSet<String> = HashSet::new();
-    if let Ok(res) = std::process::Command::new("rmux")
+    if let Ok(res) = inventory_command("rmux")
         .args(["list-panes", "-a", "-F", "#{pane_tty}"])
         .env("PATH", full_path())
         .output()
@@ -1283,7 +1388,7 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        if let Ok(res) = std::process::Command::new("lsof")
+        if let Ok(res) = inventory_command("lsof")
             .args(["-a", "-p", &pid_list, "-d", "cwd", "-Fn"])
             .env("PATH", full_path())
             .output()
@@ -1301,13 +1406,14 @@ pub fn alive_terminal_pis() -> Vec<(u32, String)> {
         }
     }
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-        Some((std::time::Instant::now(), out.clone()));
+        Some((std::time::Instant::now(), source, out.clone()));
     out
 }
 
 /// cwd of a live process via lsof (single targeted call).
 fn lsof_cwd(pid: u32) -> Option<String> {
-    std::process::Command::new("lsof")
+    if crate::remote::current_host().is_some() { return None; }
+    inventory_command("lsof")
         .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
         .env("PATH", full_path())
         .output()
@@ -1361,30 +1467,29 @@ fn parse_etime(s: &str) -> Option<i64> {
 /// (~/.pi/agent/runtime/<pid>.jsonl). Each pi writes ONLY its own pid file —
 /// a private identity slot, so the desktop maps a process (by pid or rmux
 /// pane_pid) straight to its session: no shared mutable state, no heuristics
-/// for registered pis. Validation: kill -0 liveness + elapsed-time vs
+/// for registered pis. Validation: one batched ps existence + elapsed-time vs
 /// registry-age consistency (rejects pid reuse: a fresh process would be
 /// younger than the registry by more than the startup latency). Invalid entries
 /// are ignored, never deleted by this read-only inventory.
 fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
-    // 2s TTL:list_sessions 会经 rmux map + 终端检测各扫一次,每条目还要
-    // kill + ps 两个子进程,不加缓存会放大子进程开销
-    type RegCache = Option<(std::time::Instant, HashMap<u32, RuntimeEntry>)>;
+    // One batch per source-scoped 2s inventory, never per-entry kill/ps.
+    let source = inventory_source();
+    type RegCache = Option<(std::time::Instant, InventorySource, HashMap<u32, RuntimeEntry>)>;
     static CACHE: OnceLock<Mutex<RegCache>> = OnceLock::new();
     {
         let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, res)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(2) {
+        if let Some((at, prev_source, res)) = cache.as_ref() {
+            if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return res.clone();
             }
         }
     }
-    let dir = pi_agent_dir().join("runtime");
-    let remote = crate::remote::current_host().is_some();
+    let dir = source.root.join("runtime");
+    let remote = source.remote;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let mut out = HashMap::new();
     let mut parsed: Vec<(u32, i64, RuntimeEntry)> = Vec::new();
     if let Ok(fd) = fs::read_dir(&dir) {
         for f in fd.flatten() {
@@ -1410,13 +1515,8 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             // Path::is_file() rejects the strongest pid→session evidence and
             // the mapper falls back to a stale/polluted @pi_session option.
             if remote {
-                if let Some(i) = session_path.find("/.pi/agent/") {
-                    let rel = &session_path[i + "/.pi/agent/".len()..];
-                    session_path = crate::remote::agent_root()
-                        .join(rel)
-                        .to_string_lossy()
-                        .into_owned();
-                }
+                let Some(path) = remote_session_path(&session_path, &source.root) else { continue };
+                session_path = path;
             }
             // 扩展写 Date.now()(毫秒),归一化为秒(旧格式可能已是秒)
             let started_at_raw = v.get("startedAt").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -1425,22 +1525,6 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             } else {
                 started_at_raw
             };
-            // Remote pids do not exist on the desktop machine. Validate them
-            // against the ps snapshot captured on the host; local kill -0 was
-            // deleting every valid remote runtime entry from the cache.
-            let alive = if remote {
-                pid_alive(pid)
-            } else {
-                std::process::Command::new("kill")
-                    .args(["-0", &pid.to_string()])
-                    .env("PATH", full_path())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false)
-            };
-            if !alive {
-                continue; // browsing must not remove runtime slots or windows
-            }
             parsed.push((pid, started_at, RuntimeEntry {
                 pid,
                 pane_pid: v.get("panePid").and_then(|x| x.as_i64()).map(|x| x as u32),
@@ -1450,46 +1534,148 @@ fn runtime_registry() -> HashMap<u32, RuntimeEntry> {
             }));
         }
     }
-    // pid-reuse guard: the current process's elapsed time must be >=
-    // the registry's age (it was running when the entry was written),
-    // minus a startup-latency tolerance. A reused pid would be a
-    // younger process -> elapsed << age -> rejected. Missing
-    // startedAt (0) skips the guard instead of rejecting the entry.
-    // One batched `ps -p` call covers every pid (per-entry full ps scans
-    // were the dominant cost of rmux_runtime_map).
-    let guard_pids: Vec<u32> = parsed.iter().filter(|(_, s, _)| *s > 0).map(|(p, _, _)| *p).collect();
-    let etime_map = batch_ps(&guard_pids);
-    for (pid, started_at, entry) in parsed {
-        if started_at > 0 {
-            if let Some(etime) = etime_map.get(&pid).map(|(e, _)| *e) {
-                // Remote etime is frozen at capture, not today's desktop clock.
-                let observed_now = if remote { remote_process_observed_at().unwrap_or(now) } else { now };
-                let age = observed_now - started_at;
-                // Session startup can spend well over 30s loading extensions,
-                // restoring a large JSONL, and registering its pane. Keep a
-                // five-minute allowance; pid reuse still produces a much
-                // larger age mismatch in practice.
-                if etime < age - 300 {
-                    continue; // pid reused by an unrelated younger process
-                }
-            } else {
-                continue; // degraded snapshot cannot validate this identity
-            }
+    // ONE batch validates existence AND elapsed time, including startedAt=0.
+    // The source snapshot's clock is fixed at capture, never desktop now.
+    let snapshot = remote.then(|| read_remote_ps_snapshot(&source.root)).flatten();
+    let observed_at = if remote { snapshot.as_ref().map(|s| s.observed_at) } else { Some(now) };
+    let out = validate_runtime_batch(parsed, observed_at, |pids| {
+        if remote {
+            snapshot.as_ref().map(|s| s.batch(pids)).unwrap_or_default()
+        } else {
+            batch_ps(pids)
         }
-        out.insert(pid, entry);
-    }
+    });
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-        Some((std::time::Instant::now(), out.clone()));
+        Some((std::time::Instant::now(), source, out.clone()));
     out
 }
 
-fn remote_process_observed_at() -> Option<i64> {
-    let path = crate::remote::agent_root().join("ps_snapshot.txt");
+// Host absolute paths must never be resolved against desktop session files.
+fn remote_session_path(path: &str, root: &Path) -> Option<String> {
+    let rel = Path::new(path).strip_prefix(root).ok().map(PathBuf::from).or_else(|| {
+        path.find("/.pi/agent/").map(|i| PathBuf::from(&path[i + "/.pi/agent/".len()..]))
+    })?;
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return None;
+    }
+    Some(root.join(rel).to_string_lossy().into_owned())
+}
+
+#[derive(Clone)]
+struct SourceProcess {
+    tty: String,
+    etime: i64,
+    command: String,
+}
+struct RemoteProcessSnapshot {
+    observed_at: i64,
+    processes: HashMap<u32, SourceProcess>,
+}
+impl RemoteProcessSnapshot {
+    fn batch(&self, pids: &[u32]) -> HashMap<u32, (i64, String)> {
+        pids.iter().filter_map(|pid| self.processes.get(pid)
+            .map(|p| (*pid, (p.etime, p.command.clone())))).collect()
+    }
+}
+
+// Malformed rows are not liveness evidence. Legacy snapshots use a fixed file
+// mtime; modern snapshots carry the source clock captured with the PS rows.
+fn parse_remote_ps_snapshot(text: &str, legacy_time: i64) -> Option<RemoteProcessSnapshot> {
+    let mut lines = text.lines();
+    let mut pending = None;
+    let observed_at = if text.starts_with("---TIME---") {
+        if lines.next()? != "---TIME---" { return None; }
+        let time = snapshot_source_time(text)?;
+        lines.next()?;
+        if time <= 0 || lines.next()? != "---PS---" { return None; }
+        time
+    } else {
+        pending = lines.next();
+        if pending == Some("---PS---") { pending = None; }
+        legacy_time
+    };
+    let mut processes = HashMap::new();
+    for line in pending.into_iter().chain(lines) {
+        if line.trim().is_empty() { continue; }
+        let mut parts = line.split_whitespace();
+        let pid = parts.next()?.parse::<u32>().ok().filter(|p| *p > 0)?;
+        let tty = parts.next()?.to_string();
+        let etime = parse_etime(parts.next()?).filter(|e| *e >= 0)?;
+        let command = parts.collect::<Vec<_>>().join(" ");
+        if command.is_empty() || processes.contains_key(&pid) { return None; }
+        processes.insert(pid, SourceProcess { tty, etime, command });
+    }
+    Some(RemoteProcessSnapshot { observed_at, processes })
+}
+fn read_remote_ps_snapshot(root: &Path) -> Option<RemoteProcessSnapshot> {
+    let path = root.join("ps_snapshot.txt");
     let text = fs::read_to_string(&path).ok()?;
-    if let Some(time) = snapshot_source_time(&text) { return Some(time); }
-    // Legacy capture: file mtime is fixed, unlike an advancing desktop now.
-    Some(fs::metadata(path).ok()?.modified().ok()?
-        .duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64)
+    let legacy_time = fs::metadata(path).ok()?.modified().ok()?
+        .duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    parse_remote_ps_snapshot(&text, legacy_time)
+}
+fn remote_process_observed_at() -> Option<i64> {
+    read_remote_ps_snapshot(&pi_agent_dir()).map(|s| s.observed_at)
+}
+
+fn validate_runtime_batch(
+    parsed: Vec<(u32, i64, RuntimeEntry)>,
+    observed_at: Option<i64>,
+    lookup: impl FnOnce(&[u32]) -> HashMap<u32, (i64, String)>,
+) -> HashMap<u32, RuntimeEntry> {
+    let Some(now) = observed_at else { return HashMap::new() };
+    let mut pids: Vec<_> = parsed.iter().map(|(pid, _, _)| *pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let processes = lookup(&pids);
+    parsed.into_iter().filter_map(|(pid, started_at, entry)| {
+        let (etime, command) = processes.get(&pid)?;
+        if *etime < 0 || command.is_empty() { return None; }
+        // Preserve private SDK caller slots even when command is not 'pi'.
+        // Missing startedAt skips only age comparison, NOT PID existence.
+        if started_at > 0 && *etime < now - started_at - 300 { return None; }
+        Some((pid, entry))
+    }).collect()
+}
+
+fn parse_remote_panes(text: &str) -> Option<Vec<(u32, bool)>> {
+    let mut panes = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let mut parts = line.split_whitespace();
+        let target = parts.next()?;
+        let (window, index) = target.rsplit_once('.')?;
+        if !window.contains(':') || index.parse::<u32>().is_err() { return None; }
+        let pid = parts.next()?.parse::<u32>().ok().filter(|p| *p > 0)?;
+        let dead = match parts.next()? { "0" => false, "1" => true, _ => return None };
+        panes.push((pid, dead));
+    }
+    Some(panes)
+}
+fn remote_terminal_inventory(root: &Path, registry: &HashMap<u32, RuntimeEntry>) -> Vec<(u32, String, String)> {
+    let Some(ps) = read_remote_ps_snapshot(root) else { return Vec::new() };
+    let Some(panes) = fs::read_to_string(root.join("rmux_snapshot.txt")).ok()
+        .and_then(|s| parse_remote_panes(&s)) else { return Vec::new() };
+    let mut pane_ttys = HashSet::new();
+    for (pid, dead) in panes {
+        if dead { continue; }
+        let tty = ps.processes.get(&pid).map(|p| p.tty.as_str()).or_else(|| {
+            registry.values().find(|e| e.pane_pid == Some(pid))
+                .and_then(|e| ps.processes.get(&e.pid)).map(|p| p.tty.as_str())
+        });
+        // The source PS is Pi-filtered: a shell pane may be absent. Without a
+        // validated child slot/TTY we cannot safely label other PIDs non-pane.
+        let Some(tty) = tty.filter(|t| *t != "??" && *t != "?" && !t.is_empty()) else { return Vec::new() };
+        pane_ttys.insert(tty.trim_start_matches("/dev/").to_string());
+    }
+    registry.values().filter_map(|e| {
+        let process = ps.processes.get(&e.pid)?;
+        let tty = process.tty.trim_start_matches("/dev/");
+        if e.pane_pid.is_some() || tty.is_empty() || tty == "??" || tty == "?"
+            || pane_ttys.contains(tty) || e.cwd.is_empty() || !Path::new(&e.session_path).is_file() {
+            return None;
+        }
+        Some((e.pid, e.cwd.clone(), e.session_path.clone()))
+    }).collect()
 }
 
 fn snapshot_source_time(text: &str) -> Option<i64> {
@@ -1509,27 +1695,25 @@ fn snapshot_source_time(text: &str) -> Option<i64> {
 // 远程快照只含 pi 进程(同步时 grep),足够运行状态判定。
 fn ps_lines() -> Vec<String> {
     if crate::remote::current_host().is_some() {
-        let snap = crate::remote::agent_root().join("ps_snapshot.txt");
-        return fs::read_to_string(snap)
-            .unwrap_or_default()
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
+        return read_remote_ps_snapshot(&pi_agent_dir()).map(|s| s.processes.into_iter()
+            .map(|(pid, p)| format!("{pid} {} {} {}", p.tty, p.etime, p.command)).collect())
+            .unwrap_or_default();
     }
     // list_projects, list_sessions and list_running execute back-to-back in a
     // single refresh. Share one process snapshot instead of spawning/scanning
     // `ps` three or more times.
-    type PsCache = Option<(std::time::Instant, Vec<String>)>;
+    let source = inventory_source();
+    type PsCache = Option<(std::time::Instant, InventorySource, Vec<String>)>;
     static CACHE: OnceLock<Mutex<PsCache>> = OnceLock::new();
     {
         let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, lines)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(2) {
+        if let Some((at, prev_source, lines)) = cache.as_ref() {
+            if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return lines.clone();
             }
         }
     }
-    let lines: Vec<String> = std::process::Command::new("ps")
+    let lines: Vec<String> = inventory_command("ps")
         .args(["-eo", "pid=,tty=,etime=,command="])
         .env("PATH", full_path())
         .output()
@@ -1541,7 +1725,7 @@ fn ps_lines() -> Vec<String> {
         })
         .unwrap_or_default();
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-        Some((std::time::Instant::now(), lines.clone()));
+        Some((std::time::Instant::now(), source, lines.clone()));
     lines
 }
 
@@ -1549,13 +1733,6 @@ fn ps_lines() -> Vec<String> {
 /// remote: read from the synced ps snapshot (host pids never appear in the
 /// local ps — using it here made every remote pane look dead).
 fn pid_lines_for_lookup() -> Vec<String> {
-    if crate::remote::current_host().is_some() {
-        return std::fs::read_to_string(crate::remote::agent_root().join("ps_snapshot.txt"))
-            .unwrap_or_default()
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
-    }
     ps_lines()
 }
 
@@ -1578,25 +1755,12 @@ fn batch_ps(pids: &[u32]) -> HashMap<u32, (i64, String)> {
         return out;
     }
     if crate::remote::current_host().is_some() {
-        let wanted: HashSet<u32> = pids.iter().copied().collect();
-        // Remote snapshot format: pid tty etime command...
-        for line in ps_lines() {
-            let mut it = line.split_whitespace();
-            let (Some(pid_s), Some(_tty), Some(etime_s)) = (it.next(), it.next(), it.next()) else {
-                continue;
-            };
-            let Ok(pid) = pid_s.parse::<u32>() else { continue };
-            if !wanted.contains(&pid) {
-                continue;
-            }
-            let etime = parse_etime(etime_s).unwrap_or(0);
-            let cmd = it.collect::<Vec<_>>().join(" ");
-            out.insert(pid, (etime, cmd));
-        }
-        return out;
+        return read_remote_ps_snapshot(&pi_agent_dir()).map(|s| s.batch(pids)).unwrap_or_default();
     }
-    let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
-    let Ok(res) = std::process::Command::new("ps")
+    let wanted: HashSet<u32> = pids.iter().copied().filter(|p| *p > 0).collect();
+    if wanted.is_empty() { return out; }
+    let list = wanted.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let Ok(res) = inventory_command("ps")
         .args(["-p", &list, "-o", "pid=,etime=,command="])
         .env("PATH", full_path())
         .output()
@@ -1607,19 +1771,21 @@ fn batch_ps(pids: &[u32]) -> HashMap<u32, (i64, String)> {
         let mut it = line.split_whitespace();
         let (Some(pid_s), Some(etime_s)) = (it.next(), it.next()) else { continue };
         let Ok(pid) = pid_s.parse::<u32>() else { continue };
-        let etime = parse_etime(etime_s).unwrap_or(0);
+        if !wanted.contains(&pid) { continue; }
+        let Some(etime) = parse_etime(etime_s).filter(|e| *e >= 0) else { continue };
         let cmd: String = it.collect::<Vec<_>>().join(" ");
-        out.insert(pid, (etime, cmd));
+        if !cmd.is_empty() { out.insert(pid, (etime, cmd)); }
     }
     out
 }
 
-/// pid 是否存活:本地 kill -0,远程在快照里找。
+/// Legacy targeted lookup; bulk inventory uses batch_ps instead.
+#[allow(dead_code)]
 pub fn pid_alive(pid: u32) -> bool {
     if crate::remote::current_host().is_some() {
         return pid_line(pid).is_some();
     }
-    std::process::Command::new("kill")
+    inventory_command("kill")
         .args(["-0", &pid.to_string()])
         .status()
         .map(|s| s.success())
@@ -1627,8 +1793,13 @@ pub fn pid_alive(pid: u32) -> bool {
 }
 
 fn registry_terminal_pis() -> Vec<(u32, String, String)> {
+    if crate::remote::current_host().is_some() {
+        let source = inventory_source();
+        let registry = runtime_registry();
+        return remote_terminal_inventory(&source.root, &registry);
+    }
     let mut pane_ttys: HashSet<String> = HashSet::new();
-    if let Ok(res) = std::process::Command::new("rmux")
+    if let Ok(res) = inventory_command("rmux")
         .args(["list-panes", "-a", "-F", "#{pane_tty}"])
         .env("PATH", full_path())
         .output()
@@ -1654,6 +1825,9 @@ fn registry_terminal_pis() -> Vec<(u32, String, String)> {
 }
 
 pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
+    if crate::remote::current_host().is_some() {
+        return registry_terminal_pis().iter().any(|(_, _, path)| path == session_path);
+    }
     let path = Path::new(session_path);
     if session_file_running(path) {
         return true;
@@ -1726,12 +1900,13 @@ fn insert_runtime(out: &mut HashMap<String, RmuxRuntime>, path: String, rt: Rmux
 }
 
 pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
-    type RmuxCache = Option<(std::time::Instant, HashMap<String, RmuxRuntime>)>;
+    let source = inventory_source();
+    type RmuxCache = Option<(std::time::Instant, InventorySource, HashMap<String, RmuxRuntime>)>;
     static CACHE: OnceLock<Mutex<RmuxCache>> = OnceLock::new();
     {
         let cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, res)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(2) {
+        if let Some((at, prev_source, res)) = cache.as_ref() {
+            if *prev_source == source && at.elapsed() < std::time::Duration::from_secs(2) {
                 return res.clone();
             }
         }
@@ -1742,17 +1917,17 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // 远程:读同步时的 rmux 快照(格式与本地 list-panes 一致)
         let snap = crate::remote::agent_root().join("rmux_snapshot.txt");
         match fs::read_to_string(snap) {
-            Ok(t) => std::process::Output {
+            Ok(t) if parse_remote_panes(&t).is_some() => std::process::Output {
                 status: std::process::ExitStatus::default(),
                 stdout: t.into_bytes(),
                 stderr: Vec::new(),
             },
-            Err(_) => {
+            _ => {
                 return out;
             }
         }
     } else {
-        match std::process::Command::new("rmux")
+        match inventory_command("rmux")
             .args(["list-panes", "-a", "-F", "#{session_name}:#{window_name}.#{pane_index} #{pane_pid} #{pane_dead} #{@pi_session}"])
             .env("PATH", full_path())
             .output()
@@ -1784,7 +1959,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
     // (previously it queried the LOCAL rmux, which was wrong anyway).
     let mut attached_sess: HashSet<String> = HashSet::new();
     if !remote {
-        if let Ok(cres) = std::process::Command::new("rmux")
+        if let Ok(cres) = inventory_command("rmux")
             .args(["list-clients", "-F", "#{client_session}"])
             .env("PATH", full_path())
             .output()
@@ -1923,18 +2098,7 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
         // map it into our local cache dir so is_file() and the map key match
         // the paths the UI passes (cache-relative session_path).
         let opt_effective: String = if remote {
-            match opt.find("/.pi/agent/") {
-                Some(i) => {
-                    let rel = &opt[i + "/.pi/agent/".len()..];
-                    let cand = crate::remote::agent_root().join(rel);
-                    if cand.is_file() {
-                        cand.to_string_lossy().into_owned()
-                    } else {
-                        opt.clone()
-                    }
-                }
-                None => opt.clone(),
-            }
+            remote_session_path(&opt, &source.root).unwrap_or_default()
         } else {
             opt.clone()
         };
@@ -2011,14 +2175,17 @@ pub fn rmux_runtime_map() -> HashMap<String, RmuxRuntime> {
                 }
                 let clean = tok.trim_matches('\'');
                 if clean.ends_with(".jsonl") && clean.contains("sessions/") {
-                    add(clean.to_string(), target.to_string(), &sess, pid, dead, &mut out);
+                    let path = if remote { remote_session_path(clean, &source.root) } else { Some(clean.to_string()) };
+                    if let Some(path) = path {
+                        add(path, target.to_string(), &sess, pid, dead, &mut out);
+                    }
                     break;
                 }
             }
         }
     }
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-        Some((std::time::Instant::now(), out.clone()));
+        Some((std::time::Instant::now(), source, out.clone()));
     out
 }
 
@@ -2036,6 +2203,7 @@ fn pane_cwd_session(
     etime: Option<i64>, // from the batched ps call; None -> snapshot-based lookup
     already: &HashMap<String, RmuxRuntime>,
 ) -> Option<String> {
+    if crate::remote::current_host().is_some() { return None; }
     let cwd = lsof_cwd(*pid)?;
     let dir = sessions_dir().join(encode_dir_name(&cwd));
     let start = match etime {
@@ -2095,32 +2263,12 @@ fn parse_filename_ts(s: &str) -> Option<i64> {
 /// parse `etime` (formats: MM:SS, HH:MM:SS, D-HH:MM:SS).
 fn process_start_epoch(pid: u32) -> Option<i64> {
     let line = pid_line(pid)?;
-    let out = std::process::Output {
-        status: std::process::ExitStatus::default(),
-        stdout: format!("{}\n", line.split_whitespace().nth(2).unwrap_or("")).into_bytes(),
-        stderr: Vec::new(),
-    };
-    let etime = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let mut days = 0i64;
-    let time_part = if let Some((d, t)) = etime.split_once('-') {
-        days = d.parse::<i64>().ok()?;
-        t
+    let secs = parse_etime(line.split_whitespace().nth(2)?)?;
+    let now = if crate::remote::current_host().is_some() {
+        remote_process_observed_at()?
     } else {
-        &etime
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64
     };
-    let parts: Vec<i64> = time_part
-        .split(':')
-        .map(|p| p.parse::<i64>().ok())
-        .collect::<Option<Vec<_>>>()?;
-    let secs = match parts.as_slice() {
-        [m, s] => m * 60 + s,
-        [h, m, s] => h * 3600 + m * 60 + s,
-        _ => return None,
-    } + days * 86400;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
     Some(now - secs)
 }
 
@@ -2140,13 +2288,14 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     let root = sessions_dir();
     let dir = root.join(project_key);
     // 结果级缓存:目录指纹不变直接返回(每 10s 轮询不再全扫 4-6s)
-    type ListCache = Option<(std::time::Instant, Vec<(String, i64, u64)>, Vec<SessionMeta>)>;
+    type ListCache = Option<(std::time::Instant, InventorySource, String, Vec<(String, i64, u64)>, Vec<SessionMeta>)>;
     static LIST_CACHE: OnceLock<Mutex<ListCache>> = OnceLock::new();
+    let source = inventory_source();
     let fp = dir_fingerprint(&dir);
     {
         let cache = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-        if let Some((at, prev_fp, res)) = cache.as_ref() {
-            if at.elapsed() < std::time::Duration::from_secs(2) && Some(prev_fp) == fp.as_ref() {
+        if let Some((at, prev_source, prev_project, prev_fp, res)) = cache.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(2) && *prev_source == source && prev_project == project_key && Some(prev_fp) == fp.as_ref() {
                 return res.clone();
             }
         }
@@ -2250,7 +2399,9 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     // pi_subagent_parent marker. Text matching remains only for legacy logs
     // that predate that marker; reload prompts often differ enough to make a
     // heuristic association missing or, worse, attach to the wrong main.
-    let parent_calls = collect_parent_calls(project_key);
+    let parent_calls = legacy_parent_calls(&out, &parent_by_uuid, || {
+        collect_parent_calls(project_key)
+    });
     link_session_parents(
         project_key,
         &mut out,
@@ -2265,9 +2416,23 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
     });
     if let Some(f) = fp {
         *LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-            Some((std::time::Instant::now(), f, out.clone()));
+            Some((std::time::Instant::now(), source, project_key.to_string(), f, out.clone()));
     }
     out
+}
+
+// Explicit missing/conflicting parents are authoritative too. Only marker-less
+// workers need the expensive legacy transcript scan; ordinary mains never do.
+fn legacy_parent_calls(
+    sessions: &[SessionMeta],
+    parents: &HashMap<String, Option<String>>,
+    collect: impl FnOnce() -> Vec<ParentCall>,
+) -> Vec<ParentCall> {
+    if sessions.iter().any(|m| m.is_subagent && !parents.contains_key(&m.id)) {
+        collect()
+    } else {
+        Vec::new()
+    }
 }
 
 fn link_session_parents(
@@ -2574,15 +2739,23 @@ fn normalize_text(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
-    // Incremental per-file cache: keyed on the (mtime,size) map of every main
-    // session. When nothing changed we reuse everything; when a session grows
-    // (an active run), only that file is rescanned.
-    type ParentCache = Option<(String, HashMap<String, (i64, u64)>, Vec<ParentCall>)>;
-    static CACHE: OnceLock<Mutex<ParentCache>> = OnceLock::new();
-    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
-    let dir = sessions_dir().join(project_key);
+struct ParentProjectCache {
+    dir: PathBuf,
+    files: HashMap<String, (i64, u64)>,
+    calls: Vec<ParentCall>,
+}
+type ParentProjectsCache = std::collections::VecDeque<ParentProjectCache>;
 
+fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
+    // Eight recently browsed source/project directories, not one global slot.
+    // The absolute key isolates remote hosts and relative-root cwd changes.
+    static CACHE: OnceLock<Mutex<ParentProjectsCache>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(ParentProjectsCache::new())).lock().unwrap();
+    let dir = sessions_dir().join(project_key);
+    let key = if dir.is_absolute() { dir.clone() } else {
+        let Ok(cwd) = std::env::current_dir() else { return Vec::new() };
+        cwd.join(&dir)
+    };
     let mut cur: HashMap<String, (i64, u64)> = HashMap::new();
     if let Ok(fd) = fs::read_dir(&dir) {
         for f in fd.flatten() {
@@ -2595,36 +2768,37 @@ fn collect_parent_calls(project_key: &str) -> Vec<ParentCall> {
             }
         }
     }
-    if let Some((pk, prev, calls)) = cache.as_ref() {
-        if pk == project_key && *prev == cur {
-            return calls.clone();
+    refresh_parent_project(&mut cache, key, cur, scan_file_for_parent_calls)
+}
+
+fn refresh_parent_project(
+    cache: &mut ParentProjectsCache,
+    dir: PathBuf,
+    cur: HashMap<String, (i64, u64)>,
+    mut scan: impl FnMut(&Path, &mut Vec<ParentCall>),
+) -> Vec<ParentCall> {
+    // Remove the selected entry and reinsert at the MRU end even on a hit.
+    let previous = cache.iter().position(|p| p.dir == dir).and_then(|i| cache.remove(i));
+    let (prev_map, old_calls) = match previous {
+        Some(previous) if previous.files == cur => {
+            let calls = previous.calls.clone();
+            cache.push_back(previous);
+            return calls;
         }
-    }
-    // keep cached calls for files whose (mtime,size) is unchanged, drop stale
-    // ones (changed or deleted), rescan the rest
-    let prev_map: HashMap<String, (i64, u64)> = cache
-        .as_ref()
-        .filter(|(pk, _, _)| pk == project_key)
-        .map(|(_, m, _)| m.clone())
-        .unwrap_or_default();
-    let mut out: Vec<ParentCall> = cache
-        .as_ref()
-        .filter(|(pk, _, _)| pk == project_key)
-        .map(|(_, _, calls)| {
-            calls
-                .iter()
-                .filter(|pc| prev_map.get(&pc.path) == cur.get(&pc.path))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+        Some(previous) => (previous.files, previous.calls),
+        None => (HashMap::new(), Vec::new()),
+    };
+    // Preserve the existing incremental semantics: retain calls only for
+    // unchanged files, drop changed/deleted calls, and rescan changed files.
+    let mut out: Vec<ParentCall> = old_calls.into_iter()
+        .filter(|pc| prev_map.get(&pc.path) == cur.get(&pc.path)).collect();
     for (path, md) in &cur {
         if prev_map.get(path) != Some(md) {
-            scan_file_for_parent_calls(Path::new(path), &mut out);
+            scan(Path::new(path), &mut out);
         }
     }
-    let cached = out.clone();
-    *cache = Some((project_key.to_string(), cur, cached));
+    if cache.len() >= 8 { cache.pop_front(); }
+    cache.push_back(ParentProjectCache { dir, files: cur, calls: out.clone() });
     out
 }
 
@@ -2824,8 +2998,17 @@ fn fmetadata(path: &Path) -> Option<Fmeta> {
     })
 }
 
-/// Read header + first 120 lines for id/cwd/name/first message/model.
-fn scan_head(path: &Path) -> (String, String, String, Option<String>, Option<String>, Option<String>) {
+type HeadMeta = (String, String, String, Option<String>, Option<String>, Option<String>);
+
+/// Read at most 256 KiB / 41 rows, stopping when the existing essentials exist.
+fn scan_head(path: &Path) -> HeadMeta {
+    match fs::File::open(path) {
+        Ok(file) => scan_head_reader(file),
+        Err(_) => (String::new(), String::new(), String::new(), None, None, None),
+    }
+}
+
+fn scan_head_reader(reader: impl std::io::Read) -> HeadMeta {
     let mut id = String::new();
     let mut cwd = String::new();
     let mut created = String::new();
@@ -2833,27 +3016,32 @@ fn scan_head(path: &Path) -> (String, String, String, Option<String>, Option<Str
     let mut first_msg = None;
     let mut model = None;
 
-    // bounded read: session headers live in the first few lines; reading the
-    // whole file here made list_sessions O(file-size) for every session
-    use std::io::Read;
-    let data = match fs::File::open(path).and_then(|mut f| {
-        let mut buf = vec![0u8; 256 * 1024];
-        let n = f.read(&mut buf)?;
-        Ok(buf[..n].to_vec())
-    }) {
-        Ok(d) => d,
-        Err(_) => return (id, cwd, created, name, first_msg, model),
-    };
-    let text = String::from_utf8_lossy(&data);
-    for (i, line) in text.lines().enumerate() {
-        // stop early once we have the essentials: headers are the first lines
-        if i > 40 || (!id.is_empty() && !cwd.is_empty() && !created.is_empty() && first_msg.is_some()) {
+    // Put Take *inside* BufReader so read-ahead cannot exceed the old byte cap.
+    // Small buffering avoids reading 256 KiB when the first few rows suffice.
+    use std::io::{BufRead, BufReader};
+    let mut reader = BufReader::with_capacity(8 * 1024, reader.take(256 * 1024));
+    let mut row = Vec::new();
+    for _ in 0..=40 {
+        if !id.is_empty() && !cwd.is_empty() && !created.is_empty() && first_msg.is_some() {
             break;
         }
+        row.clear();
+        match reader.read_until(b'\n', &mut row) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return (String::new(), String::new(), String::new(), None, None, None),
+        }
+        // Match str::lines, including CRLF, lossy UTF-8, and the final fragment
+        // at EOF/the byte cap. Never extend a clipped JSON row beyond the cap.
+        if row.last() == Some(&b'\n') {
+            row.pop();
+            if row.last() == Some(&b'\r') { row.pop(); }
+        }
+        let line = String::from_utf8_lossy(&row);
         if line.trim().is_empty() {
             continue;
         }
-        let v: Value = match serde_json::from_str(line) {
+        let v: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -3307,6 +3495,10 @@ fn parse_content(content: Option<&Value>, _ctx: Option<&str>) -> Vec<ContentBloc
 }
 
 #[cfg(test)]
+#[path = "sessions_performance_tests.rs"]
+mod performance_regression_tests;
+
+#[cfg(test)]
 mod nested_lineage_tests {
     use super::*;
 
@@ -3537,6 +3729,48 @@ mod nested_lineage_tests {
                 Some("/fixture/main.jsonl")
             );
         }
+    }
+
+    #[test]
+    fn performance_collector_skips_mains_and_authoritative_claims() {
+        let main = session("main", "/fixture/main.jsonl", false);
+        let worker = session("worker", "/fixture/worker.jsonl", true);
+        for raw in [vec![], vec![main.clone()]] {
+            assert!(legacy_parent_calls(&raw, &HashMap::new(), || panic!("unneeded scan")).is_empty());
+        }
+        for claim in [Some("main".into()), Some("missing".into()), Some("worker".into()), None] {
+            let edges = HashMap::from([("worker".into(), claim)]);
+            let raw = vec![main.clone(), worker.clone()];
+            assert!(legacy_parent_calls(&raw, &edges, || panic!("explicit scan")).is_empty());
+            let linked = link(raw, &edges);
+            if edges["worker"].as_deref() != Some("main") {
+                assert!(get(&linked, "worker").parent_session_path.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn performance_collector_keeps_mixed_legacy_and_orphan_matching() {
+        let raw = vec![
+            session("main", "/fixture/main.jsonl", false),
+            session("explicit", "/fixture/explicit.jsonl", true),
+            session("legacy", "/fixture/legacy.jsonl", true),
+        ];
+        let edges = HashMap::from([("explicit".into(), None)]);
+        let collected = std::cell::Cell::new(0);
+        let calls = legacy_parent_calls(&raw, &edges, || {
+            collected.set(collected.get() + 1);
+            vec![ParentCall { path: "/fixture/main.jsonl".into(), task: TASK.into(), alpha_id: None }]
+        });
+        assert_eq!(collected.get(), 1);
+        let (mut linked, ambiguous) = canonical_sessions(raw);
+        link_session_parents("mixed-performance-fixture", &mut linked, &edges, &ambiguous, &HashMap::new(), &calls);
+        assert!(get(&linked, "explicit").parent_session_path.is_none());
+        assert_eq!(get(&linked, "legacy").parent_session_path.as_deref(), Some("/fixture/main.jsonl"));
+        linked.iter_mut().find(|s| s.id == "legacy").unwrap().first_message = Some("unrelated orphan task".into());
+        linked.iter_mut().find(|s| s.id == "legacy").unwrap().parent_session_path = None;
+        link_session_parents("mixed-performance-fixture", &mut linked, &edges, &ambiguous, &HashMap::new(), &calls);
+        assert!(get(&linked, "legacy").parent_session_path.is_none());
     }
 
     #[test]

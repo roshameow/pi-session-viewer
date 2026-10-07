@@ -251,6 +251,19 @@ export const Sidebar = React.memo(function Sidebar({
     });
   };
 
+  // Index unfiltered sessions: search must not hide a worker's parent label
+  // or change whether it belongs to a direct-main group.
+  const { mainPaths, sessionsByPath } = useMemo(() => {
+    const mainPaths = new Set<string>();
+    const sessionsByPath = new Map<string, SessionMeta>();
+    for (const s of sessions) {
+      if (!s.isSubagent) mainPaths.add(s.path);
+      // Match the previous find() behavior if a caller supplies duplicates.
+      if (!sessionsByPath.has(s.path)) sessionsByPath.set(s.path, s);
+    }
+    return { mainPaths, sessionsByPath };
+  }, [sessions]);
+
   const { mainSessions, childrenMap, subagents } = useMemo(() => {
     const main: SessionMeta[] = [];
     const children = new Map<string, SessionMeta[]>();
@@ -270,14 +283,14 @@ export const Sidebar = React.memo(function Sidebar({
         continue;
       }
       subs.push(s);
-      if (s.parentSessionPath && sessions.some((m) => !m.isSubagent && m.path === s.parentSessionPath)) {
+      if (s.parentSessionPath && mainPaths.has(s.parentSessionPath)) {
         const list = children.get(s.parentSessionPath) ?? [];
         list.push(s);
         children.set(s.parentSessionPath, list);
       }
     }
     return { mainSessions: main, childrenMap: children, subagents: subs };
-  }, [sessions, sessionQuery]);
+  }, [sessions, sessionQuery, mainPaths]);
 
   const justFinishedFn = (path: string): boolean => {
     // persists until the session is opened or the app restarts
@@ -286,7 +299,7 @@ export const Sidebar = React.memo(function Sidebar({
 
   const parentTitle = (path: string | null): string | null => {
     if (!path) return null;
-    const m = sessions.find((s) => s.path === path);
+    const m = sessionsByPath.get(path);
     if (!m) return null;
     // A main session may have been created by an automated notification, so
     // firstMessage is often "[脚本通知] ..." and is a misleading parent label.
