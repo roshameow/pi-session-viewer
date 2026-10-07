@@ -1,0 +1,322 @@
+{
+  "schemaVersion": 1,
+  "task": "README native demo asset update",
+  "reviewedAt": "2026-10-07T21:50:40.970787+00:00",
+  "sourceRootLabel": "launch-ops/artifacts/pi-desktop (relative paths only)",
+  "sourceInputs": [
+    {
+      "path": "rendered/native-workflow-v2-zh/short.mp4",
+      "sha256": "8257efdcf4f5fe4e70d7a4be4c6c58eadf4c88247cac353047d7f7969236fb84",
+      "sizeBytes": 351457
+    },
+    {
+      "path": "rendered/native-workflow-v2-en/short.mp4",
+      "sha256": "3d606f095a87c16d30298834cfeb8c44672cbc068815115f59abca18dd9179c1",
+      "sizeBytes": 357623
+    }
+  ],
+  "sourceHashesUnchanged": "PASS",
+  "privacyFilter": "drawbox=x=0:y=0:w=1280:h=28:color=0x10161e:t=fill:enable='between(t,11,12.32)',drawbox=x=106:y=588:w=1068:h=60:color=0x10161e:t=fill:enable='between(t,11,12.32)',drawbox=x=106:y=44:w=294:h=22:color=0x10161e:t=fill:enable='between(t,11.64,12.32)'",
+  "generation": {
+    "ffmpegVersion": "ffmpeg version 6.1 Copyright (c) 2000-2023 the FFmpeg developers",
+    "ffprobeVersion": "ffprobe version 5.1.2 Copyright (c) 2007-2022 the FFmpeg developers",
+    "silentVideoOptions": "-map 0:v:0 -an -map_metadata -1 -c:v libx264 -crf 20 -preset slow -pix_fmt yuv420p -movflags +faststart",
+    "gifFilter": "[0:v]fps=10,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
+    "gifOptions": "-loop 0 -final_delay 14; no -t / -ss",
+    "coverFilter": "scale=960:-1:flags=lanczos; first frame"
+  },
+  "files": [
+    {
+      "path": "docs/assets/native-workflow.en.gif",
+      "sizeBytes": 867928,
+      "sha256": "0daf13c7c6f7f93244d22784a0327d9da728f4f84eb6c46a7b9f8fe9dbf6163d",
+      "fullyDecoded": "PASS",
+      "streams": [
+        {
+          "codec_name": "gif",
+          "codec_type": "video",
+          "width": 960,
+          "height": 540,
+          "r_frame_rate": "10/1",
+          "duration": "19.040000",
+          "nb_read_frames": "190"
+        }
+      ],
+      "durationSeconds": 19.04,
+      "gifTiming": {
+        "frameCount": 190,
+        "loopCount": 0,
+        "first189DelayCentiseconds": 10,
+        "lastDelayCentiseconds": 14,
+        "totalCentiseconds": 1904
+      }
+    },
+    {
+      "path": "docs/assets/native-workflow.en.mp4",
+      "sizeBytes": 349808,
+      "sha256": "fbe96ddf78b9427a203427d3d0174ff92b8c35e3560b62ab64bb358cd6c0cff6",
+      "fullyDecoded": "PASS",
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1280,
+          "height": 720,
+          "r_frame_rate": "25/1",
+          "duration": "19.040000",
+          "nb_read_frames": "476"
+        }
+      ],
+      "durationSeconds": 19.04
+    },
+    {
+      "path": "docs/assets/native-workflow.en.png",
+      "sizeBytes": 91439,
+      "sha256": "ec90d8b46ce005d18855685de3fddbc2a7dd016964efb632c193a774a1fc7c85",
+      "fullyDecoded": "PASS",
+      "streams": [
+        {
+          "codec_name": "png",
+          "codec_type": "video",
+          "width": 960,
+          "height": 540,
+          "r_frame_rate": "25/1",
+          "nb_read_frames": "1"
+        }
+      ]
+    },
+    {
+      "path": "docs/assets/native-workflow.zh.gif",
+      "sizeBytes": 837711,
+      "sha256": "d9729bc344e55dd4dc26360c62dd4fb12bf41288fbccea1e422e5453ed1ed4e6",
+      "fullyDecoded": "PASS",
+      "streams": [
+        {
+          "codec_name": "gif",
+          "codec_type": "video",
+          "width": 960,
+          "height": 540,
+          "r_frame_rate": "10/1",
+          "duration": "19.040000",
+          "nb_read_frames": "190"
+        }
+      ],
+      "durationSeconds": 19.04,
+      "gifTiming": {
+        "frameCount": 190,
+        "loopCount": 0,
+        "first189DelayCentiseconds": 10,
+        "lastDelayCentiseconds": 14,
+        "totalCentiseconds": 1904
+      }
+    },
+    {
+      "path": "docs/assets/native-workflow.zh.mp4",
+      "sizeBytes": 343819,
+      "sha256": "b3449d54634cad2b8154f9ceee85802612aba65bc60a41ba04506607485bef2c",
+      "fullyDecoded": "PASS",
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1280,
+          "height": 720,
+          "r_frame_rate": "25/1",
+          "duration": "19.040000",
+          "nb_read_frames": "476"
+        }
+      ],
+      "durationSeconds": 19.04
+    },
+    {
+      "path": "docs/assets/native-workflow.zh.png",
+      "sizeBytes": 89997,
+      "sha256": "3296ecf8bf60f1bd4558f8c33c7348ff6d6c9f130515088af8b63f5da4fd37bc",
+      "fullyDecoded": "PASS",
+      "streams": [
+        {
+          "codec_name": "png",
+          "codec_type": "video",
+          "width": 960,
+          "height": 540,
+          "r_frame_rate": "25/1",
+          "nb_read_frames": "1"
+        }
+      ]
+    }
+  ],
+  "totalMediaBytes": 2580702,
+  "checks": {
+    "privacyVisualReview": "PASS: both source contact sheets, 25 fps detach transition, masked output GIF sheets and shell frame; no external vision call",
+    "privacyMaskFrameCheck": [
+      {
+        "file": "native-workflow.en.mp4",
+        "allEncodedMaskInteriorFrames": "PASS"
+      },
+      {
+        "file": "native-workflow.zh.mp4",
+        "allEncodedMaskInteriorFrames": "PASS"
+      }
+    ],
+    "completeWorkflow": "PASS: overview -> attach -> interaction -> detach -> overview; final overview separate post-completion take",
+    "gifLoopsAndFrameDelays": "PASS: binary GIF blocks checked",
+    "localLinks": [
+      {
+        "file": "README.md",
+        "target": "README.en.md"
+      },
+      {
+        "file": "README.md",
+        "target": "docs/development.md"
+      },
+      {
+        "file": "README.md",
+        "target": "docs/assets/native-workflow.zh.gif"
+      },
+      {
+        "file": "README.md",
+        "target": "docs/assets/native-workflow.zh.mp4"
+      },
+      {
+        "file": "README.md",
+        "target": "docs/assets/native-workflow.zh.png"
+      },
+      {
+        "file": "README.md",
+        "target": "docs/native-walkthrough.md"
+      },
+      {
+        "file": "README.md",
+        "target": "docs/development.md"
+      },
+      {
+        "file": "README.md",
+        "target": "CHANGELOG.md"
+      },
+      {
+        "file": "README.md",
+        "target": "LICENSE"
+      },
+      {
+        "file": "README.en.md",
+        "target": "README.md"
+      },
+      {
+        "file": "README.en.md",
+        "target": "docs/development.md"
+      },
+      {
+        "file": "README.en.md",
+        "target": "docs/assets/native-workflow.en.gif"
+      },
+      {
+        "file": "README.en.md",
+        "target": "docs/assets/native-workflow.en.mp4"
+      },
+      {
+        "file": "README.en.md",
+        "target": "docs/assets/native-workflow.en.png"
+      },
+      {
+        "file": "README.en.md",
+        "target": "docs/native-walkthrough.md"
+      },
+      {
+        "file": "README.en.md",
+        "target": "docs/development.md"
+      },
+      {
+        "file": "README.en.md",
+        "target": "CHANGELOG.md"
+      },
+      {
+        "file": "README.en.md",
+        "target": "LICENSE"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.zh.gif"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.en.gif"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.zh.mp4"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.en.mp4"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.zh.png"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.en.png"
+      },
+      {
+        "file": "docs/native-walkthrough.md",
+        "target": "assets/native-workflow.verification.json"
+      }
+    ],
+    "technicalBodyUnchanged": "PASS",
+    "gitDiffCheck": "PASS",
+    "externalCalls": "NOT_RUN",
+    "applicationTests": "NOT_RUN (documentation/media-only update)"
+  },
+  "authenticityEvidenceReviewed": {
+    "nativeVerification": "native/native-verification.json",
+    "activityRecheck": "review/v2/activity-recheck.json",
+    "scope": "existing local native capture and actual TUI/RMUX/model run; synthetic seed history; no live remote demonstration"
+  },
+  "checkpoint": {
+    "state": "ready for main-agent commit/push; narrated assets excluded",
+    "committed": false,
+    "pushed": false,
+    "sourceChanged": false,
+    "userWindowsTouched": false,
+    "newRuntimeResources": false,
+    "blockers": []
+  },
+  "verifiedExperience": [
+    "Inspect detach transition frames, not only uniformly sampled contact sheets: prepared short.mp4 exposed local shell identity and fixture paths. Apply metadata-only timed masks before publication.",
+    "At 10 fps, 19.04-second input becomes 190 GIF frames; -final_delay 14 preserves total 19.04 seconds with an unchanged final overview."
+  ],
+  "publicationScope": {
+    "included": "silent GIF/19.04-second MP4/PNG only",
+    "narrated": "withheld; originals remain in launch-ops locally",
+    "reason": "public/commercial licensing for Edge consumer TTS voices not confirmed",
+    "removedOwnedOutputs": [
+      {
+        "path": "docs/assets/native-workflow.narrated.zh.mp4",
+        "sha256BeforeRemoval": "5721e02a5c91b5cfe66808252fa1d87ecf2a456523cb62655de4d8025c2c8527",
+        "matchedOwnedOutputManifest": true,
+        "existedInHead": false,
+        "localSource": {
+          "path": "narrated-demo-zh-v1/narrated.mp4",
+          "sha256": "6576a0c989e113ede47db566cee6c0fdc4a5d008381977b258af1ff7e072fa7b",
+          "sizeBytes": 1121433
+        },
+        "localSourceUnchanged": true,
+        "note": "Output was privacy-redacted/re-encoded; whole-file hash differs from source. Previously verified decoded audio matched source."
+      },
+      {
+        "path": "docs/assets/native-workflow.narrated.en.mp4",
+        "sha256BeforeRemoval": "1f59ae0c3af5d157140f7734aaf23f3ea27f146ca6bcee8c48cc0d6c4b33c94b",
+        "matchedOwnedOutputManifest": true,
+        "existedInHead": false,
+        "localSource": {
+          "path": "narrated-demo-en-v1/narrated.mp4",
+          "sha256": "0d29eccfb66833a13caa0d7541f18edb70bcec51b0b09c0becb5ac21b78dd44e",
+          "sizeBytes": 1121237
+        },
+        "localSourceUnchanged": true,
+        "note": "Output was privacy-redacted/re-encoded; whole-file hash differs from source. Previously verified decoded audio matched source."
+      }
+    ]
+  },
+  "updatedAt": "2026-10-07T21:51:46.647967+00:00"
+}

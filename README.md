@@ -2,15 +2,17 @@
 
 [English](README.en.md) · [源码](https://github.com/roshameow/pi-session-viewer) · [开发说明](docs/development.md)
 
-Pi coding agent 的桌面会话工作台：按项目浏览历史对话，查看父子代理关系，定位运行中的终端，并在桌面窗口继续会话。
+与 Pi TUI 协同使用的桌面会话工作台：需要深入交互时 attach 到 TUI；Agent 自己干活时 detach，在 Desktop 侧边栏掌握多项目、会话与子代理总览。
 
-## 先看演示
+## 先看真实演示
 
-![Pi Desktop 功能示意动画：项目会话、工具调用、父子会话与运行状态](docs/assets/walkthrough-illustrated.gif)
+![Pi Desktop 原生实录：总览 → attach → TUI 补充指令 → detach → 回到总览（无声）](docs/assets/native-workflow.zh.gif)
 
-[观看 / 下载 MP4](docs/assets/walkthrough-illustrated.mp4) · [静态图](docs/assets/walkthrough-illustrated.png) · [动画说明与生成脚本](docs/illustrated-walkthrough.md)
+[19 秒无声 MP4](docs/assets/native-workflow.zh.mp4) · [PNG 封面](docs/assets/native-workflow.zh.png) · [演示说明与验证](docs/native-walkthrough.md)
 
-这段 20 秒动画使用示例数据和简化图示介绍功能，**不是实际操作录屏**。如需体验真实界面组件，可运行下面的交互演示。
+完整闭环：**总览 → attach → TUI 交互 → detach → 总览**。这是实际原生 UI 与真实 Pi TUI / RMUX / 模型执行的剪辑，不是 SVG 概念动画；GIF 本身无声。
+
+工作区与种子 history 为合成示例；仅演示本地多项目，不演示实时 remote。放大、高亮与隐私遮罩为后期处理；结尾是任务完成后的独立总览镜头，不代表任务仍在运行。
 
 使用合成会话浏览真实的侧边栏与对话组件，不需要安装 Pi、RMUX 或配置模型：
 

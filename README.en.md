@@ -2,15 +2,17 @@
 
 [中文](README.md) · [Development notes](docs/development.md)
 
-A desktop workspace for Pi coding-agent sessions: browse projects and conversations, follow parent/child agents, locate running terminals and continue a session through your local Pi installation.
+A desktop companion to the Pi TUI: attach for in-depth interaction; detach while the agent works and use the Desktop sidebar for an overview of projects, sessions and subagents.
 
-## Illustrated walkthrough
+## Real native walkthrough
 
-![Pi Desktop concept animation: projects, tool calls, child sessions and runtime status](docs/assets/walkthrough-illustrated.gif)
+![Pi Desktop native recording: overview → attach → TUI instructions → detach → overview (silent)](docs/assets/native-workflow.en.gif)
 
-[Watch / download MP4](docs/assets/walkthrough-illustrated.mp4) · [Still image](docs/assets/walkthrough-illustrated.png) · [Animation details and renderer](docs/illustrated-walkthrough.md)
+[19-second silent MP4](docs/assets/native-workflow.en.mp4) · [PNG cover](docs/assets/native-workflow.en.png) · [Demo details and verification](docs/native-walkthrough.md)
 
-This 20-second animation explains the workflow with synthetic data and simplified diagrams. **It is not an application screen recording.** Try the interactive demo below to explore the actual UI components.
+The complete loop: **overview → attach → TUI interaction → detach → overview**. Edited recordings of the real native UI and real Pi TUI / RMUX / model execution—not an SVG concept animation. The GIF is silent.
+
+The workspace and seed history are synthetic examples. This demonstrates local multi-project use, not live remote state. Zooms, highlights and privacy masks are editorial; the final overview is a separate take after task completion, not evidence of continued execution.
 
 ## Try a local demo
 
