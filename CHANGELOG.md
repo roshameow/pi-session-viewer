@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 — 2026-10-07
+
+- Resolve explicit nested subagent parents against all canonical sessions, so a grandchild points to its worker parent rather than showing “no parent”. Keep real-session preference over mirrors.
+- Leave missing, self/cyclic, or ambiguous explicit lineage unresolved without guessing; retain legacy text matching only when no explicit marker exists. Parent labels support workers; sidebar grouping remains direct children of main sessions.
+
+- Synchronize application/package versions to 0.1.3 without dependency updates; retain the existing signing identity and stable terminal helper.
+
 ## 0.1.2 — 2026-10-04
 
 - Infer yellow busy from verified Pi identity plus the last pending user / assistant toolUse / toolResult transcript message, not live SDK `isStreaming`; long thinking / tools no longer expire solely at 60 seconds without JSONL writes. Final assistant stop / error / abort stays idle.

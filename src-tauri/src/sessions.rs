@@ -207,8 +207,8 @@ pub struct SessionMeta {
     pub model: Option<String>,
     pub is_subagent: bool,
     pub task_id: Option<String>,
-    pub parent_session_id: Option<String>, // set when is_subagent (== header id)
-    pub parent_session_path: Option<String>, // linked parent session file (text/timing match)
+    pub parent_session_id: Option<String>, // explicit durable parent UUID, when unambiguous
+    pub parent_session_path: Option<String>, // canonical explicit parent, or legacy text match
     pub message_count: usize,
     pub running: bool,
     pub sleeping: bool,   // process alive, waiting on a bash sleep
@@ -670,7 +670,7 @@ type SubIdx = (
     HashSet<String>,
     HashMap<String, Vec<String>>,
     HashMap<String, Vec<String>>,
-    HashMap<String, String>, // child session uuid -> explicit parent session uuid
+    HashMap<String, Option<String>>, // child UUID -> explicit parent UUID; None = conflicting claims
 );
 static SUB_IDX: OnceLock<Mutex<Option<(u64, SubIdx)>>> = OnceLock::new();
 
@@ -699,7 +699,7 @@ fn build_subagent_index() -> SubIdx {
     let mut match_text_by_uuid: HashMap<String, Vec<String>> = HashMap::new();
     // Explicit linkage written by the durable extension. Keep the marker from
     // the newest reload log when a child session has had several task IDs.
-    let mut parent_claims: HashMap<String, (i64, String)> = HashMap::new();
+    let mut parent_claims: HashMap<String, (i64, Option<String>)> = HashMap::new();
     // session uuid -> creation time of its (normal-named) session file.
     // A subagent mirror/agent-log whose header id points to a session created
     // long BEFORE the mirror is corrupted: a buggy reload ran the subagent
@@ -804,13 +804,7 @@ fn build_subagent_index() -> SubIdx {
                 }
                 if let Some(parent) = parent_id {
                     let mtime = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
-                    let replace = parent_claims
-                        .get(&id)
-                        .map(|(old_mtime, _)| mtime >= *old_mtime)
-                        .unwrap_or(true);
-                    if replace {
-                        parent_claims.insert(id, (mtime, parent));
-                    }
+                    record_parent_claim(&mut parent_claims, id, mtime, parent);
                 }
             }
         }
@@ -2250,11 +2244,117 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
         }
     }
 
+    let (mut out, ambiguous_ids) = canonical_sessions(out);
+
+    // Parent linkage: prefer the durable extension's explicit
+    // pi_subagent_parent marker. Text matching remains only for legacy logs
+    // that predate that marker; reload prompts often differ enough to make a
+    // heuristic association missing or, worse, attach to the wrong main.
+    let parent_calls = collect_parent_calls(project_key);
+    link_session_parents(
+        project_key,
+        &mut out,
+        &parent_by_uuid,
+        &ambiguous_ids,
+        &match_text_by_uuid,
+        &parent_calls,
+    );
+
+    out.sort_by(|a, b| {
+        b.updated_at.cmp(&a.updated_at).then_with(|| a.path.cmp(&b.path))
+    });
+    if let Some(f) = fp {
+        *LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
+            Some((std::time::Instant::now(), f, out.clone()));
+    }
+    out
+}
+
+fn link_session_parents(
+    project_key: &str,
+    sessions: &mut [SessionMeta],
+    parent_by_uuid: &HashMap<String, Option<String>>,
+    ambiguous_ids: &HashSet<String>,
+    match_text_by_uuid: &HashMap<String, Vec<String>>,
+    parent_calls: &[ParentCall],
+) {
+    let explicit_paths = explicit_parent_paths(sessions, parent_by_uuid, ambiguous_ids);
+    let parent_sig = parent_calls_signature(parent_calls);
+    for m in sessions.iter_mut() {
+        if !m.is_subagent {
+            continue;
+        }
+        if let Some(parent_id) = parent_by_uuid.get(&m.id) {
+            m.parent_session_id = parent_id.clone();
+            m.parent_session_path = explicit_paths.get(&m.id).cloned();
+            // An explicit marker is authoritative. If its parent file is not
+            // in the synced session tree, or lineage is unsafe, do not guess.
+            continue;
+        }
+        let match_texts = match_text_by_uuid
+            .get(&m.id)
+            .cloned()
+            .filter(|v| !v.is_empty())
+            .or_else(|| m.first_message.clone().map(|f| vec![f]));
+        if let Some(texts) = match_texts {
+            for fm in texts {
+                if let Some(p) =
+                    match_parent_cached(project_key, &m.id, &fm, parent_sig, parent_calls)
+                {
+                    m.parent_session_path = Some(p);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Latest reload wins; equally recent contradictory markers stay authoritative
+// but unresolved, rather than letting read_dir order select a parent.
+fn record_parent_claim(
+    claims: &mut HashMap<String, (i64, Option<String>)>,
+    child: String,
+    mtime: i64,
+    parent: String,
+) {
+    match claims.get_mut(&child) {
+        Some((old_mtime, old_parent)) if mtime == *old_mtime => {
+            if old_parent.as_ref() != Some(&parent) {
+                *old_parent = None;
+            }
+        }
+        Some((old_mtime, _)) if mtime < *old_mtime => {}
+        _ => {
+            claims.insert(child, (mtime, Some(parent)));
+        }
+    }
+}
+
+fn canonical_sessions(mut out: Vec<SessionMeta>) -> (Vec<SessionMeta>, HashSet<String>) {
     // dedupe: same uuid can have a mirror (subagent-task-*) and a real session
     // file (normal name). Prefer the real one (fuller history). The rmux map
     // may key the pane by the mirror path OR the real path (registry points
     // wherever the pi's getSessionFile landed); carry the rmux state over
     // regardless of which file is processed first — scan order is arbitrary.
+    // Multiple mirrors are expected after reload; multiple distinct real files
+    // for one UUID cannot identify a unique parent. Keep a stable display entry,
+    // but never use that UUID for explicit lineage.
+    let mut real_paths: HashMap<String, HashSet<String>> = HashMap::new();
+    for m in &out {
+        if !m.path.contains("subagent-task-") {
+            real_paths
+                .entry(m.id.clone())
+                .or_default()
+                .insert(m.path.clone());
+        }
+    }
+    let ambiguous_ids = real_paths
+        .into_iter()
+        .filter_map(|(id, paths)| (paths.len() > 1).then_some(id))
+        .collect();
+    // Equal-sized duplicates and equal-ranked runtime evidence must not depend
+    // on filesystem enumeration order. Existing real/size preferences remain.
+    out.sort_by(|a, b| a.path.cmp(&b.path));
     let mut by_id: HashMap<String, SessionMeta> = HashMap::new();
     for m in out {
         if !by_id.contains_key(&m.id) {
@@ -2277,8 +2377,11 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
         if cur_is_real && !m_is_real {
             // keep the real; if the mirror carries rmux state the real lacks,
             // merge it over (mirror processed second)
-            if m.in_rmux && (!cur_in_rmux || runtime_rank(m.rmux_dead, m.rmux_pi_alive)
-                > runtime_rank(cur_dead, cur_pi_alive)) {
+            if m.in_rmux
+                && (!cur_in_rmux
+                    || runtime_rank(m.rmux_dead, m.rmux_pi_alive)
+                        > runtime_rank(cur_dead, cur_pi_alive))
+            {
                 let c = by_id.get_mut(&m.id).unwrap();
                 c.in_rmux = true;
                 c.rmux_target = m.rmux_target.clone();
@@ -2290,8 +2393,11 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             // replace the mirror with the real, carrying rmux state over
             // (mirror processed first)
             let mut real = m;
-            if cur_in_rmux && (!real.in_rmux || runtime_rank(cur_dead, cur_pi_alive)
-                > runtime_rank(real.rmux_dead, real.rmux_pi_alive)) {
+            if cur_in_rmux
+                && (!real.in_rmux
+                    || runtime_rank(cur_dead, cur_pi_alive)
+                        > runtime_rank(real.rmux_dead, real.rmux_pi_alive))
+            {
                 real.in_rmux = true;
                 real.rmux_target = cur_target;
                 real.rmux_attached = cur_attached;
@@ -2303,57 +2409,57 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
             by_id.insert(m.id.clone(), m);
         }
     }
-    let mut out: Vec<SessionMeta> = by_id.into_values().collect();
+    (by_id.into_values().collect(), ambiguous_ids)
+}
 
-    // Parent linkage: prefer the durable extension's explicit
-    // pi_subagent_parent marker. Text matching remains only for legacy logs
-    // that predate that marker; reload prompts often differ enough to make a
-    // heuristic association missing or, worse, attach to the wrong main.
-    let main_path_by_id: HashMap<String, String> = out
+// Resolve immediate parents against ALL canonical sessions, including workers.
+// Walk only explicit worker edges: missing ancestors may be unsynced, but self
+// links, cycles (including chains entering one), and ambiguous UUIDs/claims
+// cannot produce trusted paths. No heuristic fallback is performed here.
+fn explicit_parent_paths(
+    sessions: &[SessionMeta],
+    parents: &HashMap<String, Option<String>>,
+    ambiguous_ids: &HashSet<String>,
+) -> HashMap<String, String> {
+    let by_id: HashMap<&str, &SessionMeta> = sessions.iter().map(|m| (m.id.as_str(), m)).collect();
+    let mut safe: HashMap<&str, bool> = HashMap::new();
+    let mut paths = HashMap::new();
+    for m in sessions
         .iter()
-        .filter(|m| !m.is_subagent)
-        .map(|m| (m.id.clone(), m.path.clone()))
-        .collect();
-    let parent_calls = collect_parent_calls(project_key);
-    let parent_sig = parent_calls_signature(&parent_calls);
-    for m in out.iter_mut() {
-        if !m.is_subagent {
-            continue;
+        .filter(|m| m.is_subagent && parents.contains_key(&m.id))
+    {
+        let mut chain = HashSet::new();
+        let mut id = m.id.as_str();
+        let valid = loop {
+            if let Some(valid) = safe.get(id) {
+                break *valid;
+            }
+            if ambiguous_ids.contains(id) || !chain.insert(id) {
+                break false;
+            }
+            match by_id.get(id) {
+                Some(session) if session.is_subagent => match parents.get(id) {
+                    Some(Some(parent)) => {
+                        id = parent;
+                    }
+                    Some(None) => break false,
+                    None => break true,
+                },
+                _ => break true,
+            }
+        };
+        for id in chain {
+            safe.insert(id, valid);
         }
-        if let Some(parent_id) = parent_by_uuid.get(&m.id) {
-            m.parent_session_id = Some(parent_id.clone());
-            m.parent_session_path = main_path_by_id.get(parent_id).cloned();
-            // An explicit marker is authoritative. If its parent file is not
-            // in the synced session tree, show an orphan instead of guessing.
-            continue;
-        }
-        let match_texts = match_text_by_uuid
-            .get(&m.id)
-            .cloned()
-            .filter(|v| !v.is_empty())
-            .or_else(|| m.first_message.clone().map(|f| vec![f]));
-        if let Some(texts) = match_texts {
-            for fm in texts {
-                if let Some(p) = match_parent_cached(
-                    project_key,
-                    &m.id,
-                    &fm,
-                    parent_sig,
-                    &parent_calls,
-                ) {
-                    m.parent_session_path = Some(p);
-                    break;
+        if valid {
+            if let Some(Some(parent)) = parents.get(&m.id) {
+                if let Some(parent_session) = by_id.get(parent.as_str()) {
+                    paths.insert(m.id.clone(), parent_session.path.clone());
                 }
             }
         }
     }
-
-    out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
-    if let Some(f) = fp {
-        *LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() =
-            Some((std::time::Instant::now(), f, out.clone()));
-    }
-    out
+    paths
 }
 
 fn parse_meta(
@@ -3198,6 +3304,256 @@ fn parse_content(content: Option<&Value>, _ctx: Option<&str>) -> Vec<ContentBloc
         _ => {}
     }
     out
+}
+
+#[cfg(test)]
+mod nested_lineage_tests {
+    use super::*;
+
+    const TASK: &str = "a distinctive legacy task with enough text for an exact parent match";
+
+    fn session(id: &str, path: &str, is_subagent: bool) -> SessionMeta {
+        SessionMeta {
+            id: id.into(),
+            path: path.into(),
+            cwd: "/fixture".into(),
+            name: None,
+            first_message: Some(TASK.into()),
+            last_message: None,
+            created_iso: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            model: None,
+            is_subagent,
+            task_id: is_subagent.then(|| format!("task-{id}")),
+            parent_session_id: None,
+            parent_session_path: None,
+            message_count: 0,
+            running: false,
+            sleeping: false,
+            interrupted: false,
+            in_rmux: false,
+            rmux_target: None,
+            rmux_attached: false,
+            rmux_dead: false,
+            rmux_pi_alive: None,
+            term_alive: false,
+            size: 100,
+        }
+    }
+
+    fn parents(edges: &[(&str, &str)]) -> HashMap<String, Option<String>> {
+        edges
+            .iter()
+            .map(|(child, parent)| (child.to_string(), Some(parent.to_string())))
+            .collect()
+    }
+
+    fn link(raw: Vec<SessionMeta>, parents: &HashMap<String, Option<String>>) -> Vec<SessionMeta> {
+        let (mut sessions, ambiguous) = canonical_sessions(raw);
+        // Every worker could text-match this main. Explicit missing/invalid
+        // markers must suppress that tempting legacy guess.
+        let calls = vec![ParentCall {
+            path: "/fixture/main.jsonl".into(),
+            task: TASK.into(),
+            alpha_id: None,
+        }];
+        link_session_parents(
+            "nested-lineage-fixture",
+            &mut sessions,
+            parents,
+            &ambiguous,
+            &HashMap::new(),
+            &calls,
+        );
+        sessions
+    }
+
+    fn get<'a>(sessions: &'a [SessionMeta], id: &str) -> &'a SessionMeta {
+        sessions.iter().find(|s| s.id == id).unwrap()
+    }
+
+    #[test]
+    fn main_worker_grandchild_uses_immediate_worker_path() {
+        let edges = parents(&[("worker", "main"), ("grandchild", "worker")]);
+        let raw = vec![
+            session("main", "/fixture/main.jsonl", false),
+            session("worker", "/fixture/worker.jsonl", true),
+            session("grandchild", "/fixture/grandchild.jsonl", true),
+        ];
+        for raw in [raw.clone(), raw.into_iter().rev().collect()] {
+            let linked = link(raw, &edges);
+            assert_eq!(
+                get(&linked, "worker").parent_session_path.as_deref(),
+                Some("/fixture/main.jsonl")
+            );
+            let grandchild = get(&linked, "grandchild");
+            assert_eq!(grandchild.parent_session_id.as_deref(), Some("worker"));
+            assert_eq!(
+                grandchild.parent_session_path.as_deref(),
+                Some("/fixture/worker.jsonl")
+            );
+            assert_eq!(
+                serde_json::to_value(grandchild).unwrap()["parentSessionPath"],
+                "/fixture/worker.jsonl"
+            );
+            assert!(get(&linked, "main").parent_session_path.is_none());
+        }
+    }
+
+    #[test]
+    fn absent_self_cycles_and_incoming_chains_do_not_guess() {
+        let edges = parents(&[
+            ("absent", "missing"),
+            ("self", "self"),
+            ("a", "b"),
+            ("b", "a"),
+            ("incoming", "a"),
+            ("self-child", "self"),
+            ("ordinary", "main"),
+        ]);
+        let mut raw = vec![session("main", "/fixture/main.jsonl", false)];
+        for id in [
+            "absent",
+            "self",
+            "a",
+            "b",
+            "incoming",
+            "self-child",
+            "ordinary",
+        ] {
+            raw.push(session(id, &format!("/fixture/{id}.jsonl"), true));
+        }
+        for raw in [raw.clone(), raw.into_iter().rev().collect()] {
+            let linked = link(raw, &edges);
+            for id in ["absent", "self", "a", "b", "incoming", "self-child"] {
+                assert!(
+                    get(&linked, id).parent_session_path.is_none(),
+                    "unsafe path for {id}"
+                );
+                assert_eq!(get(&linked, id).parent_session_id, edges[id]);
+            }
+            assert_eq!(
+                get(&linked, "ordinary").parent_session_path.as_deref(),
+                Some("/fixture/main.jsonl")
+            );
+        }
+    }
+
+    #[test]
+    fn available_parent_is_linked_even_when_ancestor_is_not_synced() {
+        let linked = link(
+            vec![
+                session("worker", "/fixture/worker.jsonl", true),
+                session("grandchild", "/fixture/grandchild.jsonl", true),
+            ],
+            &parents(&[("worker", "missing-main"), ("grandchild", "worker")]),
+        );
+        assert!(get(&linked, "worker").parent_session_path.is_none());
+        assert_eq!(
+            get(&linked, "grandchild").parent_session_path.as_deref(),
+            Some("/fixture/worker.jsonl")
+        );
+    }
+
+    #[test]
+    fn mirror_prefers_canonical_real_parent_and_preserves_runtime_merge() {
+        let mut mirror = session("worker", "/fixture/subagent-task-old.jsonl", true);
+        mirror.size = 500;
+        mirror.in_rmux = true;
+        mirror.rmux_target = Some("fixture:worker.0".into());
+        mirror.rmux_pi_alive = Some(true);
+        let raw = vec![
+            session("main", "/fixture/main.jsonl", false),
+            mirror,
+            session("worker", "/fixture/subagent-task-new.jsonl", true),
+            session("worker", "/fixture/worker.jsonl", true),
+            session("grandchild", "/fixture/grandchild.jsonl", true),
+        ];
+        let edges = parents(&[("worker", "main"), ("grandchild", "worker")]);
+        for raw in [raw.clone(), raw.into_iter().rev().collect()] {
+            let linked = link(raw, &edges);
+            assert_eq!(linked.len(), 3);
+            let worker = get(&linked, "worker");
+            assert_eq!(worker.path, "/fixture/worker.jsonl");
+            assert!(worker.in_rmux);
+            assert_eq!(worker.rmux_target.as_deref(), Some("fixture:worker.0"));
+            assert_eq!(worker.rmux_pi_alive, Some(true));
+            assert_eq!(
+                get(&linked, "grandchild").parent_session_path.as_deref(),
+                Some(worker.path.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_real_uuid_cannot_supply_or_receive_explicit_lineage() {
+        let raw = vec![
+            session("main", "/fixture/main.jsonl", false),
+            session("worker", "/fixture/z-worker.jsonl", true),
+            session("worker", "/fixture/a-worker.jsonl", true),
+            session("grandchild", "/fixture/grandchild.jsonl", true),
+        ];
+        let edges = parents(&[("worker", "main"), ("grandchild", "worker")]);
+        for raw in [raw.clone(), raw.into_iter().rev().collect()] {
+            let linked = link(raw, &edges);
+            assert_eq!(get(&linked, "worker").path, "/fixture/a-worker.jsonl");
+            assert!(get(&linked, "worker").parent_session_path.is_none());
+            assert!(get(&linked, "grandchild").parent_session_path.is_none());
+        }
+    }
+
+    #[test]
+    fn tied_parent_claims_are_authoritative_but_newer_reload_can_resolve() {
+        for order in [["main", "other"], ["other", "main"]] {
+            let mut claims = HashMap::new();
+            for parent in order {
+                record_parent_claim(&mut claims, "worker".into(), 10, parent.into());
+            }
+            record_parent_claim(&mut claims, "worker".into(), 9, "main".into());
+            record_parent_claim(&mut claims, "worker".into(), 10, "main".into());
+            assert_eq!(claims["worker"], (10, None));
+            let parents = claims
+                .iter()
+                .map(|(child, (_, parent))| (child.clone(), parent.clone()))
+                .collect();
+            let raw = vec![
+                session("main", "/fixture/main.jsonl", false),
+                session("worker", "/fixture/worker.jsonl", true),
+                session("grandchild", "/fixture/grandchild.jsonl", true),
+            ];
+            let mut edges: HashMap<String, Option<String>> = parents;
+            edges.insert("grandchild".into(), Some("worker".into()));
+            let linked = link(raw.clone(), &edges);
+            assert!(get(&linked, "worker").parent_session_id.is_none());
+            assert!(get(&linked, "worker").parent_session_path.is_none());
+            assert!(get(&linked, "grandchild").parent_session_path.is_none());
+            record_parent_claim(&mut claims, "worker".into(), 11, "main".into());
+            edges.insert("worker".into(), claims["worker"].1.clone());
+            assert_eq!(
+                get(&link(raw, &edges), "worker")
+                    .parent_session_path
+                    .as_deref(),
+                Some("/fixture/main.jsonl")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_matching_and_ordinary_main_behavior_are_unchanged() {
+        let raw = vec![
+            session("main", "/fixture/main.jsonl", false),
+            session("legacy", "/fixture/legacy.jsonl", true),
+        ];
+        // Main metadata must not become a worker edge, even if a stray claim exists.
+        let linked = link(raw, &parents(&[("main", "main")]));
+        assert!(get(&linked, "main").parent_session_id.is_none());
+        assert!(get(&linked, "main").parent_session_path.is_none());
+        assert_eq!(
+            get(&linked, "legacy").parent_session_path.as_deref(),
+            Some("/fixture/main.jsonl")
+        );
+    }
 }
 
 #[cfg(test)]

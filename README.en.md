@@ -67,4 +67,6 @@ The Unix fake CLI test requires Python 3. On macOS, prefix the Rust command with
 
 Features include project grouping, message/tool rendering, nested subagents, terminal status, local Pi continuation, configuration browsing and HTML export.
 
+Explicit parent UUIDs resolve worker → grandchild links using canonical paths (preferring real files over mirrors). Missing, self/cyclic or ambiguous explicit lineage stays unresolved without guessing. Sidebar main groups still show direct children; nested worker parent labels appear in the subagent section.
+
 [Changelog](CHANGELOG.md) · [Issues](https://github.com/roshameow/pi-session-viewer/issues) · [MIT](LICENSE)

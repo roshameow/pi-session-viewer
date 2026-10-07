@@ -66,4 +66,17 @@ try {
   assert.match(sidebar(false),/ended rmux/); assert.doesNotMatch(sidebar(false),/running in background/);
   assert.match(sidebar(null),/\? rmux/); assert.match(sidebar(null),/identity unknown/);
   console.log('PASS ended vs unknown historical rmux location chips');
+
+  const main = {...session,id:'main-uuid',path:'/mock/main.jsonl',name:'Main',isSubagent:false,inRmux:false};
+  const worker = {...session,id:'worker-uuid',path:'/mock/worker.jsonl',name:'Worker',inRmux:false,
+    parentSessionId:main.id,parentSessionPath:main.path};
+  const grandchild = {...session,id:'grandchild-uuid',path:'/mock/grandchild.jsonl',name:'Grandchild',inRmux:false,
+    parentSessionId:worker.id,parentSessionPath:worker.path};
+  const lineage = render(Sidebar,{projects:[{key:'mock',cwd:'/mock',sessionCount:3,subagentCount:2,
+    updatedAt:0,runningCount:0,rmuxCount:0,termCount:0}],sessions:[main,worker,grandchild],selectedProject:'mock',
+    selectedSessionPath:grandchild.path,finishedAt:{},remoteHosts:[],onSelectProject:()=>{},onSelectSession:()=>{}});
+  assert.match(lineage,/parent: Main · main-uui/);
+  assert.match(lineage,/parent: Worker · worker-u/);
+  assert.doesNotMatch(lineage,/no parent/);
+  console.log('PASS nested worker parent label in dedicated subagent section');
 } finally { await rm(scratch,{recursive:true,force:true}); }

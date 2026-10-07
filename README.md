@@ -26,7 +26,7 @@ npm run demo
 ## 桌面功能
 
 - 按工作目录组织会话，浏览消息、thinking、工具调用和输出。
-- 将 `pi-subagent-durable` 子会话嵌入父会话列表。
+- 将 `pi-subagent-durable` 子会话嵌入父会话列表。显式父 UUID 支持 worker → grandchild，使用去重后的会话路径（优先真实会话）；缺失、自指、循环或歧义关系不猜测父会话。侧栏主会话分组仍只展示直接子代理，嵌套 worker 的父标签显示在子代理区。
 - 区分终端位置与运行状态，支持 RMUX attach/detach。
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
