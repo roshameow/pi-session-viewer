@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 — 2026-10-10
+
+- Ordinary detail selection/polling uses a generation-bound active-branch page: 100 entries and at most 256 KiB serialized response. Full branch filters/search/counters, old-page cursors, entry/branch navigation and tool peers remain available.
+- Oversized entries are visibly incomplete previews; explicit UTF-8-aligned chunks preserve the original JSONL record, with cancellation/download/release. No silent code/evidence truncation or automatic giant-body hydration.
+- Read-only streaming offsets/metadata replace retained full-message indexes. Arc index/parsed caches have 16 MiB/4 MiB estimated byte budgets; full-detail deep-clone cache is removed. Terminal/attach/send CWD paths use header-only lookup. Explicit whole-session export remains independent of downloaded pages.
+- Linear tool pairing, debounced server search, lazy collapsed arguments and stable entry keys reduce frontend allocation/remount work. Source/detail epochs and changed-history refresh safety remain intact.
+- First cold index still scans the file. Fixture/backend timings are not native GUI paint/typing guarantees; no session rewrite, history deletion or model/gate change.
+
 ## 0.1.5 — 2026-10-07
 
 - Bound initial Sidebar DOM with 100-row progressive pages and explicit show-more; search still covers all loaded sessions, total counts/grouping/parent labels remain intact and off-page selection stays visible.

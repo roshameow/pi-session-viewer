@@ -60,6 +60,8 @@ export interface Entry {
   summary: string | null;
   name: string | null;
   label: string | null;
+  labeled?: boolean;
+  bodyRef?: { generation: string; entryId: string; byteLength: number; recordOffset: number; preview: boolean };
 }
 
 export interface Stats {
@@ -73,6 +75,43 @@ export interface Stats {
   costTotal: number;
 }
 
+export interface DetailPageRequest {
+  cursor?: string;
+  limit?: number;
+  maxBytes?: number;
+  query?: string;
+  filter?: "default" | "all" | "user-only" | "no-tools" | "labeled-only";
+  entryId?: string;
+  branchLeafId?: string;
+}
+
+export interface DetailPage {
+  generation: string;
+  previousCursor: string | null;
+  totalEntries: number;
+  branchEntries: number;
+  matchedEntries: number;
+  returnedEntries: number;
+  hasMore: boolean;
+  incompleteTail: boolean;
+  malformedLines: number;
+  counters: { messages: number; user: number; assistant: number; toolResult: number; labeled: number };
+  toolPairs: { toolCallId: string; callEntryId: string; resultEntryId: string }[];
+  payloadBytes: number;
+}
+
+export interface EntryBodyChunk {
+  generation: string;
+  entryId: string;
+  recordOffset: number;
+  offset: number;
+  nextOffset: number | null;
+  totalBytes: number;
+  data: string;
+  encoding: "utf8-jsonl";
+  complete: boolean;
+}
+
 export interface SessionDetail {
   id: string;
   cwd: string;
@@ -82,6 +121,7 @@ export interface SessionDetail {
   stats: Stats;
   entries: Entry[];
   active: number[];
+  page?: DetailPage;
   size: number;
   updatedAt: number;
 }

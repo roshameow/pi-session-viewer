@@ -126,3 +126,11 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --offline --manifest-path src-tauri/Car
 兼容推断无法全面保证 auto-retry、compaction、超大 / 截断 JSON 或 SSH 降级场景；纯回归和一次本机只读 inventory 不等于 GUI / 远程端到端验收。
 
 隔离检查另加 `cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory`（5 个纯回归）。`live_running_inventory` 默认 ignored；经授权可用 `PI_VIEWER_DIAGNOSTIC_PROJECT=<编码项目目录名>` 只读核验该项目，不调用全项目 `list_projects` / `list_running`，不启动或控制 Pi / RMUX。
+
+## 0.1.6 bounded detail transport
+
+Normal detail calls are `session_detail_page` and explicit `session_entry_body`, not a full-session IPC result. Initial index is readonly and retains offsets/relationships rather than bodies. Source/canonical path and inode/ctime/nanosecond-mtime/size generations guard reads and cursors. Index/parsed caches use estimated byte budgets; these estimates are not process RSS/physical footprints. Default 100 entries and 256 KiB apply to the entire serialized page; giant entries expose a lossless original-record chunk action. Counts/search/filter cover the selected branch, not only downloaded rows; raw JSONL download preserves fields the UI renderer does not interpret.
+
+Legacy explicit full detail/export stays available but has no unbounded retained deep-clone cache. Header-only getters avoid parsing content for CWD-dependent terminal/attach/send actions. Existing Pi CLI/model/task gates and authentication are unchanged.
+
+Run small isolated checks serially: `node scripts/test-bounded-detail-app.mjs`, `node scripts/test-bounded-detail-thread.mjs`, and `CARGO_BUILD_JOBS=1 PATH="$HOME/.cargo/bin:$PATH" cargo test --offline --manifest-path src-tauri/Cargo.toml sessions::detail -- --test-threads=1`. Frontend 52 MiB stress is opt-in with `PI_VIEWER_FULL_BODY_STRESS=1`; real-file aggregate benchmark is ignored unless explicitly approved. Do not run heavy tests concurrently on a pressured desktop.

@@ -292,6 +292,10 @@ pub enum ContentBlock {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_ref: Option<detail::BodyRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labeled: Option<bool>,
     pub kind: String,           // message | model_change | thinking_level_change | compaction | branch_summary | custom_message | label | session_info
     pub id: String,
     pub parent_id: Option<String>,
@@ -310,6 +314,8 @@ pub struct Entry {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<detail::PageMeta>,
     pub id: String,
     pub cwd: String,
     pub created_iso: String,
@@ -649,13 +655,16 @@ fn agent_log_preamble_reader(reader: impl std::io::Read) -> std::io::Result<Prea
 /// Look up a model's context window from `~/.pi/agent/models.json`
 /// (provider catalog). Result is cached per process.
 fn model_context_window(model_id: &str) -> Option<u64> {
-    static CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    type ModelCacheKey = (PathBuf, Option<(std::time::SystemTime, u64)>, String);
+    static CACHE: OnceLock<Mutex<HashMap<ModelCacheKey, u64>>> = OnceLock::new();
+    let catalog = pi_agent_dir().join("models.json");
+    let key = (catalog.clone(), snapshot_stamp(&catalog), model_id.to_string());
     let mut cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
-    if let Some(v) = cache.get(model_id) {
+    if let Some(v) = cache.get(&key) {
         return Some(*v);
     }
     let found = (|| {
-        let Ok(data) = fs::read_to_string(pi_agent_dir().join("models.json")) else {
+        let Ok(data) = fs::read_to_string(&catalog) else {
             return None;
         };
         let Ok(root) = serde_json::from_str::<Value>(&data) else {
@@ -686,7 +695,9 @@ fn model_context_window(model_id: &str) -> Option<u64> {
         find(&root, model_id)
     })();
     if let Some(w) = found {
-        cache.insert(model_id.to_string(), w);
+        if snapshot_stamp(&catalog) != key.1 { return None; }
+        if cache.len() >= 4096 { cache.clear(); }
+        cache.insert(key, w);
         Some(w)
     } else {
         None
@@ -1895,7 +1906,7 @@ pub fn session_has_live_terminal_pi(session_path: &str) -> bool {
     {
         return true;
     }
-    let cwd = session_detail(session_path)
+    let cwd = session_header(session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
     let reg_pids: HashSet<u32> = registry_terminal_pis().iter().map(|(p, _, _)| *p).collect();
@@ -3255,24 +3266,7 @@ fn tail_preview(path: &Path, max_chars: usize) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
-    // cache by (mtime, size): re-parsing a multi-MB session on every switch is
-    // the dominant cost; idle files only change when a new message lands
-    type DetailCache = HashMap<String, (i64, u64, SessionDetail)>;
-    static DETAIL_CACHE: OnceLock<Mutex<DetailCache>> = OnceLock::new();
-    let key = path.to_string();
-    {
-        let cache = DETAIL_CACHE
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap();
-        if let Some((mt, sz, d)) = cache.get(&key) {
-            if let Some(md) = fmetadata(Path::new(path)) {
-                if md.mtime == *mt && md.size == *sz {
-                    return Ok(d.clone());
-                }
-            }
-        }
-    }
+    // Explicit legacy/export path: never retain an unbounded full-detail cache.
     let data = fs::read(path).map_err(|e| format!("Failed to read session file: {e}"))?;
     let text = String::from_utf8_lossy(&data);
 
@@ -3376,7 +3370,9 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
     if let Some(leaf) = index_by_id.get(&entries.last().map(|e| e.id.clone()).unwrap_or_default()) {
         let mut cur = Some(*leaf);
         let mut chain = Vec::new();
+        let mut seen = HashSet::new();
         while let Some(i) = cur {
+            if !seen.insert(i) { break; }
             chain.push(i);
             cur = entries[i].parent_id.as_ref().and_then(|p| index_by_id.get(p)).copied();
         }
@@ -3400,6 +3396,7 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         cost_total,
     };
     let detail = SessionDetail {
+        page: None,
         id: header_id,
         cwd,
         created_iso: created,
@@ -3411,16 +3408,13 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         size,
         updated_at: mtime,
     };
-    DETAIL_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .insert(key, (mtime, size, detail.clone()));
     Ok(detail)
 }
 
 fn dummy_entry() -> Entry {
     Entry {
+        body_ref: None,
+        labeled: None,
         kind: String::new(),
         id: String::new(),
         parent_id: None,
@@ -3450,6 +3444,8 @@ fn parse_entry(t: &str, v: &Value) -> Option<Entry> {
         .filter(|s| !s.is_empty());
 
     let mut e = Entry {
+        body_ref: None,
+        labeled: None,
         kind: t.to_string(),
         id,
         parent_id,
@@ -4380,4 +4376,29 @@ mod running_diagnostics {
             for s in live { println!("DIAG running id={} sub={} piAlive={:?}",s.id,s.is_subagent,s.rmux_pi_alive); }
         }
     }
+}
+
+#[path = "session_detail.rs"]
+pub mod detail;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHeader {
+    pub id: String,
+    pub cwd: String,
+    pub created_iso: String,
+}
+
+/// Header only: terminal/attach/send must not load transcript bodies.
+pub fn session_header(path: &str) -> Result<SessionHeader, String> {
+    let line = first_line(Path::new(path)).ok_or("Cannot read session header")?;
+    let v: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+    if v.get("type").and_then(Value::as_str) != Some("session") {
+        return Err("Invalid session header".into());
+    }
+    Ok(SessionHeader {
+        id: v.get("id").and_then(Value::as_str).unwrap_or("").into(),
+        cwd: v.get("cwd").and_then(Value::as_str).unwrap_or("").into(),
+        created_iso: v.get("timestamp").and_then(Value::as_str).unwrap_or("").into(),
+    })
 }

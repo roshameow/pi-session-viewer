@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, RemoteSyncStatus } from "./types";
+import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, RemoteSyncStatus, DetailPageRequest, EntryBodyChunk } from "./types";
 
 export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
   listSessions: (projectKey: string) => invoke<SessionMeta[]>("list_sessions", { projectKey }),
+  sessionDetailPage: (path: string, request: DetailPageRequest = {}) => invoke<SessionDetail>("session_detail_page", { path, request }),
+  sessionEntryBody: (path: string, generation: string, entryId: string, offset = 0, recordOffset?: number) =>
+    invoke<EntryBodyChunk>("session_entry_body", { path, generation, entryId, recordOffset, offset, maxBytes: 65536 }),
   sessionDetail: (path: string) => invoke<SessionDetail>("session_detail", { path }),
   piBinPath: () => invoke<string | null>("pi_bin_path"),
   piVersion: () => invoke<string>("pi_version"),

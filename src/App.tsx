@@ -3,9 +3,10 @@ import { Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import { afterViewPaint, RequestSequencer, type RequestToken } from "./requestSequencing";
-import type { PiEvent, Project, RemoteSyncStatus, SessionDetail, SessionMeta } from "./types";
+import type { PiEvent, Project, RemoteSyncStatus, SessionDetail, SessionMeta, DetailPageRequest, EntryBodyChunk } from "./types";
 import { Sidebar } from "./components/Sidebar";
 import { Thread, appendLiveEvents, type LiveBlock } from "./components/Thread";
+import { prependDetailPage } from "./threadItems";
 import { Composer } from "./components/Composer";
 import { ConfigPanel } from "./components/ConfigPanel";
 
@@ -99,6 +100,16 @@ export default function App() {
   const sessionPathsRef = useRef<Set<string>>(new Set());
   const detailRef = useRef<SessionDetail | null>(null);
   detailRef.current = detail;
+  const pageRequestRef = useRef<DetailPageRequest>({ filter: "default" });
+  const pageIntentRef = useRef(0);
+  const [pageBusy, setPageBusy] = useState(false);
+  const [pageNotice, setPageNotice] = useState<string | null>(null);
+  const resetPages = useCallback(() => {
+    pageRequestRef.current = { filter: "default" };
+    pageIntentRef.current++;
+    setPageBusy(false);
+    setPageNotice(null);
+  }, []);
   const aliveRef = useRef(true);
   const paintCancelRef = useRef<(() => void) | null>(null);
   const pendingEventsRef = useRef<any[]>([]);
@@ -122,6 +133,7 @@ export default function App() {
   // Refs/epochs change synchronously, before any render/effect can launch a scan.
   const changeProject = useCallback((key: string | null) => {
     if (projectRef.current === key) return;
+    resetPages();
     sequenceRef.current.selectProject(key);
     projectRef.current = key;
     activePathRef.current = null;
@@ -132,7 +144,7 @@ export default function App() {
     setDetail(null);
     setLoadingSessions(false);
     clearLive();
-  }, [clearLive]);
+  }, [clearLive, resetPages]);
 
   const refreshProjects = useCallback(async (cancelled: () => boolean = () => false) => {
     const q = sequenceRef.current;
@@ -171,21 +183,84 @@ export default function App() {
 
   const readDetail = useCallback(async (token: RequestToken, silent = false, cancelled: () => boolean = () => false) => {
     const q = sequenceRef.current;
+    const intent = pageIntentRef.current;
+    const request = { ...pageRequestRef.current };
+    if (silent) delete request.entryId;
     if (cancelled() || !token.path || !valid(token)) return;
     try {
-      const d = await q.request(token, `detail:${token.path}`, () => api.sessionDetail(token.path!));
-      if (cancelled() || !valid(token)) return;
-      setDetail(prev => {
-        // Keep Thread's memo identity on unchanged polls, but retain metadata updates.
-        if (prev?.path === d.path && prev.size === d.size && prev.updatedAt === d.updatedAt &&
-            prev.entries.length === d.entries.length && prev.active.length === d.active.length &&
-            prev.entries[prev.entries.length - 1]?.id === d.entries[d.entries.length - 1]?.id && prev.entries[prev.entries.length - 1]?.ts === d.entries[d.entries.length - 1]?.ts) return prev;
-        return d;
-      });
+      const d = await q.request(token, `detail-page:${token.path}:${JSON.stringify(request)}`, () => api.sessionDetailPage(token.path!, request));
+      if (cancelled() || !valid(token) || intent !== pageIntentRef.current) return;
+      const prev = detailRef.current;
+      // An unchanged generation must not discard user-loaded older pages.
+      if (prev?.page && d.page && prev.path === d.path && prev.page.generation === d.page.generation && silent) return prev;
+      if (prev?.page && d.page && prev.page.generation !== d.page.generation) {
+        delete pageRequestRef.current.entryId;
+        pageIntentRef.current++; // discard old cursor/body requests still pending
+        setPageBusy(false);
+        setPageNotice("History changed — refreshed bounded page. Previously loaded older pages/full bodies were released; load them again on demand.");
+      }
+      detailRef.current = d;
+      setDetail(d);
       return d;
     } catch (e) {
-      if (!silent && !cancelled() && valid(token)) setError(String(e));
+      if (!silent && !cancelled() && valid(token) && intent === pageIntentRef.current) setError(String(e));
     }
+  }, [valid]);
+
+  const changeDetailQuery = useCallback(async (request: DetailPageRequest) => {
+    const token = sequenceRef.current.capture("detail");
+    if (!valid(token) || !token.path) return;
+    pageRequestRef.current = { ...request };
+    const intent = ++pageIntentRef.current;
+    // No stale rows masquerading as matches for the newly selected query.
+    setPageBusy(true);
+    setPageNotice("Searching/filtering the full branch…");
+    const result = await readDetail(token);
+    if (valid(token) && pageIntentRef.current === intent) {
+      setPageBusy(false);
+      setPageNotice(result ? null : "Search/filter failed — previous result page retained. Retry Latest; no results for the new query confirmed.");
+    }
+  }, [valid, readDetail]);
+
+  const navigateDetail = useCallback(async (entryId?: string) => {
+    const token = sequenceRef.current.capture("detail");
+    const previous = detailRef.current;
+    if (!valid(token) || !token.path || !previous?.page) return;
+    if (!entryId && !previous.page.previousCursor) return;
+    const intent = ++pageIntentRef.current;
+    const request = entryId
+      ? { ...pageRequestRef.current, query: "", filter: "all" as const, entryId }
+      : { ...pageRequestRef.current, cursor: previous.page.previousCursor! };
+    setPageBusy(true);
+    try {
+      const d = await sequenceRef.current.request(token, `detail-page:${token.path}:${JSON.stringify(request)}`, () => api.sessionDetailPage(token.path!, request));
+      if (!valid(token) || intent !== pageIntentRef.current) return;
+      if (d.page?.generation !== previous.page.generation) throw new Error("STALE_DETAIL: generation changed");
+      if (entryId) {
+        pageRequestRef.current = { filter: "all", entryId, branchLeafId: request.branchLeafId };
+        setPageNotice("Showing the page containing " + entryId + ". Search/filter cleared for this navigation; use Latest to return.");
+      }
+      const next = entryId ? d : prependDetailPage(previous, d);
+      detailRef.current = next;
+      setDetail(next);
+    } catch (e) {
+      if (!valid(token) || intent !== pageIntentRef.current) return;
+      if (String(e).includes("STALE_DETAIL")) {
+        delete pageRequestRef.current.entryId;
+        setPageNotice("History changed — old cursor rejected. Refreshed latest bounded page; load older history again.");
+        await readDetail(token);
+      } else setPageNotice("Could not load history: " + String(e));
+    } finally {
+      if (valid(token) && intent === pageIntentRef.current) setPageBusy(false);
+    }
+  }, [valid, readDetail]);
+
+  const readBodyChunk = useCallback(async (generation: string, entryId: string, offset: number, recordOffset?: number): Promise<EntryBodyChunk> => {
+    const token = sequenceRef.current.capture("detail");
+    if (!valid(token) || !token.path || detailRef.current?.page?.generation !== generation) throw new Error("STALE_DETAIL: body no longer current");
+    const chunk = await sequenceRef.current.request(token, `body:${generation}:${entryId}:${recordOffset}:${offset}`, () => api.sessionEntryBody(token.path!, generation, entryId, offset, recordOffset));
+    if (!valid(token) || detailRef.current?.page?.generation !== generation) throw new Error("STALE_DETAIL: body no longer current");
+    return chunk;
   }, [valid]);
 
   const loadDetail = useCallback(async (s: SessionMeta) => {
@@ -195,13 +270,14 @@ export default function App() {
     q.selectDetail(s.path);
     activePathRef.current = s.path;
     if (changed) {
+      resetPages();
       detailRef.current = null;
       setDetail(null);
       clearLive();
       setRunning(!!s.running);
     }
     return readDetail(q.capture("detail"));
-  }, [readDetail, clearLive]);
+  }, [readDetail, clearLive, resetPages]);
 
   const readRemoteStatus = useCallback(async (token: RequestToken, host: string, cancelled: () => boolean = () => false) => {
     if (cancelled() || !valid(token, true)) return;
@@ -245,6 +321,7 @@ export default function App() {
   }, [valid, readRemoteStatus, refreshProjects, refreshSessions, readDetail]);
 
   const resetSourceView = useCallback(() => {
+    resetPages();
     paintCancelRef.current?.();
     paintCancelRef.current = null;
     projectRef.current = activePathRef.current = null;
@@ -263,7 +340,7 @@ export default function App() {
     prevRunningRef.current = null;
     autoOpened.current = false;
     clearLive();
-  }, [clearLive]);
+  }, [clearLive, resetPages]);
 
   const onSwitchSource = useCallback(async (host: string | null) => {
     const q = sequenceRef.current;
@@ -469,6 +546,8 @@ export default function App() {
 
   const onTurnDone = async (token: RequestToken) => {
     if (!valid(token)) return;
+    // A completed continuation must not stay anchored to an old tool peer.
+    delete pageRequestRef.current.entryId;
     clearLive();
     await readDetail(token);
     if (!valid(token)) return;
@@ -507,6 +586,7 @@ export default function App() {
     try {
       await api.abortMessage(token.path);
       if (!valid(token)) return;
+      delete pageRequestRef.current.entryId;
       clearLive();
       await readDetail(token);
       if (!valid(token)) return;
@@ -553,7 +633,7 @@ export default function App() {
       if (!hosts.length) { setError("No remote hosts configured (~/.pi-session-viewer.json)"); return; }
       const host = hosts.length === 1 ? hosts[0] : prompt(`Transfer to which host?\n${hosts.join("\n")}`, hosts[0]);
       if (!host || !valid(token)) return;
-      const d = await q.request(token, `transfer-detail:${path}`, () => api.sessionDetail(path));
+      const d = await q.request(token, `transfer-detail:${path}`, () => api.sessionDetailPage(path));
       if (!valid(token)) return;
       const base = (d.cwd || "").split("/").filter(Boolean).pop() || "project";
       const remoteCwd = prompt(`Remote working directory on ${host}:`, `~/Project/${base}`);
@@ -670,7 +750,9 @@ export default function App() {
           <ConfigPanel />
         ) : detail ? (
           <>
-            <Thread detail={detail} liveBlocks={liveBlocks} running={running} />
+            <Thread key={`${sequenceRef.current.capture("detail").sourceEpoch}:${detail.path}`} detail={detail} liveBlocks={liveBlocks} running={running}
+              pageBusy={pageBusy} pageNotice={pageNotice} pageRequest={pageRequestRef.current}
+              onQuery={changeDetailQuery} onLoadEarlier={() => navigateDetail()} onLoadEntry={navigateDetail} onBodyChunk={readBodyChunk} />
             <Composer
               value={drafts[detail.path] ?? ""}
               onChange={(v) =>

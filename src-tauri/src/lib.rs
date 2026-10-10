@@ -33,6 +33,44 @@ async fn session_detail(path: String) -> Result<sessions::SessionDetail, String>
         .map_err(|e| format!("session_detail task failed: {e}"))?
 }
 
+/// Bounded recent branch page; full history search and filters run off-thread.
+#[tauri::command]
+async fn session_detail_page(
+    path: String,
+    request: Option<sessions::detail::DetailPageRequest>,
+) -> Result<sessions::SessionDetail, String> {
+    spawn_blocking(move || {
+        remote::with_current_source(|| sessions::detail::page(&path, request.unwrap_or_default()))
+    })
+    .await
+    .map_err(|e| format!("session_detail_page task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn session_entry_body(
+    path: String,
+    generation: String,
+    entry_id: String,
+    record_offset: Option<u64>,
+    offset: Option<u64>,
+    max_bytes: Option<usize>,
+) -> Result<sessions::detail::EntryBodyChunk, String> {
+    spawn_blocking(move || {
+        remote::with_current_source(|| {
+            sessions::detail::body(
+                &path,
+                &generation,
+                &entry_id,
+                record_offset,
+                offset.unwrap_or(0),
+                max_bytes.unwrap_or(65536),
+            )
+        })
+    })
+    .await
+    .map_err(|e| format!("session_entry_body task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn pi_version() -> Result<String, String> {
     spawn_blocking(|| {
@@ -701,7 +739,7 @@ fn start_remote_pi(host: &str, cwd: &str, session_path: &str) -> Result<String, 
 
 fn open_in_terminal_sync(session_path: &str) -> Result<String, String> {
     if let Some(host) = remote::current_host() {
-        let cwd = sessions::session_detail(session_path)
+        let cwd = sessions::session_header(session_path)
             .map(|d| d.cwd)
             .unwrap_or_default();
         // alive in a remote rmux pane → attach by rmux SESSION NAME (never
@@ -727,7 +765,7 @@ fn open_in_terminal_sync(session_path: &str) -> Result<String, String> {
         return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
-    let cwd = sessions::session_detail(session_path)
+    let cwd = sessions::session_header(session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
     let id = sessions::session_id(session_path).unwrap_or_default();
@@ -778,7 +816,7 @@ async fn attach_session(session_path: String) -> Result<String, String> {
 }
 
 fn attach_session_sync(session_path: &str) -> Result<String, String> {
-    let cwd = sessions::session_detail(session_path)
+    let cwd = sessions::session_header(session_path)
         .map(|d| d.cwd)
         .unwrap_or_default();
     if let Some(host) = remote::current_host() {
@@ -865,6 +903,8 @@ pub fn run() {
             list_projects,
             list_sessions,
             session_detail,
+            session_detail_page,
+            session_entry_body,
             pi_bin_path,
             pi_version,
             export_session_html,

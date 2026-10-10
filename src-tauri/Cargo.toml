@@ -1,6 +1,6 @@
 [package]
 name = "pi-session-viewer"
-version = "0.1.5"
+version = "0.1.6"
 description = "Desktop browser + chat for pi coding agent sessions"
 edition = "2021"
 

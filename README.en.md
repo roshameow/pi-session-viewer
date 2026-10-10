@@ -25,6 +25,12 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.6 large-session details
+
+Ordinary view/refresh downloads the latest 100 active-branch entries within a 256 KiB serialized response. Earlier-page cursors, whole-selected-branch search/filter counts and entry/branch navigation remain available. Giant records are explicit previews with cancellable original-JSONL chunk view/download, never silently truncated code/evidence. Export still reads the full session. Changed files invalidate old cursors/body references with a refresh notice; source history is never rewritten.
+
+This bounds normal transport and retained memory, not cold indexing time or system-wide pressure from other applications.
+
 ## 0.1.5 folder switching and remote cache
 
 Session sections initially show 100 rows with explicit show-more. Search covers all loaded sessions and off-page selection remains visible. Source/project caches reuse results while stale replies and canceled polls cannot overwrite a new selection.

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { ContentBlock, Entry, SessionDetail } from "../types";
+import type { ContentBlock, Entry, SessionDetail, DetailPageRequest, EntryBodyChunk } from "../types";
 import { MemoMarkdown } from "./Markdown";
+import { buildThreadItems } from "../threadItems";
 import { api } from "../api";
 
 // ---------- Live conversation blocks (assembled from pi json events) ----------
@@ -131,6 +132,9 @@ export function contentText(content: unknown): string {
 // ---------- compact tool summary (minimal-mode style) ----------
 
 function argLine(name: string, args: string): string {
+  // A collapsed giant call must not JSON.parse / stringify megabytes. Its
+  // complete arguments remain available when the user expands the row.
+  if (args.length > 4096) return args.slice(0, 80) + "… (expand for full arguments)";
   // args is a JSON string from Rust; try to render compactly
   try {
     const o = JSON.parse(args);
@@ -150,7 +154,8 @@ function argLine(name: string, args: string): string {
 }
 
 function lineCount(s: string): number {
-  const n = s.split("\n").length;
+  let n = 1;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
   return s.endsWith("\n") ? Math.max(0, n - 1) : n;
 }
 
@@ -209,7 +214,7 @@ function ToolRow({
   hideResult?: boolean;
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
-  const summary = toolSummary(name, arg, output, isError);
+  const summary = useMemo(() => toolSummary(name, arg, output, isError), [name, arg, output, isError]);
   const outputLen = output.length;
   return (
     <div className={`tool-row ${isError ? "err" : ""}`}>
@@ -243,20 +248,6 @@ function callOnly(name: string, args: string): string {
   return `${name}(${arg})`;
 }
 
-/// Full text of an entry used for search matching.
-function entryText(e: Entry): string {
-  const parts: string[] = [];
-  if (e.summary) parts.push(e.summary);
-  if (e.name) parts.push(e.name);
-  for (const c of e.content) {
-    if (c.kind === "text") parts.push(c.text);
-    else if (c.kind === "thinking") parts.push(c.thinking);
-    else if (c.kind === "toolCall") parts.push(c.name + " " + c.arguments);
-    else if (c.kind === "bash") parts.push(c.command + "\n" + c.output);
-  }
-  return parts.join("\n").toLowerCase();
-}
-
 // ---------- thread ----------
 
 export function Thread({
@@ -264,25 +255,63 @@ export function Thread({
   liveBlocks,
   running,
   preview = false,
+  pageBusy = false,
+  pageNotice,
+  pageRequest,
+  onQuery,
+  onLoadEarlier,
+  onLoadEntry,
+  onBodyChunk,
 }: {
   detail: SessionDetail;
   liveBlocks: LiveBlock[];
   running: boolean;
   preview?: boolean;
+  pageBusy?: boolean;
+  pageNotice?: string | null;
+  pageRequest?: DetailPageRequest;
+  onQuery?: (request: DetailPageRequest) => Promise<void>;
+  onLoadEarlier?: () => Promise<void>;
+  onLoadEntry?: (entryId: string) => Promise<void>;
+  onBodyChunk?: (generation: string, entryId: string, offset: number, recordOffset?: number) => Promise<EntryBodyChunk>;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState<FilterMode>("default");
-  // windowed rendering: a 7MB session can have 2400+ messages; rendering
-  // every react-markdown block at once is what made switching lag. Render the
-  // tail and grow upward on demand.
+  // The native path loads bounded server pages. A local/demo full detail also
+  // keeps a DOM window; additional server pages are fetched only on demand.
   const [windowSize, setWindowSize] = useState(150);
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
   const prevScrollHeight = useRef(0);
   const [expanding, setExpanding] = useState(false);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [branchLeaf, setBranchLeaf] = useState("");
+  const lastPageRequest = useRef(pageRequest);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    if (!pageRequest) return;
+    setSearch(pageRequest.query ?? "");
+    setDebouncedSearch(pageRequest.query ?? "");
+    setFilter(pageRequest.filter ?? "default");
+    setBranchLeaf(pageRequest.branchLeafId ?? "");
+  }, [pageRequest?.query, pageRequest?.filter, pageRequest?.branchLeafId, pageRequest?.entryId]);
+  useEffect(() => {
+    // External entry/branch navigation synchronizes the input above. Do not
+    // launch a request with this render's old input before those setters land.
+    if (lastPageRequest.current !== pageRequest) {
+      lastPageRequest.current = pageRequest;
+      return;
+    }
+    if (!detail.page || !onQuery) return;
+    if (debouncedSearch === (pageRequest?.query ?? "") && filter === (pageRequest?.filter ?? "default")) return;
+    void onQuery({ query: debouncedSearch, filter, branchLeafId: pageRequest?.branchLeafId });
+  }, [debouncedSearch, filter, detail.page != null, onQuery, pageRequest]);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
@@ -357,89 +386,39 @@ export function Thread({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const renderItems = useMemo(() => {
-    const entries = detail.entries;
-    const active = detail.active.map((i) => entries[i]);
-    const skip = new Set<number>();
-    const items: { entry: Entry; inlineResults: Entry[]; activeIdx: number }[] = [];
-    const q = search.trim().toLowerCase();
-    const qActive = q.length > 0;
+  const renderItems = useMemo(() => buildThreadItems(detail, filter, debouncedSearch), [detail, filter, debouncedSearch]);
 
-    // ids of entries that carry a label (label entries point at them)
-    const labeledIds = new Set(
-      entries.filter((e) => e.kind === "label" && e.name).map((e) => e.name as string)
-    );
-    const isSettings = (e: Entry) =>
-      ["label", "custom", "model_change", "thinking_level_change", "session_info"].includes(e.kind);
-
-    active.forEach((entry, idx) => {
-      // mode-level filtering
-      if (filter === "user-only") {
-        if (entry.role === "user") {
-          items.push({ entry, inlineResults: [], activeIdx: idx });
-        } else {
-          skip.add(idx);
-        }
-        return;
-      }
-      if (filter === "labeled-only") {
-        const isLabelMarker = entry.kind === "label";
-        if (!isLabelMarker && !labeledIds.has(entry.id)) skip.add(idx);
-      } else if (filter === "no-tools") {
-        if (isSettings(entry) || entry.role === "toolResult") skip.add(idx);
-      } else if (filter === "default") {
-        if (isSettings(entry)) skip.add(idx);
-      }
-      // "all": keep everything
-
-      // search filter (applies on top of the mode filter)
-      const passesSearch = !qActive || entryText(entry).includes(q);
-      if (!passesSearch) skip.add(idx);
-
-      const toolCalls =
-        entry.role === "assistant" ? entry.content.filter((c) => c.kind === "toolCall") : [];
-      if (toolCalls.length === 0) {
-        items.push({ entry, inlineResults: [], activeIdx: idx });
-        return;
-      }
-      const results: Entry[] = [];
-      // only pair results when this assistant itself passes the search
-      if (passesSearch) {
-        for (let j = idx + 1; j < active.length && results.length < toolCalls.length * 2; j++) {
-          const e = active[j];
-          if (e.role === "toolResult") {
-            const callId = e.toolCallId;
-            if (toolCalls.some((tc) => tc.kind === "toolCall" && tc.id === callId)) results.push(e);
-          } else if (e.role === "assistant" || e.role === "user") {
-            break;
-          }
+  const offPagePeers = useMemo(() => {
+    const ids = new Set(detail.entries.map(e => e.id));
+    const peers = new Map<string, { id: string; role: string }[]>();
+    for (const p of detail.page?.toolPairs ?? []) {
+      for (const [id, peer, role] of [[p.callEntryId, p.resultEntryId, "result"], [p.resultEntryId, p.callEntryId, "call"]]) {
+        if (ids.has(id) && !ids.has(peer)) {
+          const list = peers.get(id) ?? [];
+          list.push({ id: peer, role }); peers.set(id, list);
         }
       }
-      items.push({ entry, inlineResults: results, activeIdx: idx });
-      results.forEach((r) => {
-        const ri = active.indexOf(r);
-        if (ri >= 0) skip.add(ri);
-      });
-    });
-    let matchCount = 0;
-    for (const { activeIdx } of items) {
-      if (!skip.has(activeIdx)) matchCount++;
     }
-    return { items, skip, matchCount, hideToolOutput: filter === "no-tools" };
-  }, [detail, filter, search]);
+    return peers;
+  }, [detail]);
 
   // only the tail of the rendered items is mounted; expand on demand
   const visibleItems = useMemo(() => {
-    const vis = renderItems.items.filter((_, i) => !renderItems.skip.has(renderItems.items[i].activeIdx));
+    const vis = renderItems.items;
     if (windowSize >= vis.length) return vis;
     return vis.slice(vis.length - windowSize);
   }, [renderItems, windowSize]);
 
-  const loadEarlier = () => {
+  const loadEarlier = async () => {
     const el = scrollRef.current;
     if (el) prevScrollHeight.current = el.scrollHeight;
+    setAutoScroll(false);
+    if (visibleItems.length < renderItems.items.length) setWindowSize(w => w + 300);
+    else if (detail.page?.hasMore && onLoadEarlier) {
+      await onLoadEarlier();
+      setWindowSize(w => w + 200);
+    }
     setExpanding(true);
-    setWindowSize((w) => w + 300);
   };
   // keep the viewport anchored when older messages are prepended above
   useEffect(() => {
@@ -448,7 +427,7 @@ export function Thread({
       el.scrollTop += el.scrollHeight - prevScrollHeight.current;
       setExpanding(false);
     }
-  }, [windowSize, expanding]);
+  }, [windowSize, expanding, detail]);
 
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
@@ -560,13 +539,23 @@ export function Thread({
             />
             {search.trim() ? (
               <>
-                <span className="thread-search-count">{renderItems.matchCount} matches</span>
+                <span className="thread-search-count">{search !== debouncedSearch ? "Waiting for search…" : pageBusy ? "Updating full-history results…" : `${renderItems.matchCount} matches (full branch)`}</span>
                 <button className="clear-btn" onClick={() => setSearch("")} title="Clear search">
                   ×
                 </button>
               </>
             ) : null}
           </div>
+          {detail.page && <div className="session-head-meta" role="status">
+            {detail.active.length} loaded / {detail.page.matchedEntries} matching entries · {detail.page.branchEntries} branch entries / {detail.page.totalEntries} file entries
+            <span> · {detail.page.counters.user} user · {detail.page.counters.assistant} assistant · {detail.page.counters.toolResult} tool results · {detail.page.counters.labeled} labeled</span>
+            {detail.page.incompleteTail && <span> · Incomplete trailing record — awaiting file update</span>}
+            {detail.page.malformedLines > 0 && <span> · {detail.page.malformedLines} malformed lines skipped</span>}
+            {pageNotice && <div>{pageNotice}</div>}
+            <button disabled={pageBusy} onClick={() => void onQuery?.({ query: search, filter, branchLeafId: pageRequest?.branchLeafId })}>Latest</button>
+            <input aria-label="Branch leaf entry ID" placeholder="Branch leaf entry ID (optional)" value={branchLeaf} onChange={e => setBranchLeaf(e.target.value)} />
+            <button disabled={pageBusy} onClick={() => void onQuery?.({ query: search, filter, branchLeafId: branchLeaf || undefined })}>View branch</button>
+          </div>}
           <div className="filter-bar" title="Ctrl+O cycles modes">
             {FILTER_CYCLE.map((m) => (
               <button
@@ -582,22 +571,19 @@ export function Thread({
       </div>
       <div className="thread-scroll" onScroll={onScroll} ref={scrollRef}>
         <div className="thread-inner">
-          {renderItems.matchCount > visibleItems.length && (
-            <button className="load-earlier" onClick={loadEarlier}>
-              ↑ show {renderItems.matchCount - visibleItems.length} earlier messages
+          {(renderItems.items.length > visibleItems.length || detail.page?.hasMore) && (
+            <button className="load-earlier" disabled={pageBusy} onClick={() => void loadEarlier()}>
+              {pageBusy ? "Loading…" : "↑ Load earlier messages"}
             </button>
           )}
-          {visibleItems.map(({ entry, inlineResults, activeIdx }, idx) => {
-            if (renderItems.skip.has(activeIdx)) return null;
-            return (
-              <MemoEntryView
-                key={entry.id + idx}
-                entry={entry}
-                inlineResults={inlineResults}
-                hideToolOutput={renderItems.hideToolOutput}
-              />
-            );
-          })}
+          {visibleItems.map(({ entry, inlineResults }) => (
+            <div key={entry.id} data-entry-id={entry.id}>
+              <MemoEntryView entry={entry} inlineResults={inlineResults} hideToolOutput={renderItems.hideToolOutput} />
+              {entry.bodyRef?.preview && <FullBodyView key={entry.bodyRef.generation + ":" + entry.id} entry={entry} onBodyChunk={onBodyChunk} />}
+              {offPagePeers.get(entry.id)?.map(peer => <button key={peer.id} className="load-earlier" disabled={pageBusy}
+                onClick={() => void onLoadEntry?.(peer.id)}>Load related tool {peer.role} · {peer.id}</button>)}
+            </div>
+          ))}
 
         {/* live conversation */}
         {liveBlocks.map((b, i) => {
@@ -641,6 +627,70 @@ export function Thread({
       </div>
     </div>
   );
+}
+
+export function FullBodyView({ entry, onBodyChunk }: {
+  entry: Entry;
+  onBodyChunk?: (generation: string, entryId: string, offset: number, recordOffset?: number) => Promise<EntryBodyChunk>;
+}) {
+  const [raw, setRaw] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [download, setDownload] = useState<string | null>(null);
+  const alive = useRef(true);
+  const run = useRef(0);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; run.current++; }; }, []);
+  useEffect(() => {
+    if (raw === null) { setDownload(null); return; }
+    const url = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
+    setDownload(url);
+    return () => URL.revokeObjectURL(url);
+  }, [raw]);
+  const load = async () => {
+    const ref = entry.bodyRef;
+    if (!ref || !onBodyChunk || busy) return;
+    const currentRun = ++run.current;
+    const current = () => alive.current && currentRun === run.current;
+    setBusy(true); setError(null); setProgress(0);
+    const chunks: string[] = [];
+    let offset = 0;
+    try {
+      while (current()) {
+        const chunk = await onBodyChunk(ref.generation, ref.entryId, offset, ref.recordOffset);
+        if (!current()) return;
+        if (chunk.generation !== ref.generation || chunk.entryId !== ref.entryId || chunk.recordOffset !== ref.recordOffset || chunk.offset !== offset || chunk.encoding !== "utf8-jsonl") throw new Error("Body chunk identity mismatch");
+        const received = offset + new TextEncoder().encode(chunk.data).byteLength;
+        if (chunk.totalBytes !== ref.byteLength || received > chunk.totalBytes) throw new Error("Body byte length mismatch");
+        chunks.push(chunk.data);
+        setProgress(received);
+        if (chunk.complete) {
+          if (chunk.nextOffset !== null || received !== chunk.totalBytes) throw new Error("Invalid final body chunk");
+          const original = chunks.join("");
+          JSON.parse(original); // validate completeness, never substitute a preview
+          setRaw(original);
+          break;
+        }
+        if (chunk.nextOffset === null || chunk.nextOffset <= offset) throw new Error("Incomplete body response made no progress");
+        if (chunk.nextOffset !== received) throw new Error("Body byte offset mismatch");
+        offset = chunk.nextOffset;
+      }
+    } catch (e) { if (current()) setError(String(e) + " — reload the page if history changed."); }
+    finally { if (current()) setBusy(false); }
+  };
+  return <div className="meta-line" role="status">
+    <strong>{raw === null ? "Incomplete preview — not the full code/output/evidence." : "Full original record (lossless JSONL)"}</strong>
+    <span> · {entry.bodyRef?.byteLength.toLocaleString()} bytes</span>
+    {raw === null && <button disabled={busy || !onBodyChunk} onClick={() => void load()}>
+      {busy ? `Loading full body… ${progress.toLocaleString()} bytes` : "Load full body"}</button>}
+    {busy && <button onClick={() => { run.current++; setBusy(false); setProgress(0); }}>Cancel body download</button>}
+    {error && <div>{error}</div>}
+    {download && <a href={download} download={`${entry.id}.jsonl`}>Download full original record</a>}
+    {raw !== null && <>
+      <button onClick={() => { setRaw(null); setProgress(0); }}>Release full body</button>
+      <pre className="tool-output" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{raw}</pre>
+    </>}
+  </div>;
 }
 
 function ThinkingLine({ text }: { text: string }) {
@@ -722,6 +772,7 @@ const MemoEntryView = React.memo(function EntryView({
     const text = entry.content.filter((c) => c.kind === "text").map((c) => (c as any).text).join("\n");
     const thinking = entry.content.filter((c) => c.kind === "thinking");
     const calls = entry.content.filter((c) => c.kind === "toolCall");
+    const resultsById = new Map(inlineResults.map(r => [r.toolCallId, r]));
     return (
       <div className="msg assistant">
         {thinking.map((c, i) => (
@@ -734,7 +785,7 @@ const MemoEntryView = React.memo(function EntryView({
         )}
         {calls.map((c, i) => {
           const call = c as Extract<ContentBlock, { kind: "toolCall" }>;
-          const result = inlineResults.find((r) => r.toolCallId === call.id);
+          const result = resultsById.get(call.id);
           const output = result?.content
             .map((blk) => (blk.kind === "text" ? blk.text : blk.kind === "bash" ? blk.output : ""))
             .join("\n")

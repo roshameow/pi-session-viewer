@@ -59,7 +59,7 @@ pub fn send_message(
     // Current Pi restores runtime/resource cwd from the --session header.
     // Also align process cwd (bootstrap and relative CLI paths) explicitly;
     // do not depend on a particular CLI version's cwd reconstruction.
-    let cwd = crate::sessions::session_detail(&session_path)?.cwd;
+    let cwd = crate::sessions::session_header(&session_path)?.cwd;
     let mut child = pi_json_command(&pi_bin, &cwd, &session_path, &message)
         .spawn()
         .map_err(|e| format!("Failed to launch pi: {e}"))?;
