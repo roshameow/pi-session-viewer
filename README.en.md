@@ -25,6 +25,12 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.10 HTML report fix
+
+Local HTML/HTM reports use the macOS system HTTPS default browser—Safari when Safari is the default—instead of a text editor. The original file location is retained for relative assets and browser-rendered SVG/Canvas charts. Other source scripts stay in text-editor mode; no temporary file server or browser-security changes. See [HTML and image troubleshooting](docs/html-reports.md).
+
+Correct browser routing does not guarantee that every report has valid assets or JavaScript; missing charts need the exact link/resource error to diagnose.
+
 ## 0.1.9 update
 
 - Data access is a small folder-lock icon beside Config, not a main-pane toolbar.

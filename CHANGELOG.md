@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.10 — 2026-10-11
+
+- Open local HTML/HTM reports in the macOS system HTTPS default browser, not the text editor or the HTML extension's editor association. Follow Safari/other browser preference without hardcoding or changing system settings; return lookup/open errors instead of silent fallback.
+- Keep the original report location for relative images/styles and browser-rendered JavaScript charts; no temporary copies, HTML rewriting, file servers or relaxed browser security. Other source scripts retain text-editor routing. Document missing-resource versus script-rendering causes and verification limits.
+
 ## 0.1.9 — 2026-10-11
 
 - Open local Markdown file links through a click-only native command, resolving relative paths against the selected local session CWD instead of the WebView URL. Preserve URL sanitization for other protocols/images; report failures visibly and disable local opening in remote/preview contexts.

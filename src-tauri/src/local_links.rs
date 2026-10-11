@@ -21,6 +21,7 @@ pub async fn open_local_file(href: String, session_path: String) -> Result<Strin
                 &session_path,
                 &roots,
                 std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+                default_browser,
                 run_opener,
             )
         })
@@ -296,6 +297,7 @@ fn resolve_target(href: &str, cwd: &Path, home: Option<&Path>) -> Result<PathBuf
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FileKind {
+    Html,
     Text,
     Document,
 }
@@ -328,6 +330,9 @@ fn file_kind(path: &Path) -> Option<FileKind> {
         return Some(FileKind::Text);
     }
     let ext = extension_name(path)?;
+    if matches!(ext.as_str(), "html" | "htm") {
+        return Some(FileKind::Html);
+    }
     if matches!(
         ext.as_str(),
         "md" | "markdown"
@@ -376,8 +381,6 @@ fn file_kind(path: &Path) -> Option<FileKind> {
             | "php"
             | "lua"
             | "r"
-            | "html"
-            | "htm"
             | "css"
             | "scss"
             | "sass"
@@ -529,6 +532,8 @@ fn dangerous_extension(path: &Path) -> bool {
 struct OpenTarget {
     path: PathBuf,
     force_text: bool,
+    html: bool,
+    opener_path: PathBuf,
 }
 
 fn validate_target(path: &Path) -> Result<OpenTarget, String> {
@@ -545,6 +550,7 @@ fn validate_target(path: &Path) -> Result<OpenTarget, String> {
         return Err("Only regular documents and directories can be opened".into());
     }
     let mut force_text = false;
+    let mut html = false;
     if metadata.is_file() {
         // Both alias and actual target must be explicitly safe.
         file_kind(path).ok_or("Unknown or binary file type is not supported")?;
@@ -555,6 +561,7 @@ fn validate_target(path: &Path) -> Result<OpenTarget, String> {
         if !cfg!(target_os = "macos") && (script_extension(path) || script_extension(&canonical)) {
             return Err("Opening script files safely is unsupported on this platform".into());
         }
+        html = canonical_kind == FileKind::Html;
         force_text = cfg!(target_os = "macos") && canonical_kind == FileKind::Text;
         #[cfg(unix)]
         {
@@ -566,33 +573,99 @@ fn validate_target(path: &Path) -> Result<OpenTarget, String> {
     }
     let text = canonical.to_str().ok_or("Local target path is not UTF-8")?;
     clean_text(text)?;
+    // Keep an ordinary HTML link at its original absolute location so relative
+    // images/styles resolve beside that file, not beside an import/temp copy.
+    // For a file symlink alias, open the real HTML and its real asset parent:
+    // aliases may live elsewhere or even have a non-HTML extension. Directory
+    // symlinks are retained for ordinary files (their sibling assets still work).
+    let opener_path = if html
+        && !std::fs::symlink_metadata(path)
+            .map_err(|e| format!("Cannot inspect local target: {e}"))?
+            .file_type()
+            .is_symlink()
+    {
+        let text = path.to_str().ok_or("Local target path is not UTF-8")?;
+        clean_text(text)?;
+        if !path.is_absolute() {
+            return Err("HTML target path must be absolute".into());
+        }
+        path.to_path_buf()
+    } else {
+        canonical.clone()
+    };
     Ok(OpenTarget {
         path: canonical,
         force_text,
+        html,
+        opener_path,
     })
 }
 
-fn opener_command(target: &OpenTarget) -> Result<Command, String> {
+/// Resolve only the configured HTTPS handler. NSWorkspace performs a local
+/// configuration lookup; it does not fetch this URL or change any defaults.
+#[cfg(target_os = "macos")]
+fn default_browser() -> Result<PathBuf, String> {
+    use objc2::rc::autoreleasepool;
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+
+    autoreleasepool(|_| {
+        let probe = NSURL::URLWithString(&NSString::from_str("https://example.invalid"))
+            .ok_or("Could not construct default-browser lookup URL")?;
+        let app = NSWorkspace::sharedWorkspace()
+            .URLForApplicationToOpenURL(&probe)
+            .ok_or("macOS has no application configured to open HTTPS URLs")?;
+        if !app.isFileURL() {
+            return Err("macOS returned a non-file default-browser application URL".into());
+        }
+        let path = app
+            .path()
+            .ok_or("Default-browser application URL has no path")?;
+        Ok(PathBuf::from(path.to_string()))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_browser() -> Result<PathBuf, String> {
+    Err("Explicit default-browser lookup is only available on macOS".into())
+}
+
+fn opener_command(
+    target: &OpenTarget,
+    browser: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<Command, String> {
     #[cfg(target_os = "macos")]
     {
         let mut command = Command::new("/usr/bin/open");
-        if target.force_text {
+        if target.html {
+            let lookup_error = |reason| {
+                format!("Cannot find the configured default browser: {reason}. Choose a default web browser in macOS System Settings, then try again")
+            };
+            let app = browser().map_err(lookup_error)?;
+            if !app.is_absolute() || app.to_str().is_none_or(|s| clean_text(s).is_err()) {
+                return Err(lookup_error("invalid application path".into()));
+            }
+            command.arg("-a").arg(app);
+        } else if target.force_text {
             command.arg("-t");
         }
-        command.arg("--").arg(&target.path);
+        command.arg("--").arg(&target.opener_path);
         Ok(command)
     }
     #[cfg(target_os = "linux")]
     {
-        // Always an absolute canonical path, not a URL or an option.
+        // Linux uses its existing default handler, not macOS browser lookup.
+        // HTML keeps its asset base; scripts/executables remain denied above.
+        let _ = browser;
         debug_assert!(!target.force_text);
+        debug_assert!(!target.html || target.opener_path.is_absolute());
         let mut command = Command::new("xdg-open");
-        command.arg(&target.path);
+        command.arg(&target.opener_path);
         Ok(command)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = target;
+        let _ = (target, browser);
         Err("Local file opening is unsupported on this platform".into())
     }
 }
@@ -617,11 +690,12 @@ fn open_with(
     session_path: &str,
     roots: &[PathBuf],
     home: Option<&Path>,
+    browser: impl FnOnce() -> Result<PathBuf, String>,
     opener: impl FnOnce(Command) -> Result<(), String>,
 ) -> Result<String, String> {
     let cwd = session_cwd(session_path, roots)?;
     let target = validate_target(&resolve_target(href, &cwd, home)?)?;
-    opener(opener_command(&target)?)?;
+    opener(opener_command(&target, browser)?)?;
     Ok(target
         .path
         .to_str()
@@ -633,6 +707,10 @@ fn open_with(
 mod local_links_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn fake_browser() -> Result<PathBuf, String> {
+        Ok(PathBuf::from("/Applications/Fake Browser.app"))
+    }
 
     struct Fixture {
         root: PathBuf,
@@ -682,6 +760,7 @@ mod local_links_tests {
                 self.session.to_str().unwrap(),
                 &self.roots,
                 Some(&self.cwd),
+                fake_browser,
                 |command| {
                     #[cfg(target_os = "macos")]
                     assert_eq!(command.get_program(), "/usr/bin/open");
@@ -698,6 +777,16 @@ mod local_links_tests {
                                     std::ffi::OsStr::new("-t"),
                                     std::ffi::OsStr::new("--"),
                                     target.as_os_str()
+                                ]
+                            );
+                        } else if file_kind(target) == Some(FileKind::Html) {
+                            assert_eq!(
+                                args,
+                                vec![
+                                    std::ffi::OsStr::new("-a"),
+                                    std::ffi::OsStr::new("/Applications/Fake Browser.app"),
+                                    std::ffi::OsStr::new("--"),
+                                    target.as_os_str(),
                                 ]
                             );
                         } else {
@@ -864,6 +953,7 @@ mod local_links_tests {
                 f.session.to_str().unwrap(),
                 &f.roots,
                 Some(&f.cwd),
+                || panic!("browser lookup reached for {href}"),
                 |_| panic!("opener reached for {href}")
             )
             .is_err());
@@ -904,6 +994,7 @@ mod local_links_tests {
             log.to_str().unwrap(),
             &f.roots,
             None,
+            fake_browser,
             |_| Ok(())
         )
         .is_ok());
@@ -1043,6 +1134,7 @@ mod local_links_tests {
             f.session.to_str().unwrap(),
             &f.roots,
             None,
+            || panic!("source must not consult default browser"),
             |command| {
                 assert_eq!(command.get_program(), "/usr/bin/open");
                 assert_eq!(
@@ -1079,6 +1171,161 @@ mod local_links_tests {
         assert!(f.open("socket.md").is_err());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn html_uses_configured_safari_or_chrome_never_text_or_hardcoded_browser() {
+        let f = Fixture::new();
+        for name in ["page.html", "page.HTM"] {
+            let html = f.file(name);
+            for app in ["/Applications/Safari.app", "/Applications/Fake Chrome.app"] {
+                let result = open_with(
+                    name,
+                    f.session.to_str().unwrap(),
+                    &f.roots,
+                    None,
+                    || Ok(PathBuf::from(app)),
+                    |command| {
+                        assert_eq!(command.get_program(), "/usr/bin/open");
+                        assert_eq!(
+                            command.get_args().collect::<Vec<_>>(),
+                            vec![
+                                std::ffi::OsStr::new("-a"),
+                                std::ffi::OsStr::new(app),
+                                std::ffi::OsStr::new("--"),
+                                html.as_os_str(),
+                            ]
+                        );
+                        assert!(command.get_current_dir().is_none());
+                        Ok(()) // Inspect only, regardless of installed browsers.
+                    },
+                )
+                .unwrap();
+                assert_eq!(Path::new(&result), html.canonicalize().unwrap());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn browser_lookup_failure_is_actionable_and_never_launches_a_fallback() {
+        let f = Fixture::new();
+        f.file("page.html");
+        for lookup in [
+            Err("fake missing HTTPS handler".into()),
+            Ok(PathBuf::from("relative.app")),
+        ] {
+            let error = open_with(
+                "page.html",
+                f.session.to_str().unwrap(),
+                &f.roots,
+                None,
+                || lookup,
+                |_| panic!("must not launch after failed browser lookup"),
+            )
+            .unwrap_err();
+            assert!(error.contains("configured default browser"));
+            assert!(error.contains("System Settings"));
+            assert!(
+                error.contains("fake missing HTTPS handler")
+                    || error.contains("invalid application path")
+            );
+        }
+    }
+
+    #[test]
+    fn html_and_relative_assets_stay_at_the_original_location() {
+        let f = Fixture::new();
+        let folder = f.cwd.join("original HTML 中文");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(folder.join("images")).unwrap();
+        let html = folder.join("-page 'quoted'.html");
+        let body = "<html><img src=\"images/picture.png\"><link href=\"style.css\"></html>";
+        std::fs::write(&html, body).unwrap();
+        let image = folder.join("images/picture.png");
+        std::fs::write(&image, b"synthetic image").unwrap();
+        std::fs::write(folder.join("style.css"), "synthetic stylesheet").unwrap();
+        open_with(
+            html.to_str().unwrap(),
+            f.session.to_str().unwrap(),
+            &f.roots,
+            None,
+            fake_browser,
+            |command| {
+                let args = command.get_args().collect::<Vec<_>>();
+                assert_eq!(*args.last().unwrap(), html.as_os_str());
+                assert_eq!(
+                    Path::new(args.last().unwrap()).parent(),
+                    Some(folder.as_path())
+                );
+                assert!(command.get_current_dir().is_none());
+                Ok(())
+            },
+        )
+        .unwrap();
+        // Only tests read these synthetic contents; runtime uses metadata only.
+        assert_eq!(std::fs::read_to_string(&html).unwrap(), body);
+        assert_eq!(std::fs::read(&image).unwrap(), b"synthetic image");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn javascript_and_python_remain_forced_text_without_browser_lookup() {
+        let f = Fixture::new();
+        for name in ["source.js", "source.py"] {
+            let source = f.file(name).canonicalize().unwrap();
+            open_with(
+                name,
+                f.session.to_str().unwrap(),
+                &f.roots,
+                None,
+                || panic!("text source must not query the browser"),
+                |command| {
+                    assert_eq!(
+                        command.get_args().collect::<Vec<_>>(),
+                        vec![
+                            std::ffi::OsStr::new("-t"),
+                            std::ffi::OsStr::new("--"),
+                            source.as_os_str(),
+                        ]
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn html_alias_routes_follow_real_type_and_real_html_asset_parent() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let f = Fixture::new();
+        let folder = f.cwd.join("real HTML");
+        std::fs::create_dir(&folder).unwrap();
+        let html = folder.join("page.html");
+        std::fs::write(&html, "synthetic HTML").unwrap();
+        let canonical = html.canonicalize().unwrap();
+        for alias in ["html-alias.md", "html-alias.htm"] {
+            symlink(&html, f.cwd.join(alias)).unwrap();
+            f.expect(alias, &html); // Fixture verifies browser route on macOS.
+            let target = validate_target(&f.cwd.join(alias)).unwrap();
+            assert!(target.html);
+            assert_eq!(target.opener_path, canonical);
+        }
+        let script = f.file("source.py");
+        symlink(&script, f.cwd.join("script-alias.html")).unwrap();
+        #[cfg(target_os = "macos")]
+        f.expect("script-alias.html", &script); // Still -t, never browser.
+        #[cfg(not(target_os = "macos"))]
+        assert!(f.open("script-alias.html").is_err());
+        let program = f.file("unsafe.command");
+        symlink(program, f.cwd.join("unsafe-alias.html")).unwrap();
+        assert!(f.open("unsafe-alias.html").is_err());
+        std::fs::set_permissions(&html, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(f.open("html-alias.md").is_err());
+        assert!(f.open(html.to_str().unwrap()).is_err());
+    }
+
     #[test]
     fn fake_opener_failure_is_reported_not_successfully_spawned() {
         let f = Fixture::new();
@@ -1088,6 +1335,7 @@ mod local_links_tests {
             f.session.to_str().unwrap(),
             &f.roots,
             None,
+            fake_browser,
             |_| Err("fake opener exit failure".into()),
         )
         .unwrap_err();

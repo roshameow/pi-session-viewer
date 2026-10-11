@@ -19,7 +19,7 @@
 | `[文件](file:///tmp/report%20one.pdf#L12)` | 本机文件 URI，空格解码一次；行号只是定位装饰 |
 | `[附件](~/Downloads/report.pdf)` | 当前用户的 HOME 路径，仍需系统允许访问 |
 
-macOS 支持显式识别的文本／源码、PDF、常见 Office／图片格式和文件夹。文本／源码使用 `open -t` 默认文本编辑器；文档／文件夹使用默认关联程序。未知／二进制类型、程序、安装器及应用包会被拒绝，符号链接也按实际目标类型检查，不会从被拒绝的目标改开另一份文件。
+macOS 支持显式识别的文本／源码、HTML、PDF、常见 Office／图片格式和文件夹。`.html`／`.htm` 报告使用系统 HTTPS 默认浏览器打开（Safari 是默认时使用 Safari），保留原始报告位置以解析相对资源；详见 [HTML 与图片说明](html-reports.md)。其他文本／源码使用 `open -t` 默认文本编辑器；普通文档／文件夹使用默认关联程序。未知／二进制类型、程序、安装器及应用包会被拒绝，符号链接也按实际目标类型检查，不会从被拒绝的目标改开另一份文件。
 
 Linux 使用绝对路径调用 `xdg-open`，拒绝脚本及可执行文件；尚未验证原生桌面效果。Windows 的本地打开命令明确返回不支持，不通过 `cmd /c` 拼接文件路径。网络主机的 `file://`、协议相对路径、危险／未知 URI 协议、控制字符和不支持的文件 URI 查询／片段不作为本地文件打开。
 
@@ -27,6 +27,6 @@ Linux 使用绝对路径调用 `xdg-open`，拒绝脚本及可执行文件；尚
 
 ## Verification limits / 验证边界
 
-English: Local Markdown file links are click-only and use the selected local session's CWD. Known text/source files use the macOS text editor; supported documents/folders use default handlers. Invalid or denied targets produce visible errors. Remote/preview paths are never guessed as local files. These APIs neither upload file contents nor grant arbitrary Pi/Python access. Native handler behavior still needs manual verification.
+English: Local Markdown file links are click-only and use the selected local session's CWD. HTML reports use the macOS HTTPS default browser without relocating the file; other known text/source files use the text editor, and supported documents/folders use default handlers. Invalid or denied targets produce visible errors. Remote/preview paths are never guessed as local files. These APIs neither upload file contents nor grant arbitrary Pi/Python access. Native handler behavior still needs manual verification.
 
 离线测试使用合成文件、模拟 IPC 和命令参数检查，不启动默认关联应用；实际已安装 App 中的 Finder、编辑器、PDF 阅读器打开效果需要手动验证。

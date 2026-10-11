@@ -69,7 +69,7 @@ function MarkdownAnchor({ node: _node, href, children, ...rest }: React.Componen
   return <>
     <a {...rest} href={href} onClick={open} onAuxClick={(event) => event.preventDefault()}
       aria-disabled={!!unavailable}
-      title={unavailable || `Open local file in its default app (relative paths use this session's working directory): ${href}`}>
+      title={unavailable || `Open local file (HTML: default browser; source: text editor; other files: default app). Relative paths use this session's working directory: ${href}`}>
       {children}
     </a>
     {error && <span className="md-link-error" role="alert"> {error}</span>}

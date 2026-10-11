@@ -116,7 +116,7 @@ try {
   const anchor=label=>nodes(tree).find(n=>n.type==='a'&&text(n)===label);
   async function click(label){const a=anchor(label);assert.ok(a,`missing anchor ${label}`);let prevented=false;await a.props.onClick({preventDefault(){prevented=true;}});assert.equal(prevented,true);render();}
 
-  const local=['file:///tmp/report%20one.pdf','file://localhost/tmp/report.pdf','/tmp/report.pdf','~/reports/report.pdf','./artifacts/report.pdf','../output.csv','notes.md','README.md:12:3','src/file.ts:12'];
+  const local=['file:///tmp/report%20one.pdf','file://localhost/tmp/report.pdf','/tmp/report.pdf','~/reports/report.pdf','./artifacts/report.pdf','../output.csv','notes.md','README.md:12:3','src/file.ts:12','artifacts/report.html','file:///tmp/report%20with%20images.htm'];
   fixture(markdown(local.map((href,i)=>`[local${i}](${href})`).join(' ')));
   assert.equal(f.calls.length,0,'render must never open files');
   for(const [i,href] of local.entries()){
@@ -125,6 +125,7 @@ try {
     await click('local'+i);assert.deepEqual(f.calls.at(-1),{name:'open_local_file',args:{href,sessionPath:'/sessions/actual.jsonl'}});
   }
   assert.equal(f.calls.length,local.length);
+  assert.match(anchor('local'+(local.length-1)).props.title,/HTML: default browser/);
   fixture(markdown('[space](<file:///tmp/spaced file.pdf>)'));
   assert.equal(anchor('space').props.href,'file:///tmp/spaced%20file.pdf');
   await click('space');
