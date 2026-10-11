@@ -1,5 +1,33 @@
 // Shared types mirroring the Rust backend (serde camelCase).
 
+export interface AuthorizedDirectory {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number; // epoch milliseconds (data-access receipt)
+}
+
+export interface AuthorizedDirectoryEntry {
+  name: string;
+  relativePath: string;
+  isDirectory: boolean;
+  size: number;
+}
+
+export interface AuthorizedDirectoryPage {
+  relativePath: string;
+  entries: AuthorizedDirectoryEntry[];
+  hasMore: boolean;
+}
+
+export interface ImportedDataFile {
+  id: string;
+  path: string; // private app-storage copy, not the protected source
+  name: string;
+  size: number;
+  sourcePath: string;
+}
+
 export interface Project {
   key: string;
   cwd: string;

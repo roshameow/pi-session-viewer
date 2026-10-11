@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
@@ -9,6 +9,7 @@ import { Thread, appendLiveEvents, type LiveBlock } from "./components/Thread";
 import { prependDetailPage } from "./threadItems";
 import { Composer } from "./components/Composer";
 import { ConfigPanel } from "./components/ConfigPanel";
+import { DataAccessPanel } from "./components/DataAccessPanel";
 
 interface Toast {
   sourceToken: RequestToken;
@@ -82,11 +83,17 @@ export default function App() {
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [running, setRunning] = useState(false);
+  const localTurnRef = useRef(false);
+  const draftRunningRef = useRef(false);
+  draftRunningRef.current = localTurnRef.current || sessions.some(s => s.path === detail?.path && s.running);
   const [liveBlocks, setLiveBlocks] = useState<LiveBlock[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [piInfo, setPiInfo] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [showConfig, setShowConfig] = useState(false);
+  const [showDataAccess, setShowDataAccess] = useState(false);
+  const openDataAccess = useCallback(() => setShowDataAccess(true), []);
+  const closeDataAccess = useCallback(() => setShowDataAccess(false), []);
   const [remoteHosts, setRemoteHosts] = useState<string[]>([]);
   const [remoteHost, setRemoteHost] = useState<string | null>(null);
   const [remoteStatus, setRemoteStatus] = useState<RemoteSyncStatus | null>(null);
@@ -127,6 +134,8 @@ export default function App() {
     if (liveTimerRef.current) window.clearTimeout(liveTimerRef.current);
     liveTimerRef.current = 0;
     setLiveBlocks([]);
+    localTurnRef.current = false;
+    draftRunningRef.current = false;
     setRunning(false);
   }, []);
 
@@ -173,6 +182,13 @@ export default function App() {
       if (cancelled() || !valid(token)) return;
       sessionPathsRef.current = new Set(ss.map(s => s.path));
       setSessions(prev => sameSessions(prev, ss) ? prev : ss);
+      // Reconcile externally started/stopped sessions without touching a local
+      // streamed turn or its events. This also releases idle draft insertion.
+      if (!localTurnRef.current && activePathRef.current) {
+        const active = ss.find(s => s.path === activePathRef.current);
+        draftRunningRef.current = !!active?.running;
+        setRunning(!!active?.running);
+      }
       return ss;
     } catch (e) {
       if (!silent && !cancelled() && valid(token)) setError(String(e));
@@ -274,6 +290,7 @@ export default function App() {
       detailRef.current = null;
       setDetail(null);
       clearLive();
+      draftRunningRef.current = !!s.running;
       setRunning(!!s.running);
     }
     return readDetail(q.capture("detail"));
@@ -569,13 +586,15 @@ export default function App() {
       if (ev.type === "process_exit") void onTurnDone(token);
       else if (!liveTimerRef.current) liveTimerRef.current = window.setTimeout(() => flushLive(token), 80);
     };
+    localTurnRef.current = true;
+    draftRunningRef.current = true;
     setRunning(true);
     try {
       await api.sendMessage(token.path, msg, channel);
       if (!valid(token)) return false;
       return true;
     } catch (e) {
-      if (valid(token)) { setRunning(false); setError(String(e)); }
+      if (valid(token)) { localTurnRef.current = false; draftRunningRef.current = false; setRunning(false); setError(String(e)); }
       return false;
     }
   };
@@ -662,6 +681,32 @@ export default function App() {
     const title = s?.name || s?.firstMessage || path.split("/").pop() || "(empty)";
     return title.length > 40 ? title.slice(0, 40) + "…" : title;
   };
+  // Each rendered insertion action captures the selected session/source epoch.
+  // Recheck refs at the explicit click AND inside the state updater; never send.
+  const draftTarget = sequenceRef.current.capture("detail");
+  const canOpenLocalFile = useMemo(() => () =>
+    valid(draftTarget) && draftTarget.source === null && sourceRef.current === null &&
+    activePathRef.current === draftTarget.path && detailRef.current?.path === draftTarget.path,
+    [valid, draftTarget.sourceEpoch, draftTarget.projectEpoch, draftTarget.detailEpoch, draftTarget.source, draftTarget.path]);
+  const canInsertDataDraft = valid(draftTarget) && !sourcePending &&
+    remoteHost === null && sourceRef.current === null && draftTarget.source === null &&
+    !!detail && detail.path === draftTarget.path && !draftRunningRef.current;
+  const insertDataDraft = (instruction: string): boolean => {
+    const eligible = () => valid(draftTarget) && draftTarget.source === null &&
+      sourceRef.current === null && detailRef.current?.path === draftTarget.path &&
+      activePathRef.current === draftTarget.path && !draftRunningRef.current;
+    if (!eligible() || !draftTarget.path || instruction.length > 9000) return false;
+    const key = JSON.stringify([draftTarget.source, draftTarget.path]);
+    setDrafts(prev => {
+      if (!eligible()) return prev;
+      const previous = prev[key] ?? "";
+      return { ...prev, [key]: previous ? previous + "\n\n" + instruction : instruction };
+    });
+    return true;
+  };
+  // Source-qualified keys prevent same-path remote sessions inheriting local
+  // copied-file paths, while preserving drafts when switching away and back.
+  const selectedDraftKey = JSON.stringify([draftTarget.source, detail?.path]);
   return (
     <div className="app">
       {/* finished-session toasts */}
@@ -707,6 +752,8 @@ export default function App() {
         onSelectSession={selectSession}
         onOpenConfig={openConfig}
         showConfig={showConfig}
+        onOpenDataAccess={openDataAccess}
+        showDataAccess={showDataAccess}
         finishedAt={finishedAt}
         onOpenTerminal={onOpenTerminal}
         onDetachFromRmux={onDetachFromRmux}
@@ -751,20 +798,22 @@ export default function App() {
         ) : detail ? (
           <>
             <Thread key={`${sequenceRef.current.capture("detail").sourceEpoch}:${detail.path}`} detail={detail} liveBlocks={liveBlocks} running={running}
+              localFilesAllowed={remoteHost === null && sourceRef.current === null && sequenceRef.current.ready && !sourcePending}
+              canOpenLocalFile={canOpenLocalFile}
               pageBusy={pageBusy} pageNotice={pageNotice} pageRequest={pageRequestRef.current}
               onQuery={changeDetailQuery} onLoadEarlier={() => navigateDetail()} onLoadEntry={navigateDetail} onBodyChunk={readBodyChunk} />
             <Composer
-              value={drafts[detail.path] ?? ""}
-              onChange={(v) =>
-                setDrafts((d) => ({ ...d, [detail.path]: v }))
-              }
+              value={drafts[selectedDraftKey] ?? ""}
+              onChange={(v) => {
+                if (valid(draftTarget)) setDrafts((d) => ({ ...d, [selectedDraftKey]: v }));
+              }}
               running={running}
               targetName={sessionTitle(detail.path)}
               onSend={async (msg) => {
                 try {
                   const token = sequenceRef.current.capture("detail");
                   const accepted = await send(msg);
-                  if (accepted && valid(token)) setDrafts(d => ({ ...d, [detail.path]: "" }));
+                  if (accepted && valid(token)) setDrafts(d => ({ ...d, [selectedDraftKey]: "" }));
                 } catch {
                   /* keep draft on failure */
                 }
@@ -780,6 +829,9 @@ export default function App() {
           </div>
         )}
       </div>
+      {showDataAccess && <DataAccessPanel onClose={closeDataAccess}
+        onInsertDraft={canInsertDataDraft ? insertDataDraft : undefined}
+        targetName={canInsertDataDraft && detail ? sessionTitle(detail.path) : undefined} />}
     </div>
   );
 }

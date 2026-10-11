@@ -1,5 +1,7 @@
 mod agent;
 mod config;
+mod data_access;
+mod local_links;
 mod remote;
 mod sessions;
 
@@ -908,6 +910,7 @@ pub fn run() {
             pi_bin_path,
             pi_version,
             export_session_html,
+            local_links::open_local_file,
             open_in_terminal,
             attach_session,
             detach_from_rmux,
@@ -922,6 +925,13 @@ pub fn run() {
             session_status,
             list_running,
             config::list_config,
+            data_access::list_authorized_directories,
+            data_access::choose_authorized_directory,
+            data_access::remove_authorized_directory,
+            data_access::authorized_directory_entries,
+            data_access::import_authorized_file,
+            data_access::list_imported_data_files,
+            data_access::remove_imported_data_file,
             agent::send_message,
             agent::abort_message,
         ])

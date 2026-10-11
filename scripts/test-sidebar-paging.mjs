@@ -78,6 +78,8 @@ try {
       },
       get html() { return html; },
       nodeCount() { return nodes.length; },
+      elements() { return nodes; },
+      titledButtons(title) { return nodes.filter(n => n.type === 'button' && n.props.title === title); },
       rows() { return nodes.filter(n => n.type === 'button' && n.props.className?.startsWith('session-item ')); },
       click(label, index = 0) {
         const matches = nodes.filter(n => typeof n.props.onClick === 'function' && text(n) === label);
@@ -94,6 +96,56 @@ try {
     };
     return api.render();
   }
+  // Optional launcher props stay out of defaults so legacy paging fixtures
+  // retain their original DOM bound. Icon-only actions must be found by title,
+  // not empty child text (Config and other SVG buttons also have empty text).
+  const dataAccessTitle = 'Data access / 数据目录';
+  const configTitle = 'MCP / Agents / Skills config';
+  const legacy = fixture([]);
+  assert.equal(legacy.titledButtons(dataAccessTitle).length, 0, 'optional callback omitted: no launcher');
+  legacy.render({ showDataAccess: true });
+  assert.equal(legacy.titledButtons(dataAccessTitle).length, 0, 'open flag alone does not render launcher');
+  let opens = 0;
+  const launcher = fixture([], { onOpenDataAccess: () => { opens++; } });
+  function assertLauncher(open) {
+    const matches = launcher.titledButtons(dataAccessTitle);
+    assert.equal(matches.length, 1, 'exactly one data-access icon');
+    const button = matches[0];
+    const config = launcher.titledButtons(configTitle)[0];
+    assert.ok(config);
+    const top = launcher.elements().find(n => n.props.className === 'sidebar-top');
+    assert.ok(top, 'launcher belongs to sidebar-top');
+    const siblings = React.Children.toArray(top.props.children);
+    const buttonIndex = siblings.findIndex(n => n.type === 'button' && n.props.title === dataAccessTitle);
+    const configIndex = siblings.findIndex(n => n.type === 'button' && n.props.title === configTitle);
+    assert.ok(buttonIndex >= 0, 'launcher is a direct sidebar-top child');
+    assert.ok(configIndex >= 0, 'Config is a direct sidebar-top child');
+    assert.equal(Math.abs(buttonIndex - configIndex), 1, 'launcher adjacent to Config');
+    assert.deepEqual(button.props.className.trim().split(/\s+/), open ? ['icon-btn', 'active'] : ['icon-btn'], 'same icon-btn style, active only when open');
+    assert.ok(config.props.className.trim().split(/\s+/).includes('icon-btn'), 'Config shares icon-btn style');
+    assert.equal(button.props['aria-label'], dataAccessTitle);
+    assert.equal(button.props['aria-haspopup'], 'dialog');
+    assert.equal(button.props['aria-expanded'], open, 'boolean open state');
+    assert.equal(text(button), '', 'icon-only: no visible text');
+    const icons = natives(button).filter(n => n.type === 'svg');
+    assert.equal(icons.length, 1);
+    assert.equal(Number(icons[0].props.width), 16);
+    assert.equal(Number(icons[0].props.height), 16);
+    assert.doesNotMatch(launcher.html, /class="(?:main-toolbar|data-access-open)(?:\s|")/);
+    return button;
+  }
+  assertLauncher(false).props.onClick();
+  assert.equal(opens, 1, 'one click invokes callback exactly once');
+  launcher.render({ showDataAccess: true }); assertLauncher(true);
+  launcher.render({ showDataAccess: false }); assertLauncher(false);
+  assert.equal(opens, 1, 'state changes do not invoke callback');
+  launcher.render({ remoteHost: 'remote', showConfig: true }); assertLauncher(false);
+  launcher.render({ onOpenDataAccess: undefined, showDataAccess: true });
+  assert.equal(launcher.titledButtons(dataAccessTitle).length, 0, 'removing callback removes launcher');
+  const appSource = await readFile(path.join(root, 'src/App.tsx'), 'utf8');
+  assert.doesNotMatch(appSource, /main-toolbar|data-access-open/, 'App main toolbar launcher was removed');
+  console.log('PASS optional Sidebar data-access icon next to Config: 16x16, icon-btn, accessible open state, one callback, no text/main toolbar');
+
   const main = Array.from({ length: 4000 }, (_, i) => session(i));
   const subs = Array.from({ length: 4000 }, (_, i) => session(i, true));
   const mixed = Array.from({ length: 4000 }, (_, i) => session(i, i >= 2000));

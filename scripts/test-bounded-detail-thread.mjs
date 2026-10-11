@@ -43,11 +43,12 @@ const page = (overrides={}) => ({generation:'fixture-g1',previousCursor:'opaque-
   matchedEntries:3700,returnedEntries:1,hasMore:true,incompleteTail:false,malformedLines:0,
   counters:{messages:3800,user:2000,assistant:1000,toolResult:800,labeled:2},toolPairs:[],payloadBytes:2000,...overrides});
 function nodes(node, out=[]) {
+  if (node?.type?.name === 'HistoryControls') return nodes(node.type(node.props), out);
   if(Array.isArray(node)) node.forEach(n=>nodes(n,out));
   else if(node && typeof node === 'object' && node.props) {out.push(node);nodes(node.props.children,out);}
   return out;
 }
-const text = n => Array.isArray(n) ? n.map(text).join('') : n && typeof n === 'object' && n.props ? text(n.props.children) : n == null || typeof n === 'boolean' ? '' : String(n);
+const text = n => n?.type?.name === 'HistoryControls' ? text(n.type(n.props)) : Array.isArray(n) ? n.map(text).join('') : n && typeof n === 'object' && n.props ? text(n.props.children) : n == null || typeof n === 'boolean' ? '' : String(n);
 try {
   const outfile=path.join(scratch,'thread.mjs');
   await build({stdin:{contents:`export * from './src/components/Thread'; export * from './src/threadItems'; export { api } from './src/api'; export { begin,reset,flushEffects } from 'react';`,resolveDir:root,loader:'tsx'},
@@ -72,6 +73,9 @@ try {
   const queryCalls=[];
   setup({detail:detail([entry('tail')],page()),liveBlocks:[],running:false,pageRequest:{filter:'default'},
     onQuery:async r=>{queryCalls.push(r);props={...props,pageRequest:r};}});
+  const searchRow=nodes(tree).find(n=>n.props.className==='thread-search-row');
+  assert.ok(searchRow.props.children.some(n=>n?.type?.name==='HistoryControls'),'history controls share existing search row');
+  assert.equal(nodes(tree).find(n=>n.type==='details').props.open,undefined,'advanced metadata is collapsed by default');
   input().props.onChange({target:{value:'ancient'}});render();await advance(299);
   assert.equal(queryCalls.length,0,'server search must be debounced');
   await advance(1);assert.deepEqual(queryCalls,[{query:'ancient',filter:'default',branchLeafId:undefined}]);

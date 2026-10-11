@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.9 — 2026-10-11
+
+- Open local Markdown file links through a click-only native command, resolving relative paths against the selected local session CWD instead of the WebView URL. Preserve URL sanitization for other protocols/images; report failures visibly and disable local opening in remote/preview contexts.
+- On macOS, route supported source/text files to a text editor rather than executing scripts; retain ordinary document/folder handlers and reject unsafe executable targets. Linux uses default handlers for supported non-executable files and rejects scripts; Windows local opening is unsupported. No shell interpolation, automatic file reads/uploads or remote path fallback.
+- Make copy deletion retryable when the managed file/directory has already been removed or a manifest update failed; preserve unrelated files and reject replacement symlinks.
+- Compact the history summary beside search: loaded/matched counts and Latest remain visible; branch controls, role/file counts and full notices move into a disclosure. Incomplete/malformed history and failures remain signaled; pagination/search/filter semantics are unchanged.
+
+## 0.1.8 — 2026-10-11
+
+- Move the data-directory launcher into the sidebar beside Config, using the same compact icon-button styling, a folder-lock icon and accessible dialog state. Remove the main-pane toolbar; authorization/import behavior is unchanged.
+- Keep sidebar controls fixed-size at narrow widths, with the title ellipsized instead of squeezing the icons.
+
+## 0.1.7 — 2026-10-11
+
+- Add an explicit macOS data-directory sharing panel: native folder selection, remembered read-only bookmark credentials, on-demand one-level browsing and bounded single-file copies into private app storage. Source authorization and copy deletion are separate actions.
+- Insert only an explicitly selected copy's path into an idle local conversation draft, never send automatically. Recheck source/session epochs; local copy references are not carried into same-path remote drafts.
+- Keep the source broker read-only with traversal/symlink/nonregular-file checks, bounded private manifests and exclusive copy creation. Bookmarks are not exposed to the frontend or model; opening the panel does not scan sources.
+- This is not a filesystem sandbox or permanent allowlist for arbitrary Pi/Python tasks. Direct original-directory access can still prompt. Persistent protected-container access in this nonsandboxed build needs native verification; unsupported bookmark activation must fail without automatic path fallback or Full Disk Access escalation.
+
 ## 0.1.6 — 2026-10-10
 
 - Ordinary detail selection/polling uses a generation-bound active-branch page: 100 entries and at most 256 KiB serialized response. Full branch filters/search/counters, old-page cursors, entry/branch navigation and tool peers remain available.

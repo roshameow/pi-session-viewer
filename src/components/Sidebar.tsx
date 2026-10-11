@@ -160,6 +160,8 @@ export const Sidebar = React.memo(function Sidebar({
   onTransferToRemote,
   onOpenConfig,
   showConfig,
+  onOpenDataAccess,
+  showDataAccess,
   finishedAt,
   remoteHosts,
   remoteHost,
@@ -181,6 +183,8 @@ export const Sidebar = React.memo(function Sidebar({
   onTransferToRemote: (path: string) => Promise<void> | void;
   onOpenConfig: () => void;
   showConfig: boolean;
+  onOpenDataAccess?: () => void;
+  showDataAccess?: boolean;
   finishedAt: Record<string, number>;
   remoteHosts: string[];
   remoteHost: string | null;
@@ -372,6 +376,23 @@ export const Sidebar = React.memo(function Sidebar({
             <circle cx="7" cy="17" r="2.4" fill="var(--bg2)" />
           </svg>
         </button>
+        {onOpenDataAccess && (
+          <button
+            type="button"
+            className={`icon-btn ${showDataAccess ? "active" : ""}`}
+            title="Data access / 数据目录"
+            aria-label="Data access / 数据目录"
+            aria-haspopup="dialog"
+            aria-expanded={!!showDataAccess}
+            onClick={onOpenDataAccess}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+              <rect x="9" y="12" width="6" height="5" rx="1" />
+              <path d="M10 12v-2a2 2 0 0 1 4 0v2" />
+            </svg>
+          </button>
+        )}
         {remoteHosts.length > 0 && (
           <div className="remote-btn-wrap">
             <button

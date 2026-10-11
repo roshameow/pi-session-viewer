@@ -1,8 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, RemoteSyncStatus, DetailPageRequest, EntryBodyChunk } from "./types";
+import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, RemoteSyncStatus, DetailPageRequest, EntryBodyChunk, AuthorizedDirectory, AuthorizedDirectoryPage, ImportedDataFile } from "./types";
 
 export const api = {
+  listAuthorizedDirectories: () => invoke<AuthorizedDirectory[]>("list_authorized_directories"),
+  chooseAuthorizedDirectory: () => invoke<AuthorizedDirectory | null>("choose_authorized_directory"),
+  removeAuthorizedDirectory: (id: string) => invoke<void>("remove_authorized_directory", { id }),
+  authorizedDirectoryEntries: (id: string, relativePath: string, offset = 0) =>
+    invoke<AuthorizedDirectoryPage>("authorized_directory_entries", { id, relativePath, offset }),
+  importAuthorizedFile: (id: string, relativePath: string) =>
+    invoke<ImportedDataFile>("import_authorized_file", { id, relativePath }),
+  listImportedDataFiles: () => invoke<ImportedDataFile[]>("list_imported_data_files"),
+  removeImportedDataFile: (id: string) => invoke<void>("remove_imported_data_file", { id }),
   listProjects: () => invoke<Project[]>("list_projects"),
   listSessions: (projectKey: string) => invoke<SessionMeta[]>("list_sessions", { projectKey }),
   sessionDetailPage: (path: string, request: DetailPageRequest = {}) => invoke<SessionDetail>("session_detail_page", { path, request }),
@@ -13,6 +22,7 @@ export const api = {
   piVersion: () => invoke<string>("pi_version"),
   exportSession: (path: string) => invoke<string>("export_session_html", { sessionPath: path }),
   deleteSession: (path: string) => invoke<void>("delete_session", { path }),
+  openLocalFile: (href: string, sessionPath: string) => invoke<string>("open_local_file", { href, sessionPath }),
   openInTerminal: (path: string) => invoke<string>("open_in_terminal", { sessionPath: path }),
   attachSession: (path: string) => invoke<string>("attach_session", { sessionPath: path }),
   detachFromRmux: (path: string) => invoke<void>("detach_from_rmux", { sessionPath: path }),

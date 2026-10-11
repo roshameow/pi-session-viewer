@@ -1,0 +1,130 @@
+/* A single compact row. Native details hides its always-rendered panel when closed. */
+.history-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.history-controls-count {
+  flex-shrink: 0;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.history-controls-branch {
+  min-width: 0;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cyan);
+}
+.history-controls-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+.history-controls-busy { white-space: nowrap; }
+.history-controls-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.history-controls-warning { color: var(--amber); }
+.history-controls-button,
+.history-controls-summary {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg2);
+  color: var(--fg-dim);
+  font: inherit;
+  line-height: 1.4;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.history-controls-button:hover:not(:disabled),
+.history-controls-summary:hover,
+.history-controls-details[open] > summary {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+.history-controls-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.history-controls-button:focus-visible,
+.history-controls-summary:focus-visible,
+.history-controls-branch-form input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+.history-controls-details { position: relative; flex-shrink: 0; }
+.history-controls-summary {
+  display: block;
+  list-style: none;
+  padding: 3px 7px;
+  font-weight: 700;
+}
+.history-controls-summary::-webkit-details-marker { display: none; }
+.history-controls-flyout {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(360px, calc(100vw - 40px));
+  max-height: min(480px, 65vh);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--fg-dim);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.history-controls-heading { color: var(--fg); font-weight: 600; }
+.history-controls-flyout p { margin: 6px 0; }
+.history-controls-scope { font-size: 10.5px; }
+.history-controls-flyout code { font-family: var(--mono); font-size: inherit; }
+.history-controls-notice {
+  white-space: pre-wrap;
+  padding: 6px 8px;
+  border-left: 2px solid var(--border);
+  background: var(--bg3);
+}
+.history-controls-notice.history-controls-warning { border-color: var(--amber); }
+.history-controls-branch-form { display: flex; gap: 6px; margin-top: 8px; }
+.history-controls-branch-form input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.history-controls-branch-form input:disabled { opacity: 0.5; }
+@media (max-width: 480px) {
+  .history-controls { gap: 4px; }
+  .history-controls-branch { max-width: 64px; }
+  .history-controls-status { gap: 4px; }
+  .history-controls-busy {
+    font-size: 0;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--fg-dim);
+    flex-shrink: 0;
+  }
+}

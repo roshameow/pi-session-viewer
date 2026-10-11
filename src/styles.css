@@ -67,11 +67,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 
-.app-title { font-weight: 700; font-size: 14px; letter-spacing: 0.3px; }
+.app-title { font-weight: 700; font-size: 14px; letter-spacing: 0.3px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-top .icon-btn, .sidebar-top .remote-btn-wrap { flex-shrink: 0; }
 
 .icon-btn {
   background: none;
@@ -486,12 +488,13 @@ body {
 /* search */
 .thread-search-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 8px;
 }
 .thread-search {
-  flex: 1;
+  flex: 1 1 160px;
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--fg);
@@ -577,6 +580,7 @@ body {
 .md em { color: var(--fg); }
 .md a { color: var(--cyan); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
+.md-link-error { color: var(--red); font-size: 0.9em; overflow-wrap: anywhere; }
 .md ul, .md ol { margin: 4px 0; padding-left: 20px; }
 .md li { margin: 1px 0; }
 .md li::marker { color: var(--cyan); }
@@ -1160,4 +1164,86 @@ body {
   padding: 4px 8px;
   border-top: 1px solid var(--border, #333);
   margin-top: 4px;
+}
+
+/* Explicit local directory authorization is independent of Config/session state. */
+.data-access-primary {
+  color: var(--cyan);
+  background: rgba(0, 215, 255, 0.1);
+  border: 1px solid var(--cyan);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.data-access-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.data-access-panel {
+  width: min(920px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+.data-access-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.data-access-header h2 { font-size: 16px; margin: 0; }
+.data-access-content { padding: 16px 20px 24px; overflow-y: auto; min-height: 0; }
+.data-access-content h3 { font-size: 14px; margin: 8px 0; }
+.data-access-content section { margin-top: 20px; }
+.data-access-content p { margin: 6px 0; }
+.data-access-privacy {
+  padding: 10px 14px;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  background: rgba(212, 167, 44, 0.06);
+}
+.data-access-privacy strong { color: var(--amber); }
+.data-access-panel button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  background: var(--bg3);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.data-access-panel button.data-access-primary { border-color: var(--cyan); color: var(--cyan); }
+.data-access-panel button:hover:not(:disabled) { border-color: var(--cyan); }
+.data-access-panel button:disabled { opacity: 0.45; cursor: not-allowed; }
+.data-access-panel button:focus-visible, .sidebar-top .icon-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.data-access-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.data-access-card { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); padding: 10px 12px; margin: 8px 0; }
+.data-access-path { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; white-space: pre-wrap; margin-top: 4px; user-select: text; }
+.data-access-muted { color: var(--fg-dim); font-size: 11.5px; }
+.data-access-error { color: var(--red); overflow-wrap: anywhere; margin: 12px 0; }
+.data-access-browser { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.data-access-entries { list-style: none; padding: 0; margin: 10px 0; }
+.data-access-entries li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding: 6px 0; }
+.data-access-entries li > div { min-width: 0; overflow-wrap: anywhere; }
+.data-access-entries small { color: var(--fg-dim); display: block; }
+.data-access-entries button { flex-shrink: 0; }
+@media (max-width: 600px) {
+  .data-access-backdrop { padding: 8px; }
+  .data-access-header, .data-access-content { padding: 12px; }
 }

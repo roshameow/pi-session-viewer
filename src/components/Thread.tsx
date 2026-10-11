@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentBlock, Entry, SessionDetail, DetailPageRequest, EntryBodyChunk } from "../types";
-import { MemoMarkdown } from "./Markdown";
+import { LocalFileLinkContext, MemoMarkdown } from "./Markdown";
+import { HistoryControls } from "./HistoryControls";
 import { buildThreadItems } from "../threadItems";
 import { api } from "../api";
 
@@ -255,6 +256,8 @@ export function Thread({
   liveBlocks,
   running,
   preview = false,
+  localFilesAllowed = false,
+  canOpenLocalFile,
   pageBusy = false,
   pageNotice,
   pageRequest,
@@ -267,6 +270,8 @@ export function Thread({
   liveBlocks: LiveBlock[];
   running: boolean;
   preview?: boolean;
+  localFilesAllowed?: boolean;
+  canOpenLocalFile?: () => boolean;
   pageBusy?: boolean;
   pageNotice?: string | null;
   pageRequest?: DetailPageRequest;
@@ -275,6 +280,14 @@ export function Thread({
   onLoadEntry?: (entryId: string) => Promise<void>;
   onBodyChunk?: (generation: string, entryId: string, offset: number, recordOffset?: number) => Promise<EntryBodyChunk>;
 }) {
+  const localFileScope = useMemo(() => ({
+    sessionPath: detail.path,
+    allowed: localFilesAllowed && !preview,
+    validate: canOpenLocalFile,
+    disabledReason: preview
+      ? "Opening local files is disabled in preview/demo mode."
+      : "Opening local files is disabled for remote or not-ready sessions.",
+  }), [detail.path, localFilesAllowed, preview, canOpenLocalFile]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -453,6 +466,7 @@ export function Thread({
   };
 
   return (
+    <LocalFileLinkContext.Provider value={localFileScope}>
     <div className="thread">
       <div className="thread-top">
         <div className="thread-top-inner">
@@ -545,17 +559,15 @@ export function Thread({
                 </button>
               </>
             ) : null}
+            {detail.page && <HistoryControls
+              page={detail.page} loaded={detail.active.length} busy={pageBusy} notice={pageNotice}
+              branchLeaf={branchLeaf} activeBranchLeaf={pageRequest?.branchLeafId}
+              onBranchLeafChange={setBranchLeaf}
+              onLatest={() => void onQuery?.({ query: search, filter, branchLeafId: pageRequest?.branchLeafId })}
+              onViewBranch={() => void onQuery?.({ query: search, filter, branchLeafId: branchLeaf || undefined })}
+              disabled={!onQuery}
+            />}
           </div>
-          {detail.page && <div className="session-head-meta" role="status">
-            {detail.active.length} loaded / {detail.page.matchedEntries} matching entries · {detail.page.branchEntries} branch entries / {detail.page.totalEntries} file entries
-            <span> · {detail.page.counters.user} user · {detail.page.counters.assistant} assistant · {detail.page.counters.toolResult} tool results · {detail.page.counters.labeled} labeled</span>
-            {detail.page.incompleteTail && <span> · Incomplete trailing record — awaiting file update</span>}
-            {detail.page.malformedLines > 0 && <span> · {detail.page.malformedLines} malformed lines skipped</span>}
-            {pageNotice && <div>{pageNotice}</div>}
-            <button disabled={pageBusy} onClick={() => void onQuery?.({ query: search, filter, branchLeafId: pageRequest?.branchLeafId })}>Latest</button>
-            <input aria-label="Branch leaf entry ID" placeholder="Branch leaf entry ID (optional)" value={branchLeaf} onChange={e => setBranchLeaf(e.target.value)} />
-            <button disabled={pageBusy} onClick={() => void onQuery?.({ query: search, filter, branchLeafId: branchLeaf || undefined })}>View branch</button>
-          </div>}
           <div className="filter-bar" title="Ctrl+O cycles modes">
             {FILTER_CYCLE.map((m) => (
               <button
@@ -626,6 +638,7 @@ export function Thread({
         </div>
       </div>
     </div>
+    </LocalFileLinkContext.Provider>
   );
 }
 

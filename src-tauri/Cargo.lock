@@ -2209,8 +2209,13 @@ dependencies = [
 
 [[package]]
 name = "pi-session-viewer"
-version = "0.1.6"
+version = "0.1.9"
 dependencies = [
+ "getrandom 0.3.4",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",

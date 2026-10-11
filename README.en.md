@@ -12,7 +12,7 @@ A desktop companion to the Pi TUI: attach for in-depth interaction; detach while
 
 The complete loop: **overview → attach → TUI interaction → detach → overview**. Edited recordings of the real native UI and real Pi TUI / RMUX / model execution—not an SVG concept animation. The GIF is silent.
 
-The workspace and seed history are synthetic examples. This demonstrates local multi-project use, not live remote state. Zooms, highlights and privacy masks are editorial; the final overview is a separate take after task completion, not evidence of continued execution.
+The workspace and seed history are synthetic examples. This demonstrates local multi-project use, not live remote state. Zooms, highlights and privacy masks are editorial; the final overview is a separate take after task completion, not evidence of continued execution. The recording uses an earlier UI; the current app and notes below describe the 0.1.9 sidebar authorization icon and compact history controls.
 
 ## Try a local demo
 
@@ -24,6 +24,24 @@ npm run demo
 ```
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
+
+## 0.1.9 update
+
+- Data access is a small folder-lock icon beside Config, not a main-pane toolbar.
+- Local Markdown file links open through the system with the session CWD; source files use a text editor on macOS, failures are visible, and remote/preview paths never resolve to same-named local files.
+- History navigation shares the search row: loaded/matched count, Latest and `⋯`; complete statistics/notices and branch navigation stay in the disclosure. Search/filter/paging behavior is unchanged.
+
+Build, isolated regressions and local code-signature integrity checks pass. Cross-restart protected-directory authorization and all native default-app handlers remain unverified; this is not a notarized official binary release. See [Changelog](CHANGELOG.md).
+
+## Remembered data directories
+
+Use the small folder-lock icon beside Config in the sidebar (**Data access / 数据目录**) to choose a specific folder through the macOS file picker, remember its authorization, explicitly copy individual files and insert a copy's path into a local conversation draft. The source broker is read-only; no content is automatically sent and Full Disk Access is not requested.
+
+This is a viewer-owned data-sharing broker, **not a filesystem allowlist or sandbox for arbitrary Pi/Python tasks**. Direct task access to original app data can still prompt, and invalid bookmarks may require reselection. Revoking a source and deleting its copies are separate actions. See [usage and privacy boundaries](docs/data-access.md).
+
+## Compact history and local file links
+
+The history count and Latest action sit beside search; `⋯` reveals role/file statistics, full notices and branch navigation. Search/filter/paging behavior is unchanged. Local Markdown file links use a click-only native opener with the selected session CWD; macOS source files use text-editor routing, errors are visible, and remote/preview contexts do not open local paths. See [formats and limitations](docs/local-file-links.md).
 
 ## 0.1.6 large-session details
 
@@ -78,9 +96,16 @@ Install RMUX separately to use persistent terminal features. `npm run build:unsi
 
 ```bash
 npm run test:adaptation
+npm run test:data-access
+npm run test:local-links
+npm run test:history-controls
+npm run test:detail
+node scripts/test-sidebar-paging.mjs
 npm run build
 cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory
-cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
+cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests -- --test-threads=1
+cargo test --offline --manifest-path src-tauri/Cargo.toml data_access_tests -- --test-threads=1
+cargo test --offline --manifest-path src-tauri/Cargo.toml local_links_tests -- --test-threads=1
 ```
 
 The Unix fake CLI test requires Python 3. On macOS, prefix the Rust command with `PATH="$HOME/.cargo/bin:$PATH"` to select an already-installed rustup toolchain if needed; Rust ≥1.88 is required, not dependency upgrades. Full `cargo test` includes local-data / RMUX tests and is not an isolated acceptance check.

@@ -12,7 +12,7 @@
 
 完整闭环：**总览 → attach → TUI 交互 → detach → 总览**。这是实际原生 UI 与真实 Pi TUI / RMUX / 模型执行的剪辑，不是 SVG 概念动画；GIF 本身无声。
 
-工作区与种子 history 为合成示例；仅演示本地多项目，不演示实时 remote。放大、高亮与隐私遮罩为后期处理；结尾是任务完成后的独立总览镜头，不代表任务仍在运行。
+工作区与种子 history 为合成示例；仅演示本地多项目，不演示实时 remote。放大、高亮与隐私遮罩为后期处理；结尾是任务完成后的独立总览镜头，不代表任务仍在运行。实录使用较早版本界面，0.1.9 的侧栏授权图标和紧凑历史工具栏以当前应用与下方说明为准。
 
 使用合成会话浏览真实的侧边栏与对话组件，不需要安装 Pi、RMUX 或配置模型：
 
@@ -27,11 +27,26 @@ npm run demo
 
 ## 桌面功能
 
-- 按工作目录组织会话，浏览消息、thinking、工具调用和输出。
+- 按工作目录组织会话，浏览消息、thinking、工具调用和输出。历史计数收在搜索旁，角色统计／分支跳转在 `⋯` 详情里，搜索／筛选／分页保持可用。
+- 会话内本地文件链接交给系统打开，相对路径按会话项目目录解析；macOS 源码以文本查看、失败就地提示。见[支持格式与安全边界](docs/local-file-links.md)。
 - 将 `pi-subagent-durable` 子会话嵌入父会话列表。显式父 UUID 支持 worker → grandchild，使用去重后的会话路径（优先真实会话）；缺失、自指、循环或歧义关系不猜测父会话。侧栏主会话分组仍只展示直接子代理，嵌套 worker 的父标签显示在子代理区。
 - 区分终端位置与运行状态，支持 RMUX attach/detach。
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
+
+## 0.1.9 更新
+
+- 数据目录授权入口改为侧边栏 Config 旁的文件夹锁小图标，不再占用主区域顶部。
+- 修复本地 Markdown 文件链接：`file:///…`、绝对／项目相对路径交给系统打开，macOS 源码以文本查看，失败在链接旁显示原因；远程与浏览器预览不打开本机同名文件。
+- 历史导航并入搜索行，默认显示已加载／匹配数量、Latest 和 `⋯`；完整统计、提示与分支跳转在详情中。原有搜索、筛选和分页保持不变。
+
+构建、隔离回归和本地签名完整性检查通过；尚未验证微信目录跨重启免授权或所有默认应用的原生打开效果，不将本地自签名构建当作正式公证发行版。详见[版本记录](CHANGELOG.md)。
+
+## 指定数据目录授权
+
+需要读取微信附件等其他 App 的文件时，可点击侧边栏 Config 旁的文件夹锁图标（**Data access / 数据目录**），通过系统文件选择器选择具体子目录并记住授权，再按需复制单个文件、插入本地会话草稿。源目录读取入口只读，不自动发送文件内容，不要求完全磁盘访问。
+
+这是查看器的授权读取入口，**不是任意 Pi/Python 任务的路径白名单或沙箱**。任务直接访问原目录仍可能弹窗；书签失效时可能需要重新选择。移除授权与删除文件副本是独立操作。见[使用说明与隐私边界](docs/data-access.md)。
 
 ## 0.1.6 大会话详情
 
@@ -94,9 +109,16 @@ macOS 本地打包可运行 `npm run build:unsigned -- --bundles app --ci`（只
 
 ```bash
 npm run test:adaptation
+npm run test:data-access
+npm run test:local-links
+npm run test:history-controls
+npm run test:detail
+node scripts/test-sidebar-paging.mjs
 npm run build
 cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory
-cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests
+cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests -- --test-threads=1
+cargo test --offline --manifest-path src-tauri/Cargo.toml data_access_tests -- --test-threads=1
+cargo test --offline --manifest-path src-tauri/Cargo.toml local_links_tests -- --test-threads=1
 ```
 
 Unix fake CLI 测试需要 Python 3。macOS 如已有 rustup 工具链，可在 Rust 命令前加 `PATH="$HOME/.cargo/bin:$PATH"`；选择已安装的 Rust ≥1.88，无需升级依赖。不要将包含本机数据 / RMUX 测试的全量 `cargo test` 当作隔离验收。
