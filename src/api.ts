@@ -23,6 +23,7 @@ export const api = {
   exportSession: (path: string) => invoke<string>("export_session_html", { sessionPath: path }),
   deleteSession: (path: string) => invoke<void>("delete_session", { path }),
   openLocalFile: (href: string, sessionPath: string) => invoke<string>("open_local_file", { href, sessionPath }),
+  revealLocalFile: (href: string, sessionPath: string) => invoke<string>("reveal_local_file", { href, sessionPath }),
   openInTerminal: (path: string) => invoke<string>("open_in_terminal", { sessionPath: path }),
   attachSession: (path: string) => invoke<string>("attach_session", { sessionPath: path }),
   detachFromRmux: (path: string) => invoke<void>("detach_from_rmux", { sessionPath: path }),

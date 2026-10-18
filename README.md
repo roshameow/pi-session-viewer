@@ -34,6 +34,10 @@ npm run demo
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
 
+## 0.1.11 文件操作与完整内容样式
+
+Markdown 按系统 `.md` 关联应用打开（例如 VS Code Insiders），不再被统一交给纯文本编辑器；本地文件链接的右键菜单提供原生“在 Finder 中显示”，按会话项目目录解析，不走网页导航。加载完整内容、取消、释放和下载按钮统一为紧凑的消息工具样式，分块与无损下载行为不变。详见[文件链接操作](docs/file-link-actions.md)。
+
 ## 0.1.10 HTML 报告修复
 
 本地 `.html`／`.htm` 报告改用 macOS 系统默认浏览器打开，默认 Safari 就用 Safari，不再交给文本编辑器。保留原文件位置解析相对图片和样式；JavaScript 绘制的 SVG／Canvas 图表由浏览器渲染。源码脚本仍只按文本查看，不启动临时文件服务器或修改浏览器安全设置。详见 [HTML 与图片说明](docs/html-reports.md)。

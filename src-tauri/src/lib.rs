@@ -911,6 +911,7 @@ pub fn run() {
             pi_version,
             export_session_html,
             local_links::open_local_file,
+            local_links::reveal_local_file,
             open_in_terminal,
             attach_session,
             detach_from_rmux,

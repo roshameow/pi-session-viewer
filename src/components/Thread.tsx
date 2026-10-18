@@ -4,6 +4,7 @@ import { LocalFileLinkContext, MemoMarkdown } from "./Markdown";
 import { HistoryControls } from "./HistoryControls";
 import { buildThreadItems } from "../threadItems";
 import { api } from "../api";
+import "./FullBodyView.css";
 
 // ---------- Live conversation blocks (assembled from pi json events) ----------
 
@@ -691,18 +692,21 @@ export function FullBodyView({ entry, onBodyChunk }: {
     } catch (e) { if (current()) setError(String(e) + " — reload the page if history changed."); }
     finally { if (current()) setBusy(false); }
   };
-  return <div className="meta-line" role="status">
-    <strong>{raw === null ? "Incomplete preview — not the full code/output/evidence." : "Full original record (lossless JSONL)"}</strong>
-    <span> · {entry.bodyRef?.byteLength.toLocaleString()} bytes</span>
-    {raw === null && <button disabled={busy || !onBodyChunk} onClick={() => void load()}>
-      {busy ? `Loading full body… ${progress.toLocaleString()} bytes` : "Load full body"}</button>}
-    {busy && <button onClick={() => { run.current++; setBusy(false); setProgress(0); }}>Cancel body download</button>}
-    {error && <div>{error}</div>}
-    {download && <a href={download} download={`${entry.id}.jsonl`}>Download full original record</a>}
-    {raw !== null && <>
-      <button onClick={() => { setRaw(null); setProgress(0); }}>Release full body</button>
-      <pre className="tool-output" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{raw}</pre>
-    </>}
+  return <div className="full-body" aria-busy={busy}>
+    <div className="full-body-status" role="status" aria-live="polite" aria-atomic="true">
+      <strong className="full-body-label">{raw === null ? "Incomplete preview — not the full code/output/evidence." : "Full original record (lossless JSONL)"}</strong>
+      <span className="full-body-size">{entry.bodyRef?.byteLength.toLocaleString()} bytes</span>
+      {busy && <span className="full-body-progress">{progress.toLocaleString()} bytes loaded</span>}
+      {error && <span className="full-body-error">{error}</span>}
+    </div>
+    <div className="full-body-actions">
+      {raw === null && <button className="full-body-button" disabled={busy || !onBodyChunk} onClick={() => void load()}>
+        {busy ? `Loading full body… ${progress.toLocaleString()} bytes` : "Load full body"}</button>}
+      {busy && <button className="full-body-button" onClick={() => { run.current++; setBusy(false); setProgress(0); }}>Cancel body download</button>}
+      {download && <a className="full-body-button full-body-download" href={download} download={`${entry.id}.jsonl`}>Download full original record</a>}
+      {raw !== null && <button className="full-body-button" onClick={() => { setRaw(null); setProgress(0); }}>Release full body</button>}
+    </div>
+    {raw !== null && <pre className="tool-output full-body-raw-output">{raw}</pre>}
   </div>;
 }
 

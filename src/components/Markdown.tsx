@@ -17,18 +17,70 @@ export const LocalFileLinkContext = React.createContext<LocalFileLinkScope>({
   disabledReason: "Local files are only available in a ready local session.",
 });
 
-function MarkdownAnchor({ node: _node, href, children, ...rest }: React.ComponentProps<"a"> & { node?: unknown }) {
+type LinkMenu = {
+  scope: LocalFileLinkScope;
+  href: string;
+  x: number;
+  y: number;
+  anchor: HTMLAnchorElement;
+};
+
+function MarkdownAnchor({ node, href, children, ...rest }: React.ComponentProps<"a"> & { node?: unknown }) {
   const scope = React.useContext(LocalFileLinkContext);
   const [failure, setFailure] = useState<{ scope: LocalFileLinkScope; href: string; message: string } | null>(null);
-  const current = useRef({ scope, href, request: 0 });
-  if (current.current.scope !== scope || current.current.href !== href) {
-    current.current = { scope, href, request: current.current.request + 1 };
+  const [menu, setMenu] = useState<LinkMenu | null>(null);
+  const activeMenu = useRef<LinkMenu | null>(null);
+  const menuElement = useRef<HTMLSpanElement | null>(null);
+  const current = useRef({ scope, href, node, children, request: 0 });
+  const requestChanged = current.current.scope !== scope || current.current.href !== href;
+  if (requestChanged || current.current.node !== node || current.current.children !== children) {
+    current.current = { scope, href, node, children, request: current.current.request + (requestChanged ? 1 : 0) };
+    // Menus refer to a particular rendered link, but an already-submitted action
+    // still deserves its error if streaming only reparses the SAME href/scope.
+    activeMenu.current = null;
   }
   const mounted = useRef(true);
+  const closeMenu = (restoreFocus = false) => {
+    const previous = activeMenu.current;
+    activeMenu.current = null;
+    setMenu(null);
+    if (restoreFocus) previous?.anchor.focus();
+  };
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; current.current.request++; };
+    return () => { mounted.current = false; activeMenu.current = null; current.current.request++; };
   }, []);
+
+  const visibleMenu = menu && activeMenu.current === menu ? menu : null;
+  useEffect(() => {
+    const element = menuElement.current;
+    if (!visibleMenu || !element) return;
+    const bounds = element.getBoundingClientRect();
+    const margin = 8;
+    element.style.left = `${Math.max(margin, Math.min(visibleMenu.x, window.innerWidth - bounds.width - margin))}px`;
+    element.style.top = `${Math.max(margin, Math.min(visibleMenu.y, window.innerHeight - bounds.height - margin))}px`;
+    element.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [visibleMenu]);
+  useEffect(() => {
+    if (!visibleMenu) return;
+    const outside = (event: PointerEvent) => {
+      if (!menuElement.current?.contains(event.target as Node)) closeMenu();
+    };
+    const dismiss = () => closeMenu();
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu(true); }
+    };
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("keydown", escape, true);
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("keydown", escape, true);
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, [visibleMenu]);
 
   if (!href || !isLocalFileHref(href)) {
     return <a {...rest} href={href || undefined} target="_blank" rel="noreferrer">{children}</a>;
@@ -38,10 +90,11 @@ function MarkdownAnchor({ node: _node, href, children, ...rest }: React.Componen
   const unavailable = !scope.allowed || !scope.sessionPath
     ? scope.disabledReason || "Local files are unavailable for remote or not-ready sessions."
     : !native ? "Opening local files requires the desktop app; browser/demo mode cannot open them." : null;
-  const open = async (event: React.MouseEvent<HTMLAnchorElement>) => {
-    event.preventDefault();
-    // Stale event handlers must not open after a context/source change.
-    if (!mounted.current || current.current.scope !== scope || current.current.href !== href) return;
+  const sameScope = () => mounted.current && current.current.scope === scope && current.current.href === href;
+  const sameLink = () => sameScope() && current.current.node === node && current.current.children === children;
+  const act = async (action: "open" | "reveal") => {
+    // Revalidate on action, including the source epoch before React rerenders.
+    if (!sameLink()) return;
     const request = ++current.current.request;
     setFailure(null);
     if (scope.validate && !scope.validate()) {
@@ -53,25 +106,63 @@ function MarkdownAnchor({ node: _node, href, children, ...rest }: React.Componen
       return;
     }
     try {
-      // Click-only IPC. The backend reads the actual session header cwd and
-      // rejects remote state; the frontend never probes or resolves paths.
-      await api.openLocalFile(href, scope.sessionPath);
+      // Action-only IPC. Only the backend resolves the actual session cwd.
+      await (action === "open" ? api.openLocalFile : api.revealLocalFile)(href, scope.sessionPath);
     } catch (error) {
-      // A native open already started cannot be undone, but a late result must
-      // not propagate into another session, preview, or remote source.
-      if (mounted.current && current.current.scope === scope && current.current.href === href &&
-          current.current.request === request) {
-        setFailure({ scope, href, message: "Could not open local file: " + String(error) });
+      if (sameScope() && current.current.request === request && (!scope.validate || scope.validate())) {
+        setFailure({ scope, href, message: `Could not ${action} local file: ` + String(error) });
       }
     }
   };
+  const showMenu = (anchor: HTMLAnchorElement, x: number, y: number) => {
+    if (!sameLink() || (scope.validate && !scope.validate())) return;
+    const next = { scope, href, x, y, anchor };
+    activeMenu.current = next;
+    setMenu(next);
+  };
+  const choose = (snapshot: LinkMenu, action: "open" | "reveal") => {
+    if (activeMenu.current !== snapshot || !sameLink()) return;
+    closeMenu(true);
+    return act(action);
+  };
+  const menuKey = (event: React.KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key === "Tab") { closeMenu(); return; }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items[next]?.focus();
+  };
   const error = failure?.scope === scope && failure.href === href ? failure.message : null;
   return <>
-    <a {...rest} href={href} onClick={open} onAuxClick={(event) => event.preventDefault()}
-      aria-disabled={!!unavailable}
-      title={unavailable || `Open local file (HTML: default browser; source: text editor; other files: default app). Relative paths use this session's working directory: ${href}`}>
+    <a {...rest} href={href} onClick={(event) => { event.preventDefault(); closeMenu(); return act("open"); }}
+      onAuxClick={(event) => event.preventDefault()}
+      onContextMenu={(event) => {
+        event.preventDefault(); event.stopPropagation();
+        showMenu(event.currentTarget, event.clientX, event.clientY);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault(); event.stopPropagation();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        showMenu(event.currentTarget, bounds.left, bounds.bottom);
+      }}
+      aria-haspopup="menu" aria-expanded={!!visibleMenu} aria-disabled={!!unavailable}
+      title={unavailable || `Open local file (Markdown: configured app; HTML: default browser; scripts: forced text editor; other files: default app). Relative paths use this session's working directory: ${href}`}>
       {children}
     </a>
+    {visibleMenu && <span ref={menuElement} role="menu" aria-label="本地文件" className="md-link-menu"
+      style={{ left: visibleMenu.x, top: visibleMenu.y }} onKeyDown={menuKey}
+      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+      <button type="button" role="menuitem" tabIndex={-1} aria-disabled={!!unavailable} title={unavailable || undefined}
+        onClick={() => choose(visibleMenu, "open")}>打开文件</button>
+      <button type="button" role="menuitem" tabIndex={-1} aria-disabled={!!unavailable} title={unavailable || undefined}
+        onClick={() => choose(visibleMenu, "reveal")}>在 Finder 中显示</button>
+      {unavailable && <span className="md-link-menu-reason">{unavailable}</span>}
+    </span>}
     {error && <span className="md-link-error" role="alert"> {error}</span>}
   </>;
 }

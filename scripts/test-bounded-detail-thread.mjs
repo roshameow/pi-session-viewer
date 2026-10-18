@@ -159,11 +159,24 @@ try {
   const bodyProps={entry:{...previewEntry,bodyRef:{...previewEntry.bodyRef,byteLength:total}},onBodyChunk:(g,id,offset,recordOffset)=>api.sessionEntryBody('/synthetic/52mb.jsonl',g,id,offset,recordOffset)};
   const bodyRender=()=>{begin();tree=FullBodyView(bodyProps);flushEffects();};bodyRender();
   assert.equal(calls.length,0,'preview cannot eagerly fetch body');
+  assert.equal(tree.props.className,'full-body');assert.equal(tree.props['aria-busy'],false);
+  assert.equal(tree.props.role,undefined,'the huge raw record must not be a live status region');
+  assert.equal(button('Load full body').props.className,'full-body-button');
+  assert.equal(nodes(tree).find(n=>n.props.className==='full-body-status').props['aria-live'],'polite');
+  assert.equal(nodes(tree).find(n=>n.props.className==='full-body-actions').type,'div');
+  assert.match(renderToStaticMarkup(tree),/class="full-body" aria-busy="false"/);
   const bodyLoad=button('Load full body').props.onClick();
   for(let i=0;i<20;i++)await Promise.resolve();await bodyLoad;bodyRender();bodyRender();
   assert.equal(calls.length,2);assert.equal(calls[1].args.offset,bytes);assert.equal(calls[0].args.maxBytes,65536);assert.equal(calls[0].args.recordOffset,123);
   assert.ok(text(tree).includes(raw));assert.match(text(tree),/Full original record/);assert.doesNotMatch(text(tree),/Incomplete preview/);
   const download=nodes(tree).find(n=>n.type==='a');assert.ok(download.props.href.startsWith('blob:'));
+  assert.equal(download.props.className,'full-body-button full-body-download');
+  assert.equal(button('Release full body').props.className,'full-body-button');
+  const rawOutput=nodes(tree).find(n=>n.type==='pre');
+  assert.equal(rawOutput.props.className,'tool-output full-body-raw-output');assert.equal(rawOutput.props.style,undefined);
+  assert.equal(rawOutput.props.children,raw,'raw output must remain byte-for-byte original text');
+  assert.ok(!nodes(nodes(tree).find(n=>n.props.className==='full-body-status')).includes(rawOutput),'only small metadata is live');
+  assert.match(renderToStaticMarkup(tree),/class="full-body-button full-body-download"/);
   const downloaded=await(await fetch(download.props.href)).text();assert.equal(downloaded,raw);
   console.log('PASS explicit chunked lossless full JSONL body, code/UTF-8/images/unknown fields and download');
 
@@ -214,6 +227,7 @@ try {
   reset();globalThis.fixture={invoke:async()=>({...chunks[0],nextOffset:null,complete:false})};bodyRender();
   button('Load full body').props.onClick();for(let i=0;i<20;i++)await Promise.resolve();bodyRender();
   assert.match(text(tree),/no progress/);assert.match(text(tree),/Incomplete preview/);assert.doesNotMatch(text(tree),/Full original record/);
+  assert.match(text(nodes(tree).find(n=>n.props.className==='full-body-error')),/no progress/);
   console.log('PASS incomplete body response retains truthful preview/error, no fake completion');
 
   reset();globalThis.fixture={invoke:async()=>({...chunks[1],offset:0,data:'{}'})};bodyRender();
@@ -224,7 +238,14 @@ try {
   reset();let resolveBody;let cancelledCalls=0;
   const blockedBody=new Promise(resolve=>{resolveBody=resolve;});
   globalThis.fixture={invoke:()=>{cancelledCalls++;return blockedBody;}};bodyRender();
-  button('Load full body').props.onClick();bodyRender();button('Cancel body download').props.onClick();bodyRender();
+  button('Load full body').props.onClick();bodyRender();
+  assert.equal(tree.props['aria-busy'],true);
+  assert.equal(button('Loading full body…').props.disabled,true);
+  assert.equal(button('Loading full body…').props.className,'full-body-button');
+  assert.equal(button('Cancel body download').props.className,'full-body-button');
+  assert.match(text(nodes(tree).find(n=>n.props.className==='full-body-progress')),/0 bytes loaded/);
+  assert.match(renderToStaticMarkup(tree),/aria-busy="true"/);
+  button('Cancel body download').props.onClick();bodyRender();assert.equal(tree.props['aria-busy'],false);
   resolveBody(chunks[0]);for(let i=0;i<20;i++)await Promise.resolve();bodyRender();
   assert.equal(cancelledCalls,1);assert.match(text(tree),/Incomplete preview/);
   console.log('PASS explicit body cancellation does not download remaining giant chunks');
@@ -252,5 +273,14 @@ try {
   const source=await readFile(path.join(root,'src/components/Thread.tsx'),'utf8');
   assert.match(source,/key=\{entry\.id\}/);assert.doesNotMatch(source,/key=\{entry\.id \+ idx\}/);
   console.log('PASS stable Entry ID DOM keys (prepend does not remount old Markdown)');
+  assert.match(source,/import "\.\/FullBodyView\.css"/);
+  const bodyCss=await readFile(path.join(root,'src/components/FullBodyView.css'),'utf8');
+  assert.match(bodyCss,/\.full-body-button:focus-visible\s*\{[^}]*outline: 2px solid var\(--cyan\)/);
+  assert.match(bodyCss,/\.full-body-button:disabled\s*\{[^}]*opacity:[^}]*cursor: not-allowed/);
+  assert.match(bodyCss,/\.full-body-button\s*\{[^}]*background: var\(--bg2\)[^}]*font-size: 11px/);
+  assert.match(bodyCss,/\.full-body-button:hover:not\(:disabled\)/);
+  assert.match(bodyCss,/\.full-body-status,\s*\.full-body-actions\s*\{[^}]*flex-wrap: wrap/);
+  assert.match(bodyCss,/\.full-body \.full-body-raw-output\s*\{[^}]*white-space: pre-wrap;[^}]*overflow-wrap: anywhere/);
+  console.log('PASS themed full-body controls, busy state, small live status, focus/disabled/wrap CSS and unstyled lossless raw text');
   console.log('All bounded Thread tests passed (offline synthetic fake IPC, not native E2E).');
 } finally {await rm(scratch,{recursive:true,force:true});}

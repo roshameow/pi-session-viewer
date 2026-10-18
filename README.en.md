@@ -25,6 +25,10 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.11 file actions and full-body styling
+
+Markdown follows its macOS file association (such as VS Code/Insiders), not the forced plain-text editor. Local file links have an explicit session-aware Reveal in Finder context-menu action, not WebKit navigation. Full-body load/cancel/release/download controls use compact themed message actions without changing chunk validation or lossless downloads. See [file-link actions](docs/file-link-actions.md).
+
 ## 0.1.10 HTML report fix
 
 Local HTML/HTM reports use the macOS system HTTPS default browser—Safari when Safari is the default—instead of a text editor. The original file location is retained for relative assets and browser-rendered SVG/Canvas charts. Other source scripts stay in text-editor mode; no temporary file server or browser-security changes. See [HTML and image troubleshooting](docs/html-reports.md).

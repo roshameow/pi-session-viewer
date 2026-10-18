@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 — 2026-10-11
+
+- Respect the macOS file association for non-executable Markdown instead of forcing the plain-text editor; VS Code/Insiders opens Markdown when configured. HTML keeps its default-browser route and source scripts retain text-only safety.
+- Add an explicit local-link context menu with native Reveal in Finder, using the same selected-session CWD, URI and source guards rather than WebKit navigation. Reveal does not launch the selected file; errors are visible and remote/preview paths stay disabled.
+- Restyle full-body preview/load/cancel/release/download controls as compact themed message actions, preserving chunk validation, lossless download and on-demand memory behavior.
+
 ## 0.1.10 — 2026-10-11
 
 - Open local HTML/HTM reports in the macOS system HTTPS default browser, not the text editor or the HTML extension's editor association. Follow Safari/other browser preference without hardcoding or changing system settings; return lookup/open errors instead of silent fallback.

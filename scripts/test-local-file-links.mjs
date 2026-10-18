@@ -2,6 +2,8 @@
 // No filesystem reads of linked paths, native opener, SSH, Pi, or new dependencies.
 // Verified method: walk the actual parser's JSX and retain component hook cells;
 // context-only updates must reach anchors through memo without rerunning the parser.
+// Verified menu method: materialize only host refs/focus/listeners around the real parser; no browser/native opener.
+// Pitfall: retained menu callbacks require a synchronous token and epoch check, not effect-only dismissal.
 // Pitfall: overriding every URL with identity admits unsafe schemes and file: images.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -81,6 +83,23 @@ try {
     }}]});
   const {Markdown,MemoMarkdown,LocalFileLinkContext,Thread,App,isLocalFileHref,localFileUrlTransform,begin,reset,records,flushEffects}=await import(pathToFileURL(outfile));
   let tree, rootNode, seen, f;
+  let hosts = new Map();
+  const elementHosts = new WeakMap();
+  const childHosts = n => Array.isArray(n) ? n.flatMap(childHosts) : elementHosts.has(n) ? [elementHosts.get(n)] : [];
+  function host(node,key,children) {
+    let el=hosts.get(key);
+    if(!el){
+      el={style:{},children:[],props:{},focus(){document.activeElement=this;},
+        getBoundingClientRect(){return this.props.role==='menu'?{width:240,height:80}:{left:20,bottom:40,width:80,height:20};},
+        contains(target){return this===target || this.children.some(c=>c.contains(target));},
+        querySelectorAll(selector){return this.children.flatMap(c=>[...(c.props.role==='menuitem'?[c]:[]),...c.querySelectorAll(selector)]);},
+        querySelector(selector){return this.querySelectorAll(selector)[0];}};
+      hosts.set(key,el);
+    }
+    el.props=node.props;el.children=childHosts(children);Object.assign(el.style,node.props.style);
+    if(typeof node.ref==='function')node.ref(el);else if(node.ref)node.ref.current=el;
+    return el;
+  }
   function walk(node,key='root',values=new Map(),skip=false){
     if(Array.isArray(node))return node.map((n,i)=>walk(n,`${key}/${n?.key ?? i}`,values,skip));
     if(!node?.props)return node;
@@ -99,21 +118,39 @@ try {
       return walk(record.output,key+'/output',values,reuse);
     }
     if(type===React.Fragment)return walk(node.props.children,key+'/fragment',values,skip);
-    return React.createElement(type,{...node.props,children:walk(node.props.children,key+'/children',values,skip)});
+    const children=walk(node.props.children,key+'/children',values,skip);
+    const el=host(node,key,children);
+    const result=React.createElement(type,{...node.props,children});elementHosts.set(result,el);return result;
   }
   function render(){f.Thread=undefined;seen=new Set();tree=walk(rootNode);for(const [id,r] of records){if(!seen.has(id)){for(const c of r.cells)c?.cleanup?.();records.delete(id);}}flushEffects();}
   async function pump(){for(let i=0;i<25;i++){await Promise.resolve();render();}}
   function fixture(node,native=true){
-    reset();f={calls:[],parses:0,invoke:async(name,args)=>{f.calls.push({name,args});assert.equal(name,'open_local_file');return '/resolved/by/backend';}};
+    reset();f={calls:[],parses:0,invoke:async(name,args)=>{f.calls.push({name,args});assert.ok(['open_local_file','reveal_local_file'].includes(name));return '/resolved/by/backend';}};
     globalThis.fixture=f;
-    globalThis.window={...(native?{__TAURI_INTERNALS__:{}}:{}),setTimeout:()=>1,clearTimeout:()=>{},addEventListener:()=>{},removeEventListener:()=>{}};
-    globalThis.document={hidden:false,activeElement:null,addEventListener:()=>{},removeEventListener:()=>{}};
+    hosts=new Map();
+    const listeners=new Map();
+    const addEventListener=(name,fn)=>{if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(fn);};
+    const removeEventListener=(name,fn)=>listeners.get(name)?.delete(fn);
+    f.dispatch=(name,event={})=>{for(const fn of [...(listeners.get(name)||[])])fn(event);};
+    f.listeners=listeners;
+    globalThis.window={innerWidth:640,innerHeight:480,...(native?{__TAURI_INTERNALS__:{}}:{}),setTimeout:()=>1,clearTimeout:()=>{},addEventListener,removeEventListener};
+    globalThis.document={hidden:false,activeElement:null,addEventListener,removeEventListener};
     globalThis.requestAnimationFrame=()=>1;globalThis.cancelAnimationFrame=()=>{};
     rootNode=node;render();return f;
   }
   const scope=(sessionPath='/sessions/actual.jsonl',allowed=true)=>({sessionPath,allowed});
   const markdown=(body,value=scope())=>React.createElement(LocalFileLinkContext.Provider,{value},React.createElement(MemoMarkdown,{text:body}));
   const anchor=label=>nodes(tree).find(n=>n.type==='a'&&text(n)===label);
+  const menu=()=>nodes(tree).find(n=>n.props.role==='menu');
+  const item=label=>nodes(tree).find(n=>n.props.role==='menuitem'&&text(n)===label);
+  function context(label,x=630,y=475){
+    const a=anchor(label);let prevented=false,stopped=false;
+    a.props.onContextMenu({currentTarget:elementHosts.get(a),clientX:x,clientY:y,preventDefault(){prevented=true;},stopPropagation(){stopped=true;}});
+    assert.ok(prevented&&stopped,'local menu suppresses only the built-in local context menu');render();return menu();
+  }
+  async function choose(label){const button=item(label);assert.ok(button,`missing menu item ${label}`);await button.props.onClick();render();}
+  function key(key,extra={}){return {key,preventDefault(){},stopPropagation(){},...extra};}
+
   async function click(label){const a=anchor(label);assert.ok(a,`missing anchor ${label}`);let prevented=false;await a.props.onClick({preventDefault(){prevented=true;}});assert.equal(prevented,true);render();}
 
   const local=['file:///tmp/report%20one.pdf','file://localhost/tmp/report.pdf','/tmp/report.pdf','~/reports/report.pdf','./artifacts/report.pdf','../output.csv','notes.md','README.md:12:3','src/file.ts:12','artifacts/report.html','file:///tmp/report%20with%20images.htm'];
@@ -135,7 +172,7 @@ try {
 
   fixture(markdown('[web](https://example.test/x) [http](http://example.test) [mail](mailto:test@example.test) [fragment](#section) [js](javascript:alert%281%29) [data](data:text/html,evil) [scheme](custom:evil) [network](//evil.test/file) [host](file://evil.test/tmp/a) ![file-image](file:///tmp/private.png) ![data-image](data:image/png,evil) ![js-image](javascript:evil) ![network-image](//evil.test/a.png) ![web-image](https://example.test/a.png)'));
   for(const label of ['web','http','mail','fragment']){
-    const a=anchor(label);assert.ok(a.props.href);assert.equal(a.props.target,'_blank');assert.equal(a.props.rel,'noreferrer');assert.equal(a.props.onClick,undefined);
+    const a=anchor(label);assert.ok(a.props.href);assert.equal(a.props.target,'_blank');assert.equal(a.props.rel,'noreferrer');assert.equal(a.props.onClick,undefined);assert.equal(a.props.onContextMenu,undefined);assert.equal(a.props.onKeyDown,undefined);
   }
   for(const label of ['js','data','scheme','network','host'])assert.equal(anchor(label).props.href,undefined,`${label} rejected`);
   const images=nodes(tree).filter(n=>n.type==='img');assert.equal(images.find(n=>n.props.alt==='file-image').props.src,'');assert.equal(images.find(n=>n.props.alt==='web-image').props.src,'https://example.test/a.png');
@@ -188,6 +225,106 @@ try {
   assert.equal(f.calls.length,0);
   assert.match(text(tree),/Session\/source changed/);
   console.log('PASS synchronous scope validator rejects a stale click before context rerender');
+
+  // Right-click only presents choices. Both actions retain the exact original
+  // href + session identity; neither the parser nor the menu resolves a path.
+  fixture(markdown('[artifact](./artifacts/report.pdf)'));
+  const originalAnchor=elementHosts.get(anchor('artifact'));
+  let m=context('artifact');assert.ok(m);assert.equal(m.type,'span','legal inside Markdown paragraphs');
+  assert.equal(f.calls.length,0,'right-click must not invoke either action');
+  assert.equal(document.activeElement,elementHosts.get(item('打开文件')),'focus first menu item');
+  const menuHost=elementHosts.get(m);
+  assert.equal(menuHost.style.left,'392px');assert.equal(menuHost.style.top,'392px','menu fits viewport');
+  m.props.onKeyDown(key('ArrowDown',{currentTarget:menuHost}));
+  assert.equal(document.activeElement,elementHosts.get(item('在 Finder 中显示')));
+  m.props.onKeyDown(key('Home',{currentTarget:menuHost}));assert.equal(document.activeElement,elementHosts.get(item('打开文件')));
+  m.props.onKeyDown(key('End',{currentTarget:menuHost}));assert.equal(document.activeElement,elementHosts.get(item('在 Finder 中显示')));
+  m.props.onKeyDown(key('ArrowDown',{currentTarget:menuHost}));assert.equal(document.activeElement,elementHosts.get(item('打开文件')));
+  m.props.onKeyDown(key('ArrowUp',{currentTarget:menuHost}));assert.equal(document.activeElement,elementHosts.get(item('在 Finder 中显示')));
+  await choose('在 Finder 中显示');assert.equal(menu(),undefined);
+  assert.deepEqual(f.calls,[{name:'reveal_local_file',args:{href:'./artifacts/report.pdf',sessionPath:'/sessions/actual.jsonl'}}]);
+  context('artifact');await choose('打开文件');
+  assert.deepEqual(f.calls[1],{name:'open_local_file',args:f.calls[0].args});
+  for(const eventKey of ['ContextMenu','F10']){
+    anchor('artifact').props.onKeyDown(key(eventKey,{shiftKey:eventKey==='F10',currentTarget:originalAnchor}));render();assert.ok(menu());
+    f.dispatch('keydown',key('Escape'));render();assert.equal(menu(),undefined);assert.equal(document.activeElement,originalAnchor);
+  }
+  context('artifact');f.dispatch('pointerdown',{target:elementHosts.get(item('打开文件'))});render();assert.ok(menu(),'inside pointer keeps menu');
+  f.dispatch('pointerdown',{target:{}});render();assert.equal(menu(),undefined);
+  for(const event of ['scroll','resize']){context('artifact');f.dispatch(event);render();assert.equal(menu(),undefined);}
+  context('artifact');const removedAction=item('在 Finder 中显示').props.onClick;
+  rootNode=null;render();await removedAction();assert.equal(f.calls.length,2);
+  for(const name of ['pointerdown','keydown','scroll','resize'])assert.equal(f.listeners.get(name)?.size||0,0,`unmount cleans ${name}`);
+  console.log('PASS local context menu: no automatic IPC, exact open/reveal arguments, legal inline markup, bounds, keyboard/focus, outside/scroll/resize/unmount');
+
+  for(const reason of ['missing file','native Finder failed']){
+    fixture(markdown('[failure](../missing.pdf)'));context('failure');
+    f.invoke=async(name,args)=>{f.calls.push({name,args});throw new Error(reason);};
+    await choose('在 Finder 中显示');assert.match(text(tree),new RegExp('Could not reveal local file: Error: '+reason));
+    assert.equal(nodes(tree).filter(n=>n.props.role==='alert').length,1);assert.equal(f.calls.length,1,'no retries');
+  }
+  console.log('PASS missing/native reveal failures use the existing inline alert without retries');
+
+  for(const setup of [
+    ()=>fixture(markdown('[blocked](./report.pdf)'),false),
+    ()=>fixture(markdown('[blocked](./report.pdf)',{...scope('',false),disabledReason:'Preview files are disabled.'})),
+    ()=>fixture(markdown('[blocked](./report.pdf)',{...scope('/remote/session',false),disabledReason:'Remote files are disabled.'})),
+  ]){
+    setup();context('blocked');assert.equal(f.calls.length,0);
+    for(const label of ['打开文件','在 Finder 中显示']){
+      assert.equal(item(label).props['aria-disabled'],true);assert.ok(item(label).props.title);
+    }
+    const savedOpen=item('打开文件').props.onClick;await choose('在 Finder 中显示');await savedOpen();render();
+    assert.equal(f.calls.length,0);assert.equal(nodes(tree).filter(n=>n.props.role==='alert').length,1);
+    context('blocked');await choose('打开文件');assert.equal(f.calls.length,0);
+  }
+  console.log('PASS browser/preview/remote menu actions disabled with reason; no open/reveal IPC');
+
+  const streamingScope=scope();
+  fixture(markdown('Report: [streaming](./report.md)',streamingScope));context('streaming');
+  const streamingFailure=deferred();f.invoke=(name,args)=>{f.calls.push({name,args});return streamingFailure.promise;};
+  const pendingStreaming=item('在 Finder 中显示').props.onClick();
+  rootNode=markdown('Report: [streaming](./report.md) newly streamed text',streamingScope);render();
+  streamingFailure.reject(new Error('same-link Finder failure after reparse'));
+  await pendingStreaming;render();
+  assert.match(text(tree),/same-link Finder failure after reparse/);
+  assert.equal(f.calls.length,1);
+  console.log('PASS streaming reparse keeps genuine in-flight errors visible for the unchanged href/session');
+
+  let epoch=1;const guardedScope={...scope(),validate:()=>epoch===1};
+  fixture(markdown('[stale](./a.pdf)',guardedScope));context('stale');
+  const staleReveal=item('在 Finder 中显示').props.onClick;epoch=2;
+  await staleReveal();render();assert.equal(f.calls.length,0,'epoch rejects before React update');assert.equal(menu(),undefined);
+  assert.match(text(tree),/Session\/source changed/);
+  epoch=1;context('stale');const contextAction=item('在 Finder 中显示').props.onClick;
+  const parses=f.parses;rootNode=markdown('[stale](./a.pdf)',scope('/sessions/B.jsonl'));render();
+  assert.equal(f.parses,parses,'menu context change does not reparse Markdown');assert.equal(menu(),undefined);
+  await contextAction();assert.equal(f.calls.length,0);
+  context('stale');const propsAction=item('在 Finder 中显示').props.onClick;
+  rootNode=markdown('[stale](./different.pdf)',scope('/sessions/B.jsonl'));render();assert.equal(menu(),undefined);await propsAction();assert.equal(f.calls.length,0);
+  // Changing other Markdown content also invalidates a same-href menu.
+  const stableScope=scope();rootNode=markdown('[stale](./a.pdf)',stableScope);render();context('stale');const reparseAction=item('在 Finder 中显示').props.onClick;
+  rootNode=markdown('changed [stale](./a.pdf)',stableScope);render();assert.equal(menu(),undefined);await reparseAction();assert.equal(f.calls.length,0);
+  epoch=1;rootNode=markdown('[pendingReveal](./a.pdf)',guardedScope);render();context('pendingReveal');
+  const lateReveal=deferred();f.invoke=(name,args)=>{f.calls.push({name,args});return lateReveal.promise;};
+  const operationReveal=item('在 Finder 中显示').props.onClick;const revealing=operationReveal();epoch=2;
+  lateReveal.reject('late stale Finder failure');await revealing;render();assert.doesNotMatch(text(tree),/late stale Finder failure/);
+  assert.equal(f.calls.length,1);await operationReveal();assert.equal(f.calls.length,1,'closed menu token cannot act twice');
+  fixture(markdown('[pending](./a.pdf)'));context('pending');
+  const oldReveal=deferred();f.invoke=(name,args)=>{f.calls.push({name,args});return oldReveal.promise;};
+  const pendingReveal=item('在 Finder 中显示').props.onClick();
+  rootNode=markdown('[pending](./a.pdf)',scope('/sessions/new.jsonl'));render();
+  oldReveal.reject('wrong-session Finder error');await pendingReveal;render();assert.doesNotMatch(text(tree),/wrong-session Finder error/);
+  context('pending');const unmountedReveal=deferred();f.invoke=()=>unmountedReveal.promise;
+  const pendingUnmount=item('在 Finder 中显示').props.onClick();rootNode=null;render();
+  unmountedReveal.reject('unmounted Finder error');await pendingUnmount;assert.equal(records.size,0);
+  fixture(markdown('[pending](./a.pdf)'));context('pending');
+  const earlierReveal=deferred();f.invoke=(name,args)=>{f.calls.push({name,args});return earlierReveal.promise;};
+  const earlier=item('在 Finder 中显示').props.onClick();render();context('pending');
+  f.invoke=async(name,args)=>{f.calls.push({name,args});throw new Error('newest request error');};
+  await choose('打开文件');earlierReveal.reject('superseded reveal error');await earlier;render();
+  assert.match(text(tree),/newest request error/);assert.doesNotMatch(text(tree),/superseded reveal error/);
+  console.log('PASS menu epoch/context/props invalidation and stale/superseded/unmounted in-flight error suppression');
 
   // Real App source sequencing; replace its heavy children only to inspect props.
   fixture(null);

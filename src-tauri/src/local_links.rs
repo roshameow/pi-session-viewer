@@ -1,6 +1,6 @@
-//! Click-only local document opening. No directory enumeration, transcript parsing,
-//! shell command, model send, or automatic opener launch. Source is captured once
-//! for the entire operation, just like the other source-aware blocking commands.
+//! Click-only local document opening and Finder reveal. No directory enumeration,
+//! transcript parsing, shell command, model send, or automatic opener launch.
+//! Source is captured once for the entire operation, like other source-aware commands.
 
 use crate::{remote, sessions};
 use std::path::{Path, PathBuf};
@@ -8,26 +8,62 @@ use std::process::Command;
 
 #[tauri::command]
 pub async fn open_local_file(href: String, session_path: String) -> Result<String, String> {
+    local_file_action(href, session_path, LocalAction::Open).await
+}
+
+#[tauri::command]
+pub async fn reveal_local_file(href: String, session_path: String) -> Result<String, String> {
+    local_file_action(href, session_path, LocalAction::Reveal).await
+}
+
+#[derive(Clone, Copy)]
+enum LocalAction {
+    Open,
+    Reveal,
+}
+
+async fn local_file_action(
+    href: String,
+    session_path: String,
+    action: LocalAction,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         remote::with_current_source(|| {
-            // Reject before consulting local roots or reading any header.
-            reject_remote(remote::current_host().is_some())?;
-            let roots = [
-                sessions::sessions_dir(),
-                sessions::pi_agent_dir().join("agent-logs"),
-            ];
-            open_with(
-                &href,
-                &session_path,
-                &roots,
-                std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-                default_browser,
-                run_opener,
-            )
+            with_local_source(remote::current_host().is_some(), || {
+                // Only a remote source is rejected here. Browser-preview/readiness
+                // gates belong to the frontend; neither API accepts a source flag.
+                let roots = [
+                    sessions::sessions_dir(),
+                    sessions::pi_agent_dir().join("agent-logs"),
+                ];
+                let home = std::env::var_os("HOME").map(PathBuf::from);
+                match action {
+                    LocalAction::Open => open_with(
+                        &href,
+                        &session_path,
+                        &roots,
+                        home.as_deref(),
+                        default_browser,
+                        run_opener,
+                    ),
+                    LocalAction::Reveal => {
+                        reveal_with(&href, &session_path, &roots, home.as_deref(), run_opener)
+                    }
+                }
+            })
         })
     })
     .await
-    .map_err(|e| format!("Local file opener task failed: {e}"))?
+    .map_err(|e| format!("Local file action task failed: {e}"))?
+}
+
+fn with_local_source<T>(
+    is_remote: bool,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    // Reject before constructing local roots or performing ANY local reads.
+    reject_remote(is_remote)?;
+    action()
 }
 
 fn reject_remote(is_remote: bool) -> Result<(), String> {
@@ -298,6 +334,7 @@ fn resolve_target(href: &str, cwd: &Path, home: Option<&Path>) -> Result<PathBuf
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FileKind {
     Html,
+    Markdown,
     Text,
     Document,
 }
@@ -333,11 +370,24 @@ fn file_kind(path: &Path) -> Option<FileKind> {
     if matches!(ext.as_str(), "html" | "htm") {
         return Some(FileKind::Html);
     }
+    if matches!(ext.as_str(), "md" | "markdown" | "mdx") {
+        // An exact filename like notes.md:12 is not a Markdown association.
+        // Preserve its existing forced-text treatment rather than guessing a handler.
+        return Some(
+            if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case(&ext))
+            {
+                FileKind::Markdown
+            } else {
+                FileKind::Text
+            },
+        );
+    }
     if matches!(
         ext.as_str(),
-        "md" | "markdown"
-            | "mdx"
-            | "txt"
+        "txt"
             | "text"
             | "json"
             | "jsonl"
@@ -536,18 +586,26 @@ struct OpenTarget {
     opener_path: PathBuf,
 }
 
-fn validate_target(path: &Path) -> Result<OpenTarget, String> {
+/// Shared existence/type/path checks, deliberately independent of launch policy.
+/// Reveal may select a program or unknown extension, but never launches it.
+fn canonical_target(path: &Path) -> Result<(PathBuf, std::fs::Metadata), String> {
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("Local target is unavailable: {e}"))?;
-    if dangerous_extension(path) || dangerous_extension(&canonical) {
-        return Err("Opening programs, installers, or application bundles is not allowed".into());
-    }
+    clean_text(canonical.to_str().ok_or("Local target path is not UTF-8")?)?;
     let metadata = canonical
         .metadata()
         .map_err(|e| format!("Cannot inspect local target: {e}"))?;
     if !metadata.is_file() && !metadata.is_dir() {
-        return Err("Only regular documents and directories can be opened".into());
+        return Err("Only regular files and directories are supported".into());
+    }
+    Ok((canonical, metadata))
+}
+
+fn validate_target(path: &Path) -> Result<OpenTarget, String> {
+    let (canonical, metadata) = canonical_target(path)?;
+    if dangerous_extension(path) || dangerous_extension(&canonical) {
+        return Err("Opening programs, installers, or application bundles is not allowed".into());
     }
     let mut force_text = false;
     let mut html = false;
@@ -562,17 +620,25 @@ fn validate_target(path: &Path) -> Result<OpenTarget, String> {
             return Err("Opening script files safely is unsupported on this platform".into());
         }
         html = canonical_kind == FileKind::Html;
-        force_text = cfg!(target_os = "macos") && canonical_kind == FileKind::Text;
+        // Ordinary Markdown respects its own system association (VS Code,
+        // Insiders, or any user preference), not the default plain-text editor.
+        // A script-looking alias must not bypass the forced-text guard either.
+        force_text = cfg!(target_os = "macos")
+            && (canonical_kind == FileKind::Text
+                || (canonical_kind == FileKind::Markdown && script_extension(path)));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o111 != 0 && !force_text {
-                return Err("Opening executable files is not allowed".into());
+            if metadata.permissions().mode() & 0o111 != 0 {
+                if cfg!(target_os = "macos") && canonical_kind == FileKind::Markdown {
+                    force_text = true;
+                }
+                if !force_text {
+                    return Err("Opening executable files is not allowed".into());
+                }
             }
         }
     }
-    let text = canonical.to_str().ok_or("Local target path is not UTF-8")?;
-    clean_text(text)?;
     // Keep an ordinary HTML link at its original absolute location so relative
     // images/styles resolve beside that file, not beside an import/temp copy.
     // For a file symlink alias, open the real HTML and its real asset parent:
@@ -675,6 +741,10 @@ fn run_opener(mut command: Command) -> Result<(), String> {
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("Could not start local file opener: {e}"))?;
+    check_opener_output(output)
+}
+
+fn check_opener_output(output: std::process::Output) -> Result<(), String> {
     if !output.status.success() {
         return Err(format!(
             "Local file opener failed ({}): {}",
@@ -693,8 +763,7 @@ fn open_with(
     browser: impl FnOnce() -> Result<PathBuf, String>,
     opener: impl FnOnce(Command) -> Result<(), String>,
 ) -> Result<String, String> {
-    let cwd = session_cwd(session_path, roots)?;
-    let target = validate_target(&resolve_target(href, &cwd, home)?)?;
+    let target = validate_target(&session_target(href, session_path, roots, home)?)?;
     opener(opener_command(&target, browser)?)?;
     Ok(target
         .path
@@ -703,8 +772,54 @@ fn open_with(
         .to_owned())
 }
 
+fn session_target(
+    href: &str,
+    session_path: &str,
+    roots: &[PathBuf],
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let cwd = session_cwd(session_path, roots)?;
+    resolve_target(href, &cwd, home)
+}
+
+fn reveal_command(path: &Path) -> Result<Command, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("/usr/bin/open");
+        command.args(["-R", "--"]).arg(path);
+        Ok(command)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err("Finder reveal is unsupported on this platform".into())
+    }
+}
+
+fn reveal_with(
+    href: &str,
+    session_path: &str,
+    roots: &[PathBuf],
+    home: Option<&Path>,
+    revealer: impl FnOnce(Command) -> Result<(), String>,
+) -> Result<String, String> {
+    let (canonical, _) = canonical_target(&session_target(href, session_path, roots, home)?)?;
+    // Select the validated real target, not a symlink alias elsewhere. Unlike
+    // opening HTML, revealing has no relative-asset base to preserve. There is
+    // intentionally no launch-type allowlist or browser lookup on this path.
+    revealer(reveal_command(&canonical)?)?;
+    Ok(canonical
+        .to_str()
+        .ok_or("Local target path is not UTF-8")?
+        .to_owned())
+}
+
 #[cfg(test)]
 mod local_links_tests {
+    // Isolated regression method: cargo test --offline --manifest-path
+    // src-tauri/Cargo.toml local_links_tests -- --test-threads=1
+    // Use synthetic headers, explicit file modes, fake browser providers and
+    // Command inspection; test exit statuses with synthetic Output, never open.
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -752,6 +867,11 @@ mod local_links_tests {
         fn file(&self, name: &str) -> PathBuf {
             let path = self.cwd.join(name);
             std::fs::write(&path, "synthetic document\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
             path
         }
         fn open(&self, href: &str) -> Result<String, String> {
@@ -770,7 +890,13 @@ mod local_links_tests {
                     #[cfg(target_os = "macos")]
                     {
                         let target = Path::new(args.last().unwrap());
-                        if target.is_file() && file_kind(target) == Some(FileKind::Text) {
+                        if target.is_file()
+                            && (file_kind(target) == Some(FileKind::Text)
+                                || (file_kind(target) == Some(FileKind::Markdown) && {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    target.metadata().unwrap().permissions().mode() & 0o111 != 0
+                                }))
+                        {
                             assert_eq!(
                                 args,
                                 vec![
@@ -797,6 +923,31 @@ mod local_links_tests {
                     Ok(()) // Inspect, never launch.
                 },
             )
+        }
+        #[cfg(target_os = "macos")]
+        fn expect_reveal(&self, href: &str, target: &Path) {
+            let canonical = target.canonicalize().unwrap();
+            let result = reveal_with(
+                href,
+                self.session.to_str().unwrap(),
+                &self.roots,
+                Some(&self.cwd),
+                |command| {
+                    assert_eq!(command.get_program(), "/usr/bin/open");
+                    assert_eq!(
+                        command.get_args().collect::<Vec<_>>(),
+                        vec![
+                            std::ffi::OsStr::new("-R"),
+                            std::ffi::OsStr::new("--"),
+                            canonical.as_os_str(),
+                        ]
+                    );
+                    assert!(command.get_current_dir().is_none());
+                    Ok(()) // Never execute open, a shell, or the target.
+                },
+            )
+            .unwrap();
+            assert_eq!(Path::new(&result), canonical);
         }
         fn expect(&self, href: &str, target: &Path) {
             assert_eq!(
@@ -957,6 +1108,14 @@ mod local_links_tests {
                 |_| panic!("opener reached for {href}")
             )
             .is_err());
+            assert!(reveal_with(
+                href,
+                f.session.to_str().unwrap(),
+                &f.roots,
+                Some(&f.cwd),
+                |_| panic!("revealer reached for {href}")
+            )
+            .is_err());
         }
     }
 
@@ -1013,11 +1172,12 @@ mod local_links_tests {
 
     #[test]
     fn remote_source_rejected_before_any_local_reads_or_launch() {
-        let result = reject_remote(true).and_then(|_| -> Result<(), String> {
+        let result = with_local_source(true, || -> Result<(), String> {
             panic!("must not inspect roots or read session headers")
         });
         assert!(result.unwrap_err().contains("remote"));
-        assert!(reject_remote(false).is_ok());
+        // Local preview is a frontend concept, not an additional backend gate.
+        assert_eq!(with_local_source(false, || Ok("local")).unwrap(), "local");
         // No global current-host mutation: tests cannot switch another test's source.
     }
 
@@ -1104,7 +1264,7 @@ mod local_links_tests {
             let name = format!("source.{ext}");
             let path = f.file(&name);
             #[cfg(target_os = "macos")]
-            f.expect(&name, &path); // Fixture checks exact [-t, --, canonical] args.
+            f.expect(&name, &path); // Markdown association; other source text uses -t.
             #[cfg(not(target_os = "macos"))]
             {
                 if ["ts", "tsx", "js", "jsx", "py", "sh", "zsh", "bash", "swift"].contains(&ext) {
@@ -1269,9 +1429,9 @@ mod local_links_tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn javascript_and_python_remain_forced_text_without_browser_lookup() {
+    fn javascript_python_and_shell_remain_forced_text_without_browser_lookup() {
         let f = Fixture::new();
-        for name in ["source.js", "source.py"] {
+        for name in ["source.js", "source.py", "source.sh"] {
             let source = f.file(name).canonicalize().unwrap();
             open_with(
                 name,
@@ -1324,6 +1484,216 @@ mod local_links_tests {
         std::fs::set_permissions(&html, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(f.open("html-alias.md").is_err());
         assert!(f.open(html.to_str().unwrap()).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn markdown_uses_its_system_association_without_text_editor_or_browser_override() {
+        let f = Fixture::new();
+        for name in ["README.md", "guide.markdown", "page.mdx", "UPPER.MD"] {
+            let canonical = f.file(name).canonicalize().unwrap();
+            let result = open_with(
+                name,
+                f.session.to_str().unwrap(),
+                &f.roots,
+                None,
+                || panic!("Markdown must not consult the browser"),
+                |command| {
+                    assert_eq!(command.get_program(), "/usr/bin/open");
+                    assert_eq!(
+                        command.get_args().collect::<Vec<_>>(),
+                        vec![std::ffi::OsStr::new("--"), canonical.as_os_str()]
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(Path::new(&result), canonical);
+        }
+        // A bare README is still plain text, not a promised Markdown association.
+        let readme = f.file("README");
+        f.expect("README", &readme);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn markdown_executable_and_script_alias_guards_stay_forced_text() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let f = Fixture::new();
+        let markdown = f.file("executable.mdx");
+        std::fs::set_permissions(&markdown, std::fs::Permissions::from_mode(0o755)).unwrap();
+        f.expect("executable.mdx", &markdown); // Fixture checks -t for executable Markdown.
+        let script = f.file("real.py"); // Even a non-executable Python target must use -t.
+        symlink(&script, f.cwd.join("script-alias.md")).unwrap();
+        f.expect("script-alias.md", &script);
+        let markdown = f.file("ordinary.md").canonicalize().unwrap();
+        symlink(&markdown, f.cwd.join("reverse-alias.py")).unwrap();
+        open_with(
+            "reverse-alias.py",
+            f.session.to_str().unwrap(),
+            &f.roots,
+            None,
+            || panic!("script alias must not consult the browser"),
+            |command| {
+                assert_eq!(command.get_program(), "/usr/bin/open");
+                assert_eq!(
+                    command.get_args().collect::<Vec<_>>(),
+                    vec![
+                        std::ffi::OsStr::new("-t"),
+                        std::ffi::OsStr::new("--"),
+                        markdown.as_os_str(),
+                    ]
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reveal_uses_literal_canonical_finder_selection_for_files_and_directories() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let f = Fixture::new();
+        let name = "-中文 'quoted'; $(touch SHOULD_NOT_EXIST).md";
+        let file = f.file(name);
+        for href in [
+            name.to_owned(),
+            format!("./{name}"),
+            format!("~/{name}"),
+            file.to_str().unwrap().to_owned(),
+        ] {
+            f.expect_reveal(&href, &file);
+        }
+        let encoded = file
+            .to_str()
+            .unwrap()
+            .replace(' ', "%20")
+            .replace("中文", "%E4%B8%AD%E6%96%87");
+        f.expect_reveal(&format!("file://localhost{encoded}#L12"), &file);
+        let literal_percent = f.file("literal%20.md");
+        f.expect_reveal("literal%2520.md", &literal_percent); // Exactly one decoding pass.
+        f.expect_reveal(".", &f.cwd);
+        let folder = f.cwd.join("Program.app");
+        std::fs::create_dir(&folder).unwrap();
+        f.expect_reveal("Program.app", &folder);
+        for name in ["unknown.bin", "program.command", "script.py", "page.html"] {
+            let file = f.file(name);
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            f.expect_reveal(name, &file); // No launch allowlist or browser lookup.
+        }
+        let program = f.cwd.join("program.command");
+        symlink(&program, f.cwd.join("document-alias.md")).unwrap();
+        f.expect_reveal("document-alias.md", &program); // Select real target, not alias.
+        assert!(!f.cwd.join("SHOULD_NOT_EXIST").exists());
+    }
+
+    #[test]
+    fn reveal_reuses_session_root_and_target_validation_before_any_command() {
+        let f = Fixture::new();
+        let outside = f.root.join("outside.jsonl");
+        std::fs::write(&outside, "not a session header").unwrap();
+        for session in [outside, f.root.join("nonexistent.jsonl")] {
+            assert_eq!(
+                reveal_with(
+                    "anything",
+                    session.to_str().unwrap(),
+                    &f.roots,
+                    None,
+                    |_| panic!("outside session must not reach revealer"),
+                )
+                .unwrap_err(),
+                "Session path is outside the local session roots"
+            );
+        }
+        for href in [
+            "absent.md",
+            "file://server/a",
+            "file://user@localhost/a",
+            "file://localhost:3/a",
+            "file:///a?q=1",
+            "file:///a#other",
+            "file:///a%00b",
+            "file:///a%FF",
+            "file:///a%ZZ",
+            "file:relative",
+            "file:////server/a",
+            "file:///%5Cserver/a",
+            "%2F%2Fserver/a",
+            "%6Aavascript%3Aalert(1)",
+        ] {
+            assert!(reveal_with(
+                href,
+                f.session.to_str().unwrap(),
+                &f.roots,
+                None,
+                |_| panic!("invalid target reached revealer: {href}"),
+            )
+            .is_err());
+        }
+        #[cfg(unix)]
+        {
+            let socket = f.cwd.join("socket.md");
+            let _socket = std::os::unix::net::UnixDatagram::bind(&socket).unwrap();
+            let control = f.file("control\nname.md");
+            std::os::unix::fs::symlink(control, f.cwd.join("control-alias.md")).unwrap();
+            std::os::unix::fs::symlink(f.cwd.join("missing"), f.cwd.join("dangling.md")).unwrap();
+            for href in ["socket.md", "control-alias.md", "dangling.md"] {
+                assert!(reveal_with(
+                    href,
+                    f.session.to_str().unwrap(),
+                    &f.roots,
+                    None,
+                    |_| panic!("invalid target reached revealer: {href}"),
+                )
+                .is_err());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reveal_fake_failure_and_native_exit_status_are_not_reported_as_success() {
+        use std::os::unix::process::ExitStatusExt;
+        let f = Fixture::new();
+        f.file("notes.md");
+        assert_eq!(
+            reveal_with(
+                "notes.md",
+                f.session.to_str().unwrap(),
+                &f.roots,
+                None,
+                |_| Err("fake Finder exit failure".into())
+            )
+            .unwrap_err(),
+            "fake Finder exit failure"
+        );
+        // Exercise the shared wait-status check with synthetic output, no process.
+        let output = |code, stderr: &[u8]| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.to_vec(),
+        };
+        assert!(check_opener_output(output(0, b"")).is_ok());
+        let error = check_opener_output(output(7, b"synthetic Finder failure\n")).unwrap_err();
+        assert!(error.contains("7"));
+        assert!(error.contains("synthetic Finder failure"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn finder_reveal_is_explicitly_unsupported_elsewhere() {
+        let f = Fixture::new();
+        f.file("notes.md");
+        let error = reveal_with(
+            "notes.md",
+            f.session.to_str().unwrap(),
+            &f.roots,
+            None,
+            |_| panic!("must not launch on unsupported platforms"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unsupported"));
     }
 
     #[test]
