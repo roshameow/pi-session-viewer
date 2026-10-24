@@ -23,10 +23,37 @@ export function isLocalFileHref(href: string): boolean {
   return !/^[^/?#]*:/.test(href);
 }
 
+// Validate without serializing: native opening must receive the exact link URL,
+// including an explicit port, trailing slash, query, and fragment.
+export function isWebHref(href: string): boolean {
+  if (!/^https?:\/\/[^/]/i.test(href) || /[\u0000-\u0020\u007f\\]/.test(href)) return false;
+  try {
+    const url = new URL(href);
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      !!url.hostname && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+export function isLoopbackWebHref(href: string): boolean {
+  if (!isWebHref(href)) return false;
+  return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(href).hostname);
+}
+
 export const localFileUrlTransform: UrlTransform = (url, key, node) => {
   // Only anchors get the narrow file: exception. In particular, file: image
   // sources retain react-markdown's default sanitization and cannot load files.
   if (url.startsWith("//")) return "";
-  if (key === "href" && node.tagName === "a" && isLocalFileHref(url)) return url;
+  if (key === "href" && node.tagName === "a") {
+    if (isLocalFileHref(url)) return url;
+    if (/^https?:/i.test(url)) {
+      // micromark percent-encodes IPv6 authority brackets. Restore only that
+      // syntax so URL validation and native opening see the actual HTTP URL;
+      // never decode paths, query strings, fragments, or credentials.
+      const webUrl = url.replace(/^(https?:\/\/)%5b([a-f0-9:.]+)%5d(?=[:/?#]|$)/i, "$1[$2]");
+      return isWebHref(webUrl) ? webUrl : "";
+    }
+  }
   return defaultUrlTransform(url);
 };

@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod data_access;
 mod local_links;
+mod web_links;
 mod remote;
 mod sessions;
 
@@ -912,6 +913,8 @@ pub fn run() {
             export_session_html,
             local_links::open_local_file,
             local_links::reveal_local_file,
+            web_links::open_web_url,
+            web_links::reveal_web_url,
             open_in_terminal,
             attach_session,
             detach_from_rmux,

@@ -5,6 +5,11 @@
 // Verified menu method: materialize only host refs/focus/listeners around the real parser; no browser/native opener.
 // Pitfall: retained menu callbacks require a synchronous token and epoch check, not effect-only dismissal.
 // Pitfall: overriding every URL with identity admits unsafe schemes and file: images.
+// Verified HTTP method: exercise the real assistant sentence/HTTP URL through
+// Thread + parser, then assert exact click-only web IPC (no file fallback/probe).
+// Verified pitfalls: local scope.validate is false even for ready remote web
+// links; micromark escapes IPv6 authority brackets as %5B/%5D before urlTransform.
+// Keep HTTP browser eligibility separate and restore only authority brackets.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -67,7 +72,7 @@ const detail = (p='/sessions/actual.jsonl', body='[artifact](./artifacts/report.
 const deferred = () => {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 try {
   const outfile = path.join(scratch,'fixture.mjs');
-  await build({stdin:{contents:`export { Markdown, MemoMarkdown, LocalFileLinkContext } from './src/components/Markdown'; export { Thread } from './src/components/Thread'; export { default as App } from './src/App'; export { isLocalFileHref, localFileUrlTransform } from './src/localFileLinks'; export { begin, reset, records, flushEffects } from 'react';`,resolveDir:root,loader:'tsx'},
+  await build({stdin:{contents:`export { Markdown, MemoMarkdown, LocalFileLinkContext } from './src/components/Markdown'; export { Thread } from './src/components/Thread'; export { default as App } from './src/App'; export { isLocalFileHref, isWebHref, isLoopbackWebHref, localFileUrlTransform } from './src/localFileLinks'; export { begin, reset, records, flushEffects } from 'react';`,resolveDir:root,loader:'tsx'},
     bundle:true,platform:'node',format:'esm',outfile,external:[require.resolve('react'),'react/jsx-runtime'],logLevel:'silent',plugins:[{name:'offline-local-links',setup(b){
       b.onResolve({filter:/^react$/},()=>({path:'react',namespace:'fixture'}));
       b.onResolve({filter:/^react-markdown$/},()=>({path:'markdown',namespace:'fixture'}));
@@ -81,7 +86,7 @@ try {
         const name=p.split('/').pop();return {contents:`export function ${name}(props) {globalThis.fixture.${name}=props;return null;} ${name==='Thread'?'export const appendLiveEvents=(prev,batch)=>[...prev,...batch];':''}`};
       });
     }}]});
-  const {Markdown,MemoMarkdown,LocalFileLinkContext,Thread,App,isLocalFileHref,localFileUrlTransform,begin,reset,records,flushEffects}=await import(pathToFileURL(outfile));
+  const {Markdown,MemoMarkdown,LocalFileLinkContext,Thread,App,isLocalFileHref,isWebHref,isLoopbackWebHref,localFileUrlTransform,begin,reset,records,flushEffects}=await import(pathToFileURL(outfile));
   let tree, rootNode, seen, f;
   let hosts = new Map();
   const elementHosts = new WeakMap();
@@ -125,7 +130,7 @@ try {
   function render(){f.Thread=undefined;seen=new Set();tree=walk(rootNode);for(const [id,r] of records){if(!seen.has(id)){for(const c of r.cells)c?.cleanup?.();records.delete(id);}}flushEffects();}
   async function pump(){for(let i=0;i<25;i++){await Promise.resolve();render();}}
   function fixture(node,native=true){
-    reset();f={calls:[],parses:0,invoke:async(name,args)=>{f.calls.push({name,args});assert.ok(['open_local_file','reveal_local_file'].includes(name));return '/resolved/by/backend';}};
+    reset();f={calls:[],parses:0,invoke:async(name,args)=>{f.calls.push({name,args});assert.ok(['open_local_file','reveal_local_file','open_web_url','reveal_web_url'].includes(name));return '/resolved/by/backend';}};
     globalThis.fixture=f;
     hosts=new Map();
     const listeners=new Map();
@@ -170,7 +175,7 @@ try {
   assert.equal(isLocalFileHref('javascript:12'),false);
   console.log('PASS actual Markdown parser retains file/localhost/POSIX/home/relative anchors; click-only exact href+session IPC');
 
-  fixture(markdown('[web](https://example.test/x) [http](http://example.test) [mail](mailto:test@example.test) [fragment](#section) [js](javascript:alert%281%29) [data](data:text/html,evil) [scheme](custom:evil) [network](//evil.test/file) [host](file://evil.test/tmp/a) ![file-image](file:///tmp/private.png) ![data-image](data:image/png,evil) ![js-image](javascript:evil) ![network-image](//evil.test/a.png) ![web-image](https://example.test/a.png)'));
+  fixture(markdown('[web](https://example.test/x) [http](http://example.test) [mail](mailto:test@example.test) [fragment](#section) [js](javascript:alert%281%29) [data](data:text/html,evil) [scheme](custom:evil) [network](//evil.test/file) [host](file://evil.test/tmp/a) ![file-image](file:///tmp/private.png) ![data-image](data:image/png,evil) ![js-image](javascript:evil) ![network-image](//evil.test/a.png) ![web-image](https://example.test/a.png)'),false);
   for(const label of ['web','http','mail','fragment']){
     const a=anchor(label);assert.ok(a.props.href);assert.equal(a.props.target,'_blank');assert.equal(a.props.rel,'noreferrer');assert.equal(a.props.onClick,undefined);assert.equal(a.props.onContextMenu,undefined);assert.equal(a.props.onKeyDown,undefined);
   }
@@ -181,6 +186,145 @@ try {
   for(const bad of ['#fragment','//host/x','javascript:evil','data:text/html,x','file://server/x','file://user@localhost/x','file:relative','file://localhost:80/x','file:////server/x','\\server\\x',' /tmp/a'])assert.equal(isLocalFileHref(bad),false,bad);
   assert.equal(localFileUrlTransform('file:///tmp/a','src',{tagName:'img'}),'');
   console.log('PASS normal HTTP/mailto/fragment links, unsafe schemes/network authorities rejected, file: image still sanitized');
+
+  // Public fixture mirrors the actual assistant sentence and formatted HTTP
+  // viewer link, not a file: substitute. No server probe is needed by the UI.
+  const viewerUrl='http://127.0.0.1:5194/experiments/model/iteration-55/viewer/';
+  const viewerText=`已继续更新：[查看新版三维模型](${viewerUrl})`;
+  fixture(React.createElement(Thread,{detail:detail('/sessions/viewer.jsonl',viewerText),liveBlocks:[],running:false,localFilesAllowed:true,canOpenLocalFile:()=>true}));
+  assert.equal(text(tree).includes('已继续更新：查看新版三维模型'),true);
+  assert.equal(anchor('查看新版三维模型').props.href,viewerUrl);
+  assert.equal(f.calls.length,0,'HTTP parser/render has no RPC or filesystem/server probes');
+  await click('查看新版三维模型');
+  assert.deepEqual(f.calls,[{name:'open_web_url',args:{url:viewerUrl}}]);
+  context('查看新版三维模型');assert.equal(f.calls.length,1,'HTTP right-click has no RPC');
+  assert.equal(menu().props['aria-label'],'网页链接');
+  assert.equal(document.activeElement,elementHosts.get(item('在默认浏览器中打开')));
+  assert.equal(item('在 Finder 中显示对应文件').props['aria-disabled'],false);
+  await choose('在 Finder 中显示对应文件');
+  assert.deepEqual(f.calls[1],{name:'reveal_web_url',args:{url:viewerUrl,sessionPath:'/sessions/viewer.jsonl'}});
+  context('查看新版三维模型');await choose('在默认浏览器中打开');
+  assert.deepEqual(f.calls[2],f.calls[0]);
+  assert.ok(f.calls.every(c=>!['open_local_file','reveal_local_file'].includes(c.name)),'HTTP never falls back to a guessed file');
+  let auxPrevented=false;
+  await anchor('查看新版三维模型').props.onAuxClick({button:1,preventDefault(){auxPrevented=true;}});render();
+  assert.equal(auxPrevented,true);assert.deepEqual(f.calls[3],f.calls[0],'middle-click keeps native HTTP browser path');
+  const afterMiddle=f.calls.length;
+  await anchor('查看新版三维模型').props.onAuxClick({button:2,preventDefault(){}});render();
+  assert.equal(f.calls.length,afterMiddle,'right auxiliary click must not open a page');
+  console.log('PASS actual assistant HTTP viewer sentence: click-only open_web_url, explicit Finder reveal_web_url+sessionPath, exact port/path/trailing slash');
+
+  const webUrls=[viewerUrl+'?mode=solid&label=%E4%B8%89#camera',
+    'http://localhost:5194/experiments/model/iteration-55/viewer/',
+    'http://[::1]:5194/experiments/model/iteration-55/viewer/?x=1#view',
+    'https://example.test:8443/a/?q=a%20b#part'];
+  for(const url of webUrls){
+    assert.equal(isWebHref(url),true);
+    const loopback=!url.includes('example.test');assert.equal(isLoopbackWebHref(url),loopback);
+    fixture(markdown(`[web](${url})`));assert.equal(f.calls.length,0);
+    assert.equal(typeof anchor('web').props.onClick,'function',JSON.stringify({url,props:anchor('web').props}));await click('web');assert.deepEqual(f.calls,[{name:'open_web_url',args:{url}}]);
+    context('web');assert.equal(f.calls.length,1);
+    if(loopback){await choose('在 Finder 中显示对应文件');assert.deepEqual(f.calls[1],{name:'reveal_web_url',args:{url,sessionPath:'/sessions/actual.jsonl'}});}
+    else {assert.equal(item('在 Finder 中显示对应文件'),undefined);assert.match(text(menu()),/网页无本地文件映射/);}
+  }
+  console.log('PASS loopback IPv4/localhost/IPv6 mapping options; exact query/fragment; external HTTP has no Finder option');
+
+  // Remote validators reject filesystem actions, not ordinary browser opens.
+  for(const url of [viewerUrl,'https://example.test/page/']){
+    fixture(React.createElement(Thread,{detail:detail('/remote/session.jsonl',`[remote](${url})`),liveBlocks:[],running:false,localFilesAllowed:false,canOpenLocalFile:()=>false}));
+    assert.equal(anchor('remote').props['aria-disabled'],false);
+    await click('remote');assert.deepEqual(f.calls,[{name:'open_web_url',args:{url}}]);
+    context('remote');assert.equal(item('在默认浏览器中打开').props['aria-disabled'],false);
+    if(url===viewerUrl){
+      const finder=item('在 Finder 中显示对应文件');assert.equal(finder.props['aria-disabled'],true);assert.match(finder.props.title,/remote or not-ready/);
+      await choose('在 Finder 中显示对应文件');assert.equal(f.calls.length,1);assert.match(text(tree),/Session\/source changed/);
+      context('remote');
+    }
+    await choose('在默认浏览器中打开');assert.deepEqual(f.calls[1],f.calls[0]);
+  }
+  fixture(React.createElement(Markdown,{text:`[unscoped](${viewerUrl})`}));await click('unscoped');
+  assert.deepEqual(f.calls,[{name:'open_web_url',args:{url:viewerUrl}}]);
+  console.log('PASS ready-remote/unscoped HTTP opening ignores local-FS eligibility; remote loopback Finder remains disabled, no SSH/port forward');
+
+  fixture(markdown(viewerText),false);
+  const demoViewer=anchor('查看新版三维模型');
+  assert.equal(demoViewer.props.href,viewerUrl);assert.equal(demoViewer.props.target,'_blank');assert.equal(demoViewer.props.rel,'noreferrer');
+  for(const handler of ['onClick','onContextMenu','onKeyDown'])assert.equal(demoViewer.props[handler],undefined);
+  assert.equal(f.calls.length,0);
+  fixture(markdown('[mail](mailto:test@example.test) [fragment](#section) [js](javascript:evil) [data](data:text/html,x) [host](file://evil.test/tmp/a) [bad-http](http:opaque) [credentials](https://user:pass@example.test/) ![file-image](file:///tmp/private.png) ![web-image](http://127.0.0.1:5194/a.png)'));
+  for(const label of ['mail','fragment']){assert.equal(anchor(label).props.target,'_blank');assert.equal(anchor(label).props.onClick,undefined);}
+  for(const label of ['js','data','host','bad-http','credentials'])assert.equal(anchor(label).props.href,undefined);
+  assert.equal(nodes(tree).find(n=>n.type==='img'&&n.props.alt==='file-image').props.src,'');
+  assert.equal(nodes(tree).find(n=>n.type==='img'&&n.props.alt==='web-image').props.src,'http://127.0.0.1:5194/a.png');
+  assert.equal(f.calls.length,0);
+  for(const url of ['http:opaque','https:///example.test/x','https://user:pass@example.test/','https://example.test:99999/','http://','http://example.test/\\\\x','https://example.test/\n'])assert.equal(isWebHref(url),false,url);
+  console.log('PASS browser/demo HTTP stays standard target=_blank; native mailto/fragment, unsafe URLs and image filters unchanged');
+
+  for(const action of ['open','reveal']){
+    fixture(markdown(`[failed-web](${viewerUrl})`));
+    f.invoke=async(name,args)=>{f.calls.push({name,args});throw new Error(action==='open'?'native browser failed':'server content does not match session cwd candidate');};
+    if(action==='open')await click('failed-web');else {context('failed-web');await choose('在 Finder 中显示对应文件');}
+    assert.match(text(tree),new RegExp(`Could not ${action} web URL: Error:`));
+    assert.equal(nodes(tree).filter(n=>n.props.role==='alert').length,1);assert.equal(f.calls.length,1,'no fallback or retry after HTTP mapping/open failure');
+    assert.equal(f.calls[0].name,action==='open'?'open_web_url':'reveal_web_url');
+  }
+  console.log('PASS native HTTP open/mapping failures visible in link alert, never guess cwd or silently retry as a file');
+
+  // Both HTTP actions retain scope/href and request identity across renders.
+  // Do NOT use the local-only validator for open: it is false in remote sessions.
+  for(const action of ['open','reveal']){
+    for(const change of ['source','url','unmount','superseded']){
+      const webScope={...scope(),validate:()=>true};
+      const body=url=>`[pending-web](${url})`;
+      fixture(markdown(body(viewerUrl),webScope));
+      const pendingWeb=deferred();f.invoke=(name,args)=>{f.calls.push({name,args});return pendingWeb.promise;};
+      const savedClick=anchor('pending-web').props.onClick;
+      let savedAction=savedClick;
+      if(action==='reveal'){context('pending-web');savedAction=item('在 Finder 中显示对应文件').props.onClick;}
+      const pendingAction=action==='open'?savedAction({preventDefault(){}}):savedAction();
+      if(change==='source')rootNode=markdown(body(viewerUrl),{...scope('/remote/other.jsonl',false),validate:()=>false});
+      if(change==='url')rootNode=markdown(body(viewerUrl+'?changed=1'),webScope);
+      if(change==='unmount')rootNode=null;
+      render();
+      if(change==='superseded'){
+        f.invoke=async(name,args)=>{f.calls.push({name,args});throw Error('new HTTP action error');};
+        await click('pending-web');
+      }else{
+        if(action==='open')await savedAction({preventDefault(){}});else await savedAction();
+        assert.equal(f.calls.length,1,'captured old link/menu callback cannot act after scope/href/unmount');
+      }
+      pendingWeb.reject('stale HTTP failure');await pendingAction;render();
+      assert.doesNotMatch(text(tree),/stale HTTP failure/);
+      if(change==='superseded')assert.match(text(tree),/new HTTP action error/);
+    }
+  }
+  const liveWebScope=scope();fixture(markdown(viewerText,liveWebScope));
+  const streamedWeb=deferred();f.invoke=(name,args)=>{f.calls.push({name,args});return streamedWeb.promise;};
+  const streamingWebOpen=anchor('查看新版三维模型').props.onClick({preventDefault(){}});
+  rootNode=markdown(viewerText+' 新内容',liveWebScope);render();
+  streamedWeb.reject('same HTTP link native failure');await streamingWebOpen;render();assert.match(text(tree),/same HTTP link native failure/);
+  let webEpoch=1;const webEpochScope={...scope(),validate:()=>webEpoch===1};
+  fixture(markdown(viewerText,webEpochScope));context('查看新版三维模型');
+  const staleWebFinder=item('在 Finder 中显示对应文件').props.onClick;webEpoch=2;
+  await staleWebFinder();render();assert.equal(f.calls.length,0);assert.match(text(tree),/Session\/source changed/);
+  await click('查看新版三维模型');assert.deepEqual(f.calls,[{name:'open_web_url',args:{url:viewerUrl}}]);
+  console.log('PASS HTTP scope/URL/unmount/superseded stale errors and captured callbacks suppressed; streaming same-link failures retained; Finder epoch guarded independently');
+
+  fixture(markdown(viewerText));
+  const webAnchorHost=elementHosts.get(anchor('查看新版三维模型'));
+  for(const eventKey of ['ContextMenu','F10']){
+    anchor('查看新版三维模型').props.onKeyDown(key(eventKey,{shiftKey:eventKey==='F10',currentTarget:webAnchorHost}));render();
+    assert.equal(f.calls.length,0);assert.ok(menu());
+    const webMenuHost=elementHosts.get(menu());assert.equal(webMenuHost.style.left,'20px');
+    menu().props.onKeyDown(key('ArrowDown',{currentTarget:webMenuHost}));
+    assert.equal(document.activeElement,elementHosts.get(item('在 Finder 中显示对应文件')));
+    f.dispatch('keydown',key('Escape'));render();assert.equal(menu(),undefined);assert.equal(document.activeElement,webAnchorHost);
+  }
+  context('查看新版三维模型');assert.equal(elementHosts.get(menu()).style.left,'392px');assert.equal(elementHosts.get(menu()).style.top,'392px');
+  for(const event of ['scroll','resize','pointerdown']){context('查看新版三维模型');f.dispatch(event,{target:{}});render();assert.equal(menu(),undefined);}
+  context('查看新版三维模型');const capturedWebMenu=item('在默认浏览器中打开').props.onClick;
+  rootNode=markdown(viewerText+' newly streamed',scope());render();assert.equal(menu(),undefined);await capturedWebMenu();assert.equal(f.calls.length,0);
+  console.log('PASS HTTP menu keyboard/focus, viewport bounds, outside/scroll/resize close and reparse token invalidation');
 
   fixture(markdown('[failed](./not-there.pdf)'));
   f.invoke=async(name,args)=>{f.calls.push({name,args});throw new Error('native opener failed');};

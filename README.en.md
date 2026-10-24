@@ -25,6 +25,10 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.12 web preview links
+
+Desktop HTTP(S) links explicitly use the system browser, not WebView new-window behavior. Localhost previews retain their port/path/trailing slash and are never converted to file URLs. Finder mapping is available only after bounded verification against a file inside the selected local session project; uncertain mappings report an error instead of guessing. Remote-session web links can open, but cannot map to local files. See [web links and localhost limits](docs/web-links.md).
+
 ## 0.1.11 file actions and full-body styling
 
 Markdown follows its macOS file association (such as VS Code/Insiders), not the forced plain-text editor. Local file links have an explicit session-aware Reveal in Finder context-menu action, not WebKit navigation. Full-body load/cancel/release/download controls use compact themed message actions without changing chunk validation or lossless downloads. See [file-link actions](docs/file-link-actions.md).

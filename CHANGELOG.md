@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.12 — 2026-10-24
+
+- Route desktop HTTP(S) links through the native system browser instead of relying on WebView new-window behavior. Preserve localhost ports, URL paths, queries, fragments and trailing slashes; never convert a development preview into a file URL.
+- Add a separate guarded Finder action for loopback HTTP pages: resolve only inside the selected local session project, verify bounded server content against the candidate, tolerate only known Vite client/HMR transforms, and fail explicitly rather than guessing unrelated local paths. Ordinary remote-session web links remain openable; remote file mapping is disabled.
+- Cover the HTTP model-viewer message shape in the real Markdown renderer, including left/middle click, explicit menu actions, error visibility and stale contexts. Separate server/page rendering evidence from native Safari/App dispatch acceptance; do not publish user session/model captures.
+
 ## 0.1.11 — 2026-10-11
 
 - Respect the macOS file association for non-executable Markdown instead of forcing the plain-text editor; VS Code/Insiders opens Markdown when configured. HTML keeps its default-browser route and source scripts retain text-only safety.

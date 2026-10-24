@@ -81,7 +81,7 @@ fn clean_text(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn session_cwd(session_path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+pub(super) fn session_cwd(session_path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     clean_text(session_path)?;
     let input = Path::new(session_path);
     if !input.is_absolute() || input.extension().is_none_or(|e| e != "jsonl") {
@@ -736,7 +736,7 @@ fn opener_command(
     }
 }
 
-fn run_opener(mut command: Command) -> Result<(), String> {
+pub(super) fn run_opener(mut command: Command) -> Result<(), String> {
     let output = command
         .stdin(std::process::Stdio::null())
         .output()
@@ -782,7 +782,7 @@ fn session_target(
     resolve_target(href, &cwd, home)
 }
 
-fn reveal_command(path: &Path) -> Result<Command, String> {
+pub(super) fn reveal_command(path: &Path) -> Result<Command, String> {
     #[cfg(target_os = "macos")]
     {
         let mut command = Command::new("/usr/bin/open");

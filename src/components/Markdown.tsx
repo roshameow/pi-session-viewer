@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
-import { isLocalFileHref, localFileUrlTransform } from "../localFileLinks";
+import { isLocalFileHref, isWebHref, isLoopbackWebHref, localFileUrlTransform } from "../localFileLinks";
 
 export type LocalFileLinkScope = {
   sessionPath: string;
@@ -82,14 +82,20 @@ function MarkdownAnchor({ node, href, children, ...rest }: React.ComponentProps<
     };
   }, [visibleMenu]);
 
-  if (!href || !isLocalFileHref(href)) {
+  const native = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  const web = !!href && isWebHref(href);
+  if (!href || (!isLocalFileHref(href) && !(web && native))) {
     return <a {...rest} href={href || undefined} target="_blank" rel="noreferrer">{children}</a>;
   }
 
-  const native = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  const unavailable = !scope.allowed || !scope.sessionPath
+  const localUnavailable = !scope.allowed || !scope.sessionPath
     ? scope.disabledReason || "Local files are unavailable for remote or not-ready sessions."
     : !native ? "Opening local files requires the desktop app; browser/demo mode cannot open them." : null;
+  // Ordinary HTTP opening is not a filesystem action: it also works for remote
+  // sessions, whose allowed/validate flags intentionally reject local file IPC.
+  const unavailable = web ? null : localUnavailable;
+  const loopback = web && isLoopbackWebHref(href);
+  const revealUnavailable = web && !loopback ? "网页无本地文件映射" : localUnavailable;
   const sameScope = () => mounted.current && current.current.scope === scope && current.current.href === href;
   const sameLink = () => sameScope() && current.current.node === node && current.current.children === children;
   const act = async (action: "open" | "reveal") => {
@@ -97,25 +103,32 @@ function MarkdownAnchor({ node, href, children, ...rest }: React.ComponentProps<
     if (!sameLink()) return;
     const request = ++current.current.request;
     setFailure(null);
-    if (scope.validate && !scope.validate()) {
+    const localAction = !web || action === "reveal";
+    if (localAction && scope.validate && !scope.validate()) {
       setFailure({ scope, href, message: "Session/source changed; choose a ready local session before opening this file." });
       return;
     }
-    if (unavailable) {
-      setFailure({ scope, href, message: unavailable });
+    const reason = action === "reveal" ? revealUnavailable : unavailable;
+    if (reason) {
+      setFailure({ scope, href, message: reason });
       return;
     }
     try {
-      // Action-only IPC. Only the backend resolves the actual session cwd.
-      await (action === "open" ? api.openLocalFile : api.revealLocalFile)(href, scope.sessionPath);
+      // Action-only IPC. Do not probe the server or guess a cwd on render/menu.
+      // Only the backend verifies a loopback server's mapping to a session file.
+      if (web) {
+        await (action === "open" ? api.openWebUrl(href) : api.revealWebUrl(href, scope.sessionPath));
+      } else {
+        await (action === "open" ? api.openLocalFile : api.revealLocalFile)(href, scope.sessionPath);
+      }
     } catch (error) {
-      if (sameScope() && current.current.request === request && (!scope.validate || scope.validate())) {
-        setFailure({ scope, href, message: `Could not ${action} local file: ` + String(error) });
+      if (sameScope() && current.current.request === request && (!localAction || !scope.validate || scope.validate())) {
+        setFailure({ scope, href, message: `Could not ${action} ${web ? "web URL" : "local file"}: ` + String(error) });
       }
     }
   };
   const showMenu = (anchor: HTMLAnchorElement, x: number, y: number) => {
-    if (!sameLink() || (scope.validate && !scope.validate())) return;
+    if (!sameLink() || (!web && scope.validate && !scope.validate())) return;
     const next = { scope, href, x, y, anchor };
     activeMenu.current = next;
     setMenu(next);
@@ -139,7 +152,10 @@ function MarkdownAnchor({ node, href, children, ...rest }: React.ComponentProps<
   const error = failure?.scope === scope && failure.href === href ? failure.message : null;
   return <>
     <a {...rest} href={href} onClick={(event) => { event.preventDefault(); closeMenu(); return act("open"); }}
-      onAuxClick={(event) => event.preventDefault()}
+      onAuxClick={(event) => {
+        event.preventDefault();
+        if (web && event.button === 1) { closeMenu(); return act("open"); }
+      }}
       onContextMenu={(event) => {
         event.preventDefault(); event.stopPropagation();
         showMenu(event.currentTarget, event.clientX, event.clientY);
@@ -151,17 +167,17 @@ function MarkdownAnchor({ node, href, children, ...rest }: React.ComponentProps<
         showMenu(event.currentTarget, bounds.left, bounds.bottom);
       }}
       aria-haspopup="menu" aria-expanded={!!visibleMenu} aria-disabled={!!unavailable}
-      title={unavailable || `Open local file (Markdown: configured app; HTML: default browser; scripts: forced text editor; other files: default app). Relative paths use this session's working directory: ${href}`}>
+      title={web ? `在默认浏览器中打开: ${href}` : unavailable || `Open local file (Markdown: configured app; HTML: default browser; scripts: forced text editor; other files: default app). Relative paths use this session's working directory: ${href}`}>
       {children}
     </a>
-    {visibleMenu && <span ref={menuElement} role="menu" aria-label="本地文件" className="md-link-menu"
+    {visibleMenu && <span ref={menuElement} role="menu" aria-label={web ? "网页链接" : "本地文件"} className="md-link-menu"
       style={{ left: visibleMenu.x, top: visibleMenu.y }} onKeyDown={menuKey}
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
       <button type="button" role="menuitem" tabIndex={-1} aria-disabled={!!unavailable} title={unavailable || undefined}
-        onClick={() => choose(visibleMenu, "open")}>打开文件</button>
-      <button type="button" role="menuitem" tabIndex={-1} aria-disabled={!!unavailable} title={unavailable || undefined}
-        onClick={() => choose(visibleMenu, "reveal")}>在 Finder 中显示</button>
-      {unavailable && <span className="md-link-menu-reason">{unavailable}</span>}
+        onClick={() => choose(visibleMenu, "open")}>{web ? "在默认浏览器中打开" : "打开文件"}</button>
+      {(!web || loopback) && <button type="button" role="menuitem" tabIndex={-1} aria-disabled={!!revealUnavailable} title={revealUnavailable || undefined}
+        onClick={() => choose(visibleMenu, "reveal")}>{web ? "在 Finder 中显示对应文件" : "在 Finder 中显示"}</button>}
+      {revealUnavailable && <span className="md-link-menu-reason">{revealUnavailable}</span>}
     </span>}
     {error && <span className="md-link-error" role="alert"> {error}</span>}
   </>;
