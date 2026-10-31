@@ -25,6 +25,10 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.13 clickable Skills
+
+Click a card in **Config → Skills** to inspect its `SKILL.md` inside the app. Switch between **Preview / Raw source**, inspect the source path, go back or retry an error. Viewing is read-only: it does not execute, enable or send a skill. Full bodies load on selection, and preview images do not make automatic requests. See [Skills viewer](docs/config-skills.md).
+
 ## 0.1.12 web preview links
 
 Desktop HTTP(S) links explicitly use the system browser, not WebView new-window behavior. Localhost previews retain their port/path/trailing slash and are never converted to file URLs. Finder mapping is available only after bounded verification against a file inside the selected local session project; uncertain mappings report an error instead of guessing. Remote-session web links can open, but cannot map to local files. See [web links and localhost limits](docs/web-links.md).

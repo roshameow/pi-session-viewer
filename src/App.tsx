@@ -707,6 +707,11 @@ export default function App() {
   // Source-qualified keys prevent same-path remote sessions inheriting local
   // copied-file paths, while preserving drafts when switching away and back.
   const selectedDraftKey = JSON.stringify([draftTarget.source, detail?.path]);
+  // Config belongs to the source, not the currently selected project/session.
+  // A captured handler must reject source changes even before React rerenders.
+  const configSourceToken = sequenceRef.current.capture("source");
+  const validateConfigSource = useMemo(() => () => valid(configSourceToken),
+    [valid, configSourceToken.sourceEpoch, configSourceToken.source]);
   return (
     <div className="app">
       {/* finished-session toasts */}
@@ -794,7 +799,8 @@ export default function App() {
           </div>
         )}
         {showConfig ? (
-          <ConfigPanel />
+          <ConfigPanel key={configSourceToken.sourceEpoch}
+            ready={sequenceRef.current.ready && !sourcePending} validate={validateConfigSource} />
         ) : detail ? (
           <>
             <Thread key={`${sequenceRef.current.capture("detail").sourceEpoch}:${detail.path}`} detail={detail} liveBlocks={liveBlocks} running={running}

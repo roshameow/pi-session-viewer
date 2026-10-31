@@ -1,7 +1,7 @@
 {
   "name": "pi-session-viewer",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,7 +15,8 @@
     "demo": "vite --open /demo.html",
     "build:demo": "tsc && vite build --mode demo",
     "build:unsigned": "tauri build --config src-tauri/tauri.unsigned.conf.json",
-    "test:detail": "node scripts/test-bounded-detail-app.mjs && node scripts/test-bounded-detail-thread.mjs"
+    "test:detail": "node scripts/test-bounded-detail-app.mjs && node scripts/test-bounded-detail-thread.mjs",
+    "test:config-skills": "node scripts/test-config-skills.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

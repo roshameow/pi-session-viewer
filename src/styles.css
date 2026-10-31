@@ -833,6 +833,39 @@ body {
   padding: 8px 12px;
 }
 .cfg-card:hover { border-color: var(--cyan); }
+.cfg-skill-card {
+  display: block;
+  width: 100%;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cfg-skill-card .cfg-desc, .cfg-skill-card .cfg-card-meta { display: block; }
+.cfg-skill-card .cfg-card-line1 { flex-wrap: wrap; }
+.cfg-skill-card .cfg-name { overflow-wrap: anywhere; }
+.cfg-skill-card .cfg-source { overflow-wrap: anywhere; max-width: 100%; }
+.cfg-skill-card:disabled { opacity: 0.5; cursor: not-allowed; }
+.cfg-skill-detail .config-title { width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
+.cfg-skill-card:focus-visible, .cfg-small-btn:focus-visible,
+.cfg-skill-detail .config-title:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.cfg-skill-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; font-size: 11px; }
+.cfg-skill-toolbar:first-child { margin-top: 0; }
+.cfg-small-btn {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--fg);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cfg-small-btn:hover:not(:disabled), .cfg-small-btn[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); }
+.cfg-small-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.cfg-skill-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; color: var(--red); font-size: 12px; overflow-wrap: anywhere; }
+.cfg-skill-preview, .cfg-skill-raw { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.cfg-skill-raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
 .cfg-card-line1 { display: flex; align-items: center; gap: 8px; }
 .cfg-icon { flex-shrink: 0; }
 .cfg-name { font-weight: 700; font-size: 12.5px; }

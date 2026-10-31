@@ -201,11 +201,21 @@ const components: Components = {
   },
 };
 
-export function Markdown({ text }: { text: string }) {
+function MarkdownImagePlaceholder({ alt }: React.ComponentProps<"img">) {
+  // Never forward src/srcSet or emit an img: even a readonly preview must not
+  // trigger tracking requests or resolve document-relative image resources.
+  return <span className="dim">[Image not loaded{alt ? `: ${alt}` : ""}]</span>;
+}
+
+// Keep both component maps stable so toggling an explicit preview policy does
+// not change anchor renderer identities or affect ordinary session Markdown.
+const componentsWithoutImages: Components = { ...components, img: MarkdownImagePlaceholder };
+
+export function Markdown({ text, allowImages = true }: { text: string; allowImages?: boolean }) {
   // Unchanged text blocks skip react-markdown entirely via MemoMarkdown.
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} urlTransform={localFileUrlTransform}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={allowImages ? components : componentsWithoutImages} urlTransform={localFileUrlTransform}>
         {text}
       </ReactMarkdown>
     </div>

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13 — 2026-10-31
+
+- Make Config → Skills cards clickable and keyboard-accessible, opening an in-app read-only detail view with the source path, Markdown preview, exact raw source, Back/Escape and visible load/retry errors. Reading does not execute, enable or send a skill; preview images do not make automatic network requests.
+- Load the full selected `SKILL.md` only on explicit selection/retry, with a 1 MiB UTF-8/regular-file limit and a current-source discovery allowlist. Keep metadata inventory separate from document-body loading, preserve duplicate names by file identity, use actual session-header CWDs for project skills, and reject remote cache symlinks escaping the cache.
+- Move Config reads off the UI thread and isolate pending reads, errors and selections across source epochs, navigation and unmount. Remote views show cached global skills without probing local project paths; the inventory is not an authoritative list of skills enabled in a running Pi session.
+
 ## 0.1.12 — 2026-10-24
 
 - Route desktop HTTP(S) links through the native system browser instead of relying on WebView new-window behavior. Preserve localhost ports, URL paths, queries, fragments and trailing slashes; never convert a development preview into a file URL.

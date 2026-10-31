@@ -191,6 +191,12 @@ export interface SkillInfo {
   name: string;
   description: string;
   source: string;
+  file: string;
+}
+
+export interface SkillDocument {
+  file: string;
+  content: string;
 }
 
 export interface ConfigView {

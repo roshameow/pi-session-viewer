@@ -74,6 +74,22 @@ async fn session_entry_body(
     .map_err(|e| format!("session_entry_body task failed: {e}"))?
 }
 
+/// One source snapshot covers the complete configuration inventory.
+#[tauri::command]
+async fn list_config() -> Result<config::ConfigView, String> {
+    spawn_blocking(|| remote::with_current_source(config::list_config))
+        .await
+        .map_err(|e| format!("list_config task failed: {e}"))
+}
+
+/// Explicit read-only skill text; no opener, command execution or model send.
+#[tauri::command]
+async fn read_config_skill(file: String) -> Result<config::SkillDocument, String> {
+    spawn_blocking(move || remote::with_current_source(|| config::read_config_skill(&file)))
+        .await
+        .map_err(|e| format!("read_config_skill task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn pi_version() -> Result<String, String> {
     spawn_blocking(|| {
@@ -928,7 +944,8 @@ pub fn run() {
             transfer_session_to_remote,
             session_status,
             list_running,
-            config::list_config,
+            list_config,
+            read_config_skill,
             data_access::list_authorized_directories,
             data_access::choose_authorized_directory,
             data_access::remove_authorized_directory,

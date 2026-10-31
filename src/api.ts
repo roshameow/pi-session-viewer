@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
-import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, RemoteSyncStatus, DetailPageRequest, EntryBodyChunk, AuthorizedDirectory, AuthorizedDirectoryPage, ImportedDataFile } from "./types";
+import type { PiEvent, Project, RunningSession, SessionDetail, SessionMeta, ConfigView, SkillDocument, RemoteSyncStatus, DetailPageRequest, EntryBodyChunk, AuthorizedDirectory, AuthorizedDirectoryPage, ImportedDataFile } from "./types";
 
 export const api = {
   listAuthorizedDirectories: () => invoke<AuthorizedDirectory[]>("list_authorized_directories"),
@@ -33,6 +33,7 @@ export const api = {
   sessionStatus: (path: string) => invoke<string>("session_status", { path }),
   listRunning: () => invoke<RunningSession[]>("list_running"),
   listConfig: () => invoke<ConfigView>("list_config"),
+  readConfigSkill: (file: string) => invoke<SkillDocument>("read_config_skill", { file }),
   setRemoteHost: (host: string | null) => invoke<void>("set_remote_host", { host }),
   transferSessionToRemote: (sessionPath: string, host: string, remoteCwd: string, prompt: string) =>
     invoke<string>("transfer_session_to_remote", { sessionPath, host, remoteCwd, prompt }),

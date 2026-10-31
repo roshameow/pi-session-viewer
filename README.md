@@ -34,6 +34,10 @@ npm run demo
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
 
+## 0.1.13 点击查看 Skills
+
+在 **Config → Skills** 点任意技能卡片，可直接在 App 内查看 `SKILL.md`，支持 **Preview / Raw source** 切换、来源路径、返回和错误重试。只读查看，不执行、不启用、不发送技能；完整正文按点击加载，预览不自动请求外部图片。详见 [Skills 查看说明](docs/config-skills.md)。
+
 ## 0.1.12 网页预览链接修复
 
 会话中的 HTTP／HTTPS “查看模型／报告”链接现在显式交给默认浏览器，不再依赖 WebView 新窗口。localhost 预览保留端口、路径和尾部斜杠，不转成 `file://`；右键可在核对服务响应与会话项目内文件一致后定位到 Finder，无法确认就提示，不猜路径。远程会话仍可打开网页，但不映射本机文件。详见[网页链接与 localhost 说明](docs/web-links.md)。
