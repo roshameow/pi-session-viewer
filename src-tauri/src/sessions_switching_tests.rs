@@ -30,7 +30,7 @@ fn meta(path: &str, running: bool) -> SessionMeta {
         parent_session_id: None, parent_session_path: None, message_count: 0,
         running, sleeping: false, interrupted: false, in_rmux: false,
         rmux_target: None, rmux_attached: false, rmux_dead: false,
-        rmux_pi_alive: None, term_alive: false, size: 1 }
+        rmux_pi_alive: None, term_alive: false, size: 1, engine: None }
 }
 
 #[test]

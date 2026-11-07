@@ -65,6 +65,7 @@ export interface SessionMeta {
   rmuxPiAlive?: boolean | null; // null = location only; process identity unknown
   termAlive: boolean;
   size: number;
+  engine?: string | null;
 }
 
 export type ContentBlock =
@@ -145,6 +146,7 @@ export interface SessionDetail {
   cwd: string;
   createdIso: string;
   path: string;
+  engine?: string | null;
   taskId: string | null;
   stats: Stats;
   entries: Entry[];

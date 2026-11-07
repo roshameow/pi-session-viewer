@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.14 — 2026-11-07
+
+- Support discovering and parsing Antigravity (`agy`) sessions alongside Pi sessions. Sessions from `~/.gemini/antigravity-cli/conversation_summaries.db` are automatically aggregated and grouped by workspace (`cwd`) into project session lists with an `AGY` engine badge.
+- Parse AGY `transcript.jsonl` step flows (`USER_INPUT`, `PLANNER_RESPONSE`, `GENERIC`, `SYSTEM_MESSAGE`), strip `<USER_REQUEST>` prompt tags, deterministically pair tool calls with subsequent tool outputs, and project token usage, model stats, and thinking traces into the timeline.
+- Add AGY TUI integration: launch and resume AGY sessions in the terminal with `cd <cwd> && agy --dangerously-skip-permissions --conversation <id>`, integrated with `rmux` multi-session management and Terminal/iTerm tabs via the sidebar right-click menu ("Open in agy TUI") and Thread header ("Open agy TUI").
+- Present AGY sessions in desktop read-only mode with an informational notice, disabling Pi-only composer dispatches and HTML export while preserving full browsing, searching, and TUI handoff.
+
 ## 0.1.13 — 2026-10-31
 
 - Make Config → Skills cards clickable and keyboard-accessible, opening an in-app read-only detail view with the source path, Markdown preview, exact raw source, Back/Escape and visible load/retry errors. Reading does not execute, enable or send a skill; preview images do not make automatic network requests.

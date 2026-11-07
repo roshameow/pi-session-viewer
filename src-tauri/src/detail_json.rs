@@ -261,14 +261,16 @@ impl<R: Read> Parser<R> {
                 match key {
                     "text" | "thinking" | "summary" | "output" | "command" => Mode::Bulk(body),
                     "content" => Mode::Content(body),
-                    "arguments" => Mode::Skip(true),
+                    "arguments" | "args" => Mode::Skip(true),
                     "name" | "label" => Mode::Metadata(true),
                     "id" | "parentId" | "type" | "timestamp" | "cwd" | "role" | "model"
                     | "provider" | "toolCallId" | "toolName" | "isError" | "modelId"
                     | "thinkingLevel" | "targetId" | "tokensBefore" | "customType" | "exitCode"
-                    | "truncated" | "stopReason" => Mode::Metadata(false),
+                    | "truncated" | "stopReason" | "step_index" | "source" | "created_at"
+                    | "status" | "truncated_fields" => Mode::Metadata(false),
+                    "tool_calls" | "media" => Mode::Content(body),
                     "message" if matches!(mode, Mode::Root) => Mode::Message,
-                    "usage" | "cost" => Mode::Stats,
+                    "usage" | "cost" | "input_tokens" | "output_tokens" | "cache_read_tokens" => Mode::Stats,
                     _ => Mode::Skip(false),
                 }
             }
@@ -354,9 +356,11 @@ impl<R: Read> Parser<R> {
                 let mut kept = false;
                 let tool = value
                     .as_ref()
-                    .and_then(|v| v.get("type"))
-                    .and_then(Value::as_str)
-                    == Some("toolCall");
+                    .map(|v| {
+                        v.get("type").and_then(Value::as_str) == Some("toolCall")
+                            || v.get("name").is_some()
+                    })
+                    .unwrap_or(false);
                 if tool || body {
                     if let Some(value) = value {
                         // Images/unknown block types carry no useful preview.

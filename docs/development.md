@@ -6,8 +6,9 @@ GitHub: https://github.com/roshameow/pi-session-viewer
 
 ## 功能
 
-- 📁 **项目分组**:按工作目录列出所有 pi 会话(`~/.pi/agent/sessions/`)
+- 📁 **项目分组**:按工作目录列出所有会话（Pi 会话 `~/.pi/agent/sessions/` 及 Antigravity 会话 `~/.gemini/antigravity-cli/`）
 - 💬 **会话浏览**:消息树渲染 — 用户/助手消息、可折叠的 thinking、工具调用卡片、bash 输出、上下文压缩、模型切换、标签;搜索 + 过滤(全部/仅用户/隐藏工具/仅标签)
+- 🌌 **Antigravity (AGY) 适配**:解析 `conversation_summaries.db` SQLite 索引与 `transcript.jsonl`，提取工作区归类，清洗 prompt 包装，确定性配对 tool calls 与结果；右键与顶部支持“Open in agy TUI”，以 `agy --dangerously-skip-permissions --conversation <id>` 启动，并与 rmux 统一托管。
 - 🕸️ **子代理嵌套**:`pi-subagent-durable` 的显式父 UUID 关联到去重后的主会话或 worker 会话，支持 worker → grandchild（镜像与真实文件的 header `id` 是同一子会话 UUID，不是父 UUID）。缺失、自指、循环或歧义关系不猜测父节点；侧栏主会话分组仍只显示直接子代理，嵌套父标签在子代理区显示
 - ⏳ **实时续聊**:输入消息 → Rust 直接 spawn `pi --session <file> --mode json`,增量事件流式渲染(text_delta / tool_execution),pi 自动把新消息写回原 JSONL
 - 🟢 **运行状态 chip**(每会话):`● rmux` 已附着 / `○ rmux` 分离 / `ended rmux` worker 已结束但 shell 留存 / `? rmux` Pi 身份未知 / `✕ rmux` pane 已退出 / `● term` 在终端窗口里跑 — **运行状态与位置解耦**:空闲的 rmux 显示位置 chip 但不显示 running

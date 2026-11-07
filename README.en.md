@@ -25,6 +25,13 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.14 Antigravity (AGY) sessions and TUI
+
+- **Dual-engine session discovery**: Automatically index `~/.gemini/antigravity-cli/conversation_summaries.db`, extracting workspace URIs and grouping AGY sessions alongside Pi sessions by workspace directory (`cwd`) with an `AGY` engine badge.
+- **Transcript and tool-pair parsing**: Parse AGY `transcript.jsonl` step streams, clean prompt `<USER_REQUEST>` wrappers, deterministically pair `tool_calls` with subsequent `GENERIC` execution results, and surface token counts, models, and thinking traces.
+- **Seamless TUI handoff**: Resume AGY conversations in a terminal tab via "Open in agy TUI (terminal)" in the context menu or "Open agy TUI" in the session header, executing `cd <cwd> && agy --dangerously-skip-permissions --conversation <id>` with optional `rmux` session management.
+- **Desktop read-only safety**: Render AGY sessions in read-only mode with a top notice banner, hiding Pi-specific input and HTML export controls while keeping full browsing, searching, and TUI handoff available.
+
 ## 0.1.13 clickable Skills
 
 Click a card in **Config → Skills** to inspect its `SKILL.md` inside the app. Switch between **Preview / Raw source**, inspect the source path, go back or retry an error. Viewing is read-only: it does not execute, enable or send a skill. Full bodies load on selection, and preview images do not make automatic requests. See [Skills viewer](docs/config-skills.md).

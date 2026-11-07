@@ -264,6 +264,8 @@ pub struct SessionMeta {
     pub rmux_dead: bool,     // rmux window kept by remain-on-exit, pane process exited
     pub term_alive: bool,    // an alive pi process runs this session in a terminal window
     pub size: u64,
+    #[serde(default)]
+    pub engine: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -320,6 +322,8 @@ pub struct SessionDetail {
     pub cwd: String,
     pub created_iso: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     pub task_id: Option<String>,
     pub stats: Stats,
     pub entries: Vec<Entry>,
@@ -347,7 +351,7 @@ pub fn encode_dir_name(cwd: &str) -> String {
 }
 
 /// Parse `YYYY-MM-DDTHH:MM:SS(.mmm)Z` -> epoch secs (std only).
-fn parse_iso_ts(s: &str) -> Option<i64> {
+pub(crate) fn parse_iso_ts(s: &str) -> Option<i64> {
     let s = s.trim().trim_end_matches('Z');
     if s.is_empty() {
         return None;
@@ -545,6 +549,21 @@ pub fn list_projects() -> Vec<Project> {
                 rmux_count,
                 term_count,
             });
+        }
+    }
+    if !source.remote && crate::agy::is_agy_available() {
+        let agy_projects = crate::agy::list_agy_projects();
+        for agy_p in agy_projects {
+            if let Some(existing) = out.iter_mut().find(|p| p.cwd == agy_p.cwd) {
+                existing.session_count += agy_p.session_count;
+                existing.subagent_count += agy_p.subagent_count;
+                existing.running_count += agy_p.running_count;
+                if agy_p.updated_at > existing.updated_at {
+                    existing.updated_at = agy_p.updated_at;
+                }
+            } else {
+                out.push(agy_p);
+            }
         }
     }
     out.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
@@ -2523,6 +2542,12 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
         &parent_calls,
     );
 
+    if !source.remote && crate::agy::is_agy_available() {
+        let cwd = decode_dir_name(project_key);
+        let agy_sessions = crate::agy::list_agy_sessions(&cwd);
+        out.extend(agy_sessions);
+    }
+
     out.sort_by(|a, b| {
         b.updated_at.cmp(&a.updated_at).then_with(|| a.path.cmp(&b.path))
     });
@@ -2815,7 +2840,9 @@ fn parse_meta(
         rmux_dead: false,
         rmux_pi_alive: None,
         term_alive: false,
-        size,};
+        size,
+        engine: Some("pi".to_string()),
+    };
     META_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -3285,6 +3312,19 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
     let mut context_tokens: Option<u64> = None;
     let mut cost_total = 0.0f64;
 
+    let is_agy = crate::agy::is_agy_path(path);
+    if is_agy {
+        if let Some(id) = crate::agy::conversation_id_from_path(path) {
+            header_id = id.clone();
+            cwd = crate::agy::lookup_workspace_cwd(&id).unwrap_or_default();
+        }
+        model = Some("gemini".to_string());
+        provider = Some("google".to_string());
+    }
+
+    let mut pending_agy_tools: std::collections::VecDeque<(String, String)> =
+        std::collections::VecDeque::new();
+
     for line in text.lines() {
         if line.trim().is_empty() {
             continue;
@@ -3309,6 +3349,32 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
             continue;
         }
         let mut entry = entry.unwrap();
+        if is_agy {
+            if created.is_empty() {
+                if let Some(ts) = &entry.ts {
+                    created = ts.clone();
+                }
+            }
+            if entry.role.as_deref() == Some("assistant") {
+                for block in &entry.content {
+                    if let ContentBlock::ToolCall { id, name, .. } = block {
+                        pending_agy_tools.push_back((id.clone(), name.clone()));
+                    }
+                }
+            } else if entry.role.as_deref() == Some("toolResult") {
+                if let Some((call_id, tool_name)) = pending_agy_tools.pop_front() {
+                    entry.tool_call_id = Some(call_id);
+                    entry.tool_name = Some(tool_name);
+                }
+            }
+            let in_tok = v.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let out_tok = v.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let cache_tok = v.get("cache_read_tokens").and_then(Value::as_u64).unwrap_or(0);
+            tokens += in_tok + out_tok;
+            if in_tok + cache_tok > 0 {
+                context_tokens = Some(in_tok + cache_tok);
+            }
+        }
         // accumulate stats (last occurrence wins for model/provider/thinking)
         if let Some(m) = &entry.model {
             model = Some(m.clone());
@@ -3401,6 +3467,7 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
         cwd,
         created_iso: created,
         path: path.to_string(),
+        engine: if is_agy { Some("agy".to_string()) } else { None },
         task_id,
         stats,
         entries,
@@ -3432,6 +3499,18 @@ fn dummy_entry() -> Entry {
 }
 
 fn parse_entry(t: &str, v: &Value) -> Option<Entry> {
+    if matches!(
+        t,
+        "USER_INPUT"
+            | "PLANNER_RESPONSE"
+            | "GENERIC"
+            | "SYSTEM_MESSAGE"
+            | "ERROR_MESSAGE"
+            | "CHECKPOINT"
+    ) || v.get("step_index").is_some()
+    {
+        return crate::agy::parse_agy_step(v);
+    }
     let id = v.get("id").and_then(|x| x.as_str())?.to_string();
     let parent_id = v.get("parentId").and_then(|x| x.as_str()).map(|s| s.to_string());
     let ts = v
@@ -3631,6 +3710,7 @@ mod nested_lineage_tests {
             rmux_pi_alive: None,
             term_alive: false,
             size: 100,
+            engine: Some("pi".to_string()),
         }
     }
 

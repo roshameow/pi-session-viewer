@@ -515,25 +515,27 @@ export function Thread({
                 <button
                   className="export-btn"
                   onClick={doAttach}
-                  title="Attach to this session's rmux session (detach: Ctrl+G)"
+                  title={detail.engine === "agy" ? "Attach to this session's rmux session" : "Attach to this session's rmux session (detach: Ctrl+G)"}
                 >
                   ⇄ Attach
                 </button>
                 <button
                   className="export-btn"
                   onClick={doOpenTerminal}
-                  title="Open this session in pi TUI (rmux-backed, closable tab)"
+                  title={detail.engine === "agy" ? "Open this session in agy TUI (rmux-backed, closable tab)" : "Open this session in pi TUI (rmux-backed, closable tab)"}
                 >
-                  ⛭ Open TUI
+                  ⛭ {detail.engine === "agy" ? "Open agy TUI" : "Open TUI"}
                 </button>
-                <button
-                  className={`export-btn ${exporting ? "busy" : ""}`}
-                  onClick={doExport}
-                  disabled={exporting}
-                  title="Export this session to HTML (pi --export) and open it"
-                >
-                  {exporting ? "Exporting…" : "⬇ Export HTML"}
-                </button>
+                {detail.engine !== "agy" && (
+                  <button
+                    className={`export-btn ${exporting ? "busy" : ""}`}
+                    onClick={doExport}
+                    disabled={exporting}
+                    title="Export this session to HTML (pi --export) and open it"
+                  >
+                    {exporting ? "Exporting…" : "⬇ Export HTML"}
+                  </button>
+                )}
               </div>}
             </div>
             {exportMsg && <div className="export-msg">{exportMsg}</div>}

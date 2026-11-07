@@ -359,6 +359,33 @@ body {
   background: rgba(138, 148, 166, 0.12);
   box-shadow: inset 0 0 0 1px rgba(138, 148, 166, 0.3);
 }
+.engine-chip {
+  font-size: 8.5px;
+  font-family: var(--mono);
+  padding: 0 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  line-height: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.engine-chip.agy {
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.15);
+  box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.35);
+}
+.agy-readonly-notice {
+  padding: 10px 16px;
+  font-size: 12px;
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.08);
+  border-top: 1px solid rgba(192, 132, 252, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  letter-spacing: 0.2px;
+}
 .session-title {
   flex: 1;
   min-width: 0; /* let long titles shrink so trailing chips stay visible */

@@ -49,7 +49,8 @@ function sameSessions(a: SessionMeta[], b: SessionMeta[]): boolean {
       x.taskId !== y.taskId ||
       x.parentSessionPath !== y.parentSessionPath ||
       x.name !== y.name ||
-      x.lastMessage !== y.lastMessage
+      x.lastMessage !== y.lastMessage ||
+      x.engine !== y.engine
     )
       return false;
   }
@@ -808,24 +809,30 @@ export default function App() {
               canOpenLocalFile={canOpenLocalFile}
               pageBusy={pageBusy} pageNotice={pageNotice} pageRequest={pageRequestRef.current}
               onQuery={changeDetailQuery} onLoadEarlier={() => navigateDetail()} onLoadEntry={navigateDetail} onBodyChunk={readBodyChunk} />
-            <Composer
-              value={drafts[selectedDraftKey] ?? ""}
-              onChange={(v) => {
-                if (valid(draftTarget)) setDrafts((d) => ({ ...d, [selectedDraftKey]: v }));
-              }}
-              running={running}
-              targetName={sessionTitle(detail.path)}
-              onSend={async (msg) => {
-                try {
-                  const token = sequenceRef.current.capture("detail");
-                  const accepted = await send(msg);
-                  if (accepted && valid(token)) setDrafts(d => ({ ...d, [selectedDraftKey]: "" }));
-                } catch {
-                  /* keep draft on failure */
-                }
-              }}
-              onAbort={abort}
-            />
+            {detail.path.includes("antigravity-cli") || sessions.find(s => s.path === detail.path)?.engine === "agy" ? (
+              <div className="agy-readonly-notice">
+                <span>Antigravity session · read-only in desktop viewer</span>
+              </div>
+            ) : (
+              <Composer
+                value={drafts[selectedDraftKey] ?? ""}
+                onChange={(v) => {
+                  if (valid(draftTarget)) setDrafts((d) => ({ ...d, [selectedDraftKey]: v }));
+                }}
+                running={running}
+                targetName={sessionTitle(detail.path)}
+                onSend={async (msg) => {
+                  try {
+                    const token = sequenceRef.current.capture("detail");
+                    const accepted = await send(msg);
+                    if (accepted && valid(token)) setDrafts(d => ({ ...d, [selectedDraftKey]: "" }));
+                  } catch {
+                    /* keep draft on failure */
+                  }
+                }}
+                onAbort={abort}
+              />
+            )}
           </>
         ) : (
           <div className="empty-main">

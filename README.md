@@ -28,11 +28,19 @@ npm run demo
 ## 桌面功能
 
 - 按工作目录组织会话，浏览消息、thinking、工具调用和输出。历史计数收在搜索旁，角色统计／分支跳转在 `⋯` 详情里，搜索／筛选／分页保持可用。
+- 适配 Antigravity (`agy`) 会话：支持发现、解析 `~/.gemini/antigravity-cli/` 会话并按项目工作区归并展示，支持工具流解析与一键调用 `agy --dangerously-skip-permissions --conversation <id>` 终端交互。
 - 会话内本地文件链接交给系统打开，相对路径按会话项目目录解析；macOS 源码以文本查看、失败就地提示。见[支持格式与安全边界](docs/local-file-links.md)。
 - 将 `pi-subagent-durable` 子会话嵌入父会话列表。显式父 UUID 支持 worker → grandchild，使用去重后的会话路径（优先真实会话）；缺失、自指、循环或歧义关系不猜测父会话。侧栏主会话分组仍只展示直接子代理，嵌套 worker 的父标签显示在子代理区。
 - 区分终端位置与运行状态，支持 RMUX attach/detach。
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
+
+## 0.1.14 适配 Antigravity (AGY) 会话与 TUI
+
+- **双引擎会话发现**：自动读取 `~/.gemini/antigravity-cli/conversation_summaries.db`，提取工作区路径并与 Pi 会话统一按项目工作区（`cwd`）归类，侧边栏以 `AGY` 徽章标明引擎类型。
+- **结构化步骤解析**：支持 AGY `transcript.jsonl` 日志，自动清洗 `<USER_REQUEST>` 提示词包装，将 `PLANNER_RESPONSE` 的 `tool_calls` 与后续 `GENERIC` 执行结果稳定配对渲染，并呈现 Token 与 Thinking 开销。
+- **一键 TUI 交互**：侧边栏右键“Open in agy TUI (terminal)”或会话详情顶部“Open agy TUI”，自动执行 `cd <cwd> && agy --dangerously-skip-permissions --conversation <id>`；支持通过 rmux 托管后台会话并在 Terminal/iTerm 标签页打开。
+- **安全只读提示**：AGY 会话在桌面端以只读模式展现，展示说明横幅并隐藏 Pi 专用发送框及 HTML 导出，防止非兼容指令误发。
 
 ## 0.1.13 点击查看 Skills
 

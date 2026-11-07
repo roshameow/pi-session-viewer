@@ -293,6 +293,16 @@ fn index(path: &str) -> Result<Arc<Index>, String> {
         malformed: 0,
         bytes: 0,
     };
+    let is_agy = crate::agy::is_agy_path(&path.to_string_lossy());
+    if is_agy {
+        if let Some(id) = crate::agy::conversation_id_from_path(&path.to_string_lossy()) {
+            ix.id = id.clone();
+            ix.cwd = crate::agy::lookup_workspace_cwd(&id).unwrap_or_default();
+        }
+        ix.stats.model = Some("gemini".to_string());
+        ix.stats.provider = Some("google".to_string());
+    }
+    let mut pending_agy_tools: VecDeque<(String, String)> = VecDeque::new();
     let mut offset = 0u64;
     let mut start = 0u64;
     let mut non_whitespace = false;
@@ -333,6 +343,33 @@ fn index(path: &str) -> Result<Arc<Index>, String> {
                     ix.cwd = str_field(&v, "cwd");
                     ix.created = str_field(&v, "timestamp");
                 } else if let Some(mut meta) = super::parse_entry(&kind, &v) {
+                    if is_agy {
+                        if ix.created.is_empty() {
+                            if let Some(ts) = &meta.ts {
+                                ix.created = ts.clone();
+                            }
+                        }
+                        if meta.role.as_deref() == Some("assistant") {
+                            for block in &meta.content {
+                                if let ContentBlock::ToolCall { id, name, .. } = block {
+                                    pending_agy_tools.push_back((id.clone(), name.clone()));
+                                }
+                            }
+                        } else if meta.role.as_deref() == Some("toolResult") {
+                            if let Some((call_id, tool_name)) = pending_agy_tools.pop_front() {
+                                meta.tool_call_id = Some(call_id);
+                                meta.tool_name = Some(tool_name);
+                            }
+                        }
+                        let in_tokens = u64_field(&v, "input_tokens");
+                        let out_tokens = u64_field(&v, "output_tokens");
+                        let cache_tokens = u64_field(&v, "cache_read_tokens");
+                        ix.stats.token_count =
+                            ix.stats.token_count.saturating_add(in_tokens + out_tokens);
+                        if in_tokens + cache_tokens > 0 {
+                            ix.stats.context_tokens = Some(in_tokens + cache_tokens);
+                        }
+                    }
                     if meta.model.is_some() {
                         ix.stats.model = meta.model.clone();
                     }
@@ -535,6 +572,15 @@ fn entry(ix: &Index, file: &mut File, n: usize) -> Result<Arc<Entry>, String> {
         });
         e
     };
+    if e.tool_call_id.is_none() {
+        e.tool_call_id = r.meta.tool_call_id.clone();
+    }
+    if e.tool_name.is_none() {
+        e.tool_name = r.meta.tool_name.clone();
+    }
+    if e.role.is_none() {
+        e.role = r.meta.role.clone();
+    }
     e.labeled = Some(ix.labels.contains(&e.id));
     let bytes = std::mem::size_of::<Entry>()
         + entry_heap(&e)
@@ -699,6 +745,7 @@ pub fn page(path: &str, request: DetailPageRequest) -> Result<SessionDetail, Str
         cwd: ix.cwd.clone(),
         created_iso: ix.created.clone(),
         path: path.into(),
+        engine: if crate::agy::is_agy_path(path) { Some("agy".to_string()) } else { None },
         task_id: ix.task_id.clone(),
         stats: ix.stats.clone(),
         entries: Vec::new(),

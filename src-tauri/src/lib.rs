@@ -1,4 +1,5 @@
 mod agent;
+pub mod agy;
 mod config;
 mod data_access;
 mod local_links;
@@ -783,6 +784,13 @@ fn open_in_terminal_sync(session_path: &str) -> Result<String, String> {
     if let Some(sess) = existing_rmux_session(session_path) {
         return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
     }
+    if crate::agy::is_agy_path(session_path) {
+        let (cwd, id, cmd) = crate::agy::build_agy_tui_command(session_path)?;
+        if let Some(sess) = ensure_rmux_window(&cwd, &id, session_path, &cmd)? {
+            return open_terminal_window(&format!("rmux attach -t {}", shell_quote(&sess)));
+        }
+        return open_terminal_window(&cmd);
+    }
     let bin = sessions::resolve_pi_bin().ok_or("pi executable not found")?;
     let cwd = sessions::session_header(session_path)
         .map(|d| d.cwd)
@@ -835,9 +843,20 @@ async fn attach_session(session_path: String) -> Result<String, String> {
 }
 
 fn attach_session_sync(session_path: &str) -> Result<String, String> {
-    let cwd = sessions::session_header(session_path)
-        .map(|d| d.cwd)
-        .unwrap_or_default();
+    let is_agy = crate::agy::is_agy_path(session_path);
+    let cwd = if is_agy {
+        let id = crate::agy::conversation_id_from_path(session_path).unwrap_or_default();
+        let c = crate::agy::lookup_workspace_cwd(&id).unwrap_or_default();
+        if c.is_empty() {
+            std::env::var("HOME").unwrap_or_else(|_| ".".into())
+        } else {
+            c
+        }
+    } else {
+        sessions::session_header(session_path)
+            .map(|d| d.cwd)
+            .unwrap_or_default()
+    };
     if let Some(host) = remote::current_host() {
         // 远程:ssh -t 到主机 attach 对应 rmux target(经同步缓存的 map)。
         // 快照是 sync 时抓的——新起的 pane(如刚转移的 session)不在其中,
@@ -854,14 +873,27 @@ fn attach_session_sync(session_path: &str) -> Result<String, String> {
         let msg = open_terminal_window(&cmd)?;
         return Ok(format!("attached to {sess} on {host} ({msg})"));
     }
-    let id = sessions::session_id(session_path).unwrap_or_default();
-    let is_sub = sessions::is_subagent_uuid(&id);
+    let id = if is_agy {
+        crate::agy::conversation_id_from_path(session_path).unwrap_or_default()
+    } else {
+        sessions::session_id(session_path).unwrap_or_default()
+    };
+    let is_sub = !is_agy && sessions::is_subagent_uuid(&id);
     let sess = if let Some(s) = historical_rmux_session(session_path) {
         // already alive in an rmux pane (incl. pim short-name sessions)
         s
     } else if is_sub {
         // subagents live in pi-agents; attach directly (may not exist)
         "pi-agents".to_string()
+    } else if is_agy {
+        let (_, _, cmd) = crate::agy::build_agy_tui_command(session_path)?;
+        match ensure_rmux_window(&cwd, &id, session_path, &cmd)? {
+            Some(s) => s,
+            None => {
+                let msg = open_terminal_window(&cmd)?;
+                return Ok(format!("opened agy in terminal ({msg})"));
+            }
+        }
     } else {
         // main sessions: refuse to spawn a duplicate pi when the session is
         // already alive in a terminal window (two pis appending the same

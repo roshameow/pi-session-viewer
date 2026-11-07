@@ -77,6 +77,7 @@ function SessionItem({
     >
       <div className="session-item-line1">
         <span className="session-title">{title}</span>
+        {s.engine === "agy" && <span className="engine-chip agy" title="Antigravity session">agy</span>}
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
@@ -712,7 +713,7 @@ export const Sidebar = React.memo(function Sidebar({
               setCtxMenu(null);
             }}
           >
-            <span>⛭</span> Open in pi TUI (terminal)
+            <span>⛭</span> {ctxMenu.s.engine === "agy" ? "Open in agy TUI (terminal)" : "Open in pi TUI (terminal)"}
           </button>
           <button
             className="ctx-item"
@@ -762,7 +763,7 @@ export const Sidebar = React.memo(function Sidebar({
               )}
             </button>
           )}
-          {!ctxMenu.s.isSubagent && !remoteHost && (
+          {!ctxMenu.s.isSubagent && !remoteHost && ctxMenu.s.engine !== "agy" && (
             <button
               className="ctx-item"
               title="Copy this session (+ its subagents) to the remote host and keep running there"
