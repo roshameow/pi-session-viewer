@@ -99,6 +99,59 @@ fn recent_pages_full_search_selection_filters_labels_and_stats() {
     assert_eq!(d.page.unwrap().matched_entries, 175);
 }
 #[test]
+fn agy_history_gaps_preserve_pagination_search_and_switch_back() {
+    let a = Fixture::new();
+    let b = Fixture::new();
+    for n in 0..150 {
+        a.append(json!({"type": if n % 2 == 0 { "USER_INPUT" } else { "PLANNER_RESPONSE" },
+            "step_index": n * 3,
+            "content": if n == 0 { "oldest-agy-needle" } else { "synthetic" }}));
+    }
+    b.append(msg("other", None, "user", "another session"));
+    let latest = a.page(req("all"));
+    let meta = latest.page.unwrap();
+    assert_eq!(meta.total_entries, 150);
+    assert_eq!(meta.branch_entries, 150, "step-index gaps are not branch boundaries");
+    assert_eq!(latest.entries.len(), 100);
+    assert_eq!(latest.entries[0].id, "150");
+    assert_eq!(latest.entries[0].parent_id.as_deref(), Some("147"));
+    let older = a.page(DetailPageRequest {
+        cursor: meta.previous_cursor, ..req("all")
+    });
+    assert_eq!(older.entries.len(), 50);
+    assert_eq!(older.entries[0].id, "0");
+    assert_eq!(older.entries[0].parent_id, None);
+    assert_eq!(older.entries.last().unwrap().id, "147");
+    let found = a.page(DetailPageRequest {
+        query: Some("oldest-agy-needle".into()), ..req("all")
+    });
+    assert_eq!(found.entries.len(), 1);
+    assert_eq!(found.entries[0].id, "0");
+    assert_eq!(b.page(req("all")).entries[0].id, "other");
+    assert_eq!(a.page(req("all")).page.unwrap().branch_entries, 150);
+
+    a.append(json!({"type":"CHECKPOINT", "step_index": 700, "content":"synthetic checkpoint"}));
+    a.append(json!({"type":"USER_INPUT", "step_index": 900, "content":"after checkpoint"}));
+    let refreshed = a.page(req("all"));
+    assert_eq!(refreshed.page.unwrap().branch_entries, 152);
+    assert_eq!(refreshed.entries.last().unwrap().parent_id.as_deref(), Some("700"));
+}
+
+#[test]
+fn agy_string_ids_and_large_body_keep_actual_indexed_parent() {
+    let f = Fixture::new();
+    f.append(json!({"type":"USER_INPUT", "id":"first", "step_index":0, "content":"first"}));
+    f.append(json!({"type":"SYSTEM_MESSAGE", "id":"notice", "step_index":5, "content":"notice"}));
+    f.append(json!({"type":"PLANNER_RESPONSE", "id":"large", "step_index":20,
+        "content":"x".repeat(80 * 1024)}));
+    let detail = f.page(req("all"));
+    assert_eq!(detail.page.unwrap().branch_entries, 3);
+    assert_eq!(detail.entries[1].parent_id.as_deref(), Some("first"));
+    assert_eq!(detail.entries[2].parent_id.as_deref(), Some("notice"));
+    assert!(detail.entries[2].body_ref.is_some());
+}
+
+#[test]
 fn branch_compaction_duplicate_ids_and_cycles() {
     let f = Fixture::new();
     f.append(msg("root", None, "user", "root"));

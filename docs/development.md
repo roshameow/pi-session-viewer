@@ -16,6 +16,14 @@ GitHub: https://github.com/roshameow/pi-session-viewer
 - ⚙️ **Config 面板**:MCP 服务器 / Agents(全局 + 项目级 `.pi/agents`)/ Skills(全局 + 项目级)
 - 📤 导出 HTML、右键删除会话、搜索、可拖拽侧边栏、toast
 
+## AGY 历史记录与跳号
+
+AGY transcript 是按文件顺序记录的事件流，`step_index` 是标识，不保证连续；不能用 `step_index - 1` 构造上一条记录。`src-tauri/src/agy_history.rs` 为 bounded index 和 legacy reader 共用实际前驱关联，正文/预览加载沿用 index 中的 parent，避免跳号导致旧消息在当前链上不可达。Pi 的显式 parent-id 分支逻辑不变。
+
+会话切换会释放已加载的分页/正文内存，不会删除日志。较早历史需重新分页或搜索加载；这不等于 AGY 上下文压缩，也不是永久备份功能。修复不改写原始 transcript，不触发 AGY 压缩。编号重复/重置不属于本次跳号修复的验证范围。
+
+回归：`cargo test --offline --manifest-path src-tauri/Cargo.toml sessions::detail::tests -- --test-threads=1` 与 `npm run test:detail`，涵盖跳号、切换、checkpoint、大正文和原有 Pi 分支/压缩；不触发真实 AGY 会话操作。
+
 ## AGY 的 rmux 状态
 
 Pi 与 AGY 共用 `src-tauri/src/sessions/runtime.rs` 中的运行位置模型、字段填充、存活判定、优先级和项目计数器。计数按各引擎内的会话 ID 去重；同一 Pi 的 real/mirror 文件只计一次，且不依赖扫描顺序。两个引擎都要求已关联位置、Agent 存活证据和未退出的 pane 才计入项目 rmux 数；仅 task busy 不再充当 rmux 位置证据。AGY 要求精确 conversation/path 关联；Pi 保留历史 bare `pi` pane 按 cwd/启动时间推断会话的兼容路径，因此 Pi 的位置关联并非全部精确。忙碌/睡眠/中断规则仍由各引擎处理，IPC 字段 `rmuxPiAlive` 暂保留原名以兼容前端。

@@ -456,11 +456,9 @@ pub fn parse_agy_step(v: &Value) -> Option<Entry> {
         .map(|s| s.to_string())
         .or_else(|| v.get("step_index").map(|s| s.to_string()))?;
 
-    let step_index = v.get("step_index").and_then(|x| x.as_u64());
-    let parent_id = match step_index {
-        Some(idx) if idx > 0 => Some((idx - 1).to_string()),
-        _ => None,
-    };
+    // A step index is not a parent pointer: AGY may omit indexes. Readers
+    // attach the actual previous parsed record through agy_history.
+    let parent_id = None;
 
     let ts = v
         .get("created_at")
@@ -729,7 +727,7 @@ mod tests {
         });
         let e1 = parse_agy_step(&model_val).unwrap();
         assert_eq!(e1.id, "1");
-        assert_eq!(e1.parent_id.as_deref(), Some("0"));
+        assert_eq!(e1.parent_id, None); // standalone parsing cannot know its predecessor
         assert_eq!(e1.role.as_deref(), Some("assistant"));
         assert_eq!(e1.content.len(), 3); // Thinking + ToolCall + Text
         if let ContentBlock::ToolCall { id, name, .. } = &e1.content[1] {
@@ -749,7 +747,7 @@ mod tests {
         });
         let e2 = parse_agy_step(&generic_val).unwrap();
         assert_eq!(e2.id, "2");
-        assert_eq!(e2.parent_id.as_deref(), Some("1"));
+        assert_eq!(e2.parent_id, None); // linked by the ordered transcript reader
         assert_eq!(e2.role.as_deref(), Some("toolResult"));
         assert_eq!(e2.is_error, Some(false));
     }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.16 — 2026-11-16
+
+- Fix older AGY messages disappearing from the viewer when transcript `step_index` values have gaps. Link AGY entries to the actual previous parsed record in both bounded and legacy readers instead of inventing `step_index - 1` parent IDs. Preserve indexed parent linkage when loading full/preview record bodies; Pi parent-id branches remain unchanged.
+- Add synthetic coverage for gapped pagination, full-history search, switching away/back, appended checkpoints, mixed string IDs and large-body previews. This is a read-only viewer fix: it does not rewrite logs or alter AGY compaction. Older history remains byte-bounded and loaded on demand.
+
 ## 0.1.15 — 2026-11-16
 
 - Unify Pi and AGY rmux location projection, confirmed-live checks, runtime ranking and deduplicated project counts in `sessions/runtime.rs`. Count a session only with mapped, identity-proven live runtime in a non-dead pane; a busy task alone is not rmux-location evidence, and Pi real/mirror files count once regardless of scan order.

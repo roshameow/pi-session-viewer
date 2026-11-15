@@ -343,6 +343,11 @@ fn index(path: &str) -> Result<Arc<Index>, String> {
                     ix.cwd = str_field(&v, "cwd");
                     ix.created = str_field(&v, "timestamp");
                 } else if let Some(mut meta) = super::parse_entry(&kind, &v) {
+                    if crate::agy_history::is_step(&kind, &v) {
+                        crate::agy_history::link_previous(
+                            &mut meta, ix.records.last().map(|record| &record.meta),
+                        );
+                    }
                     if is_agy {
                         if ix.created.is_empty() {
                             if let Some(ts) = &meta.ts {
@@ -572,6 +577,9 @@ fn entry(ix: &Index, file: &mut File, n: usize) -> Result<Arc<Entry>, String> {
         });
         e
     };
+    // Parent linkage can be reader-derived (AGY's real previous record), not
+    // present in the raw body. Keep page entries consistent with the index.
+    e.parent_id = r.meta.parent_id.clone();
     if e.tool_call_id.is_none() {
         e.tool_call_id = r.meta.tool_call_id.clone();
     }

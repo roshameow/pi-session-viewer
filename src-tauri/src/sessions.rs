@@ -3389,6 +3389,9 @@ pub fn session_detail(path: &str) -> Result<SessionDetail, String> {
             continue;
         }
         let mut entry = entry.unwrap();
+        if crate::agy_history::is_step(&t, &v) {
+            crate::agy_history::link_previous(&mut entry, entries.last());
+        }
         if is_agy {
             if created.is_empty() {
                 if let Some(ts) = &entry.ts {
@@ -3539,16 +3542,7 @@ fn dummy_entry() -> Entry {
 }
 
 fn parse_entry(t: &str, v: &Value) -> Option<Entry> {
-    if matches!(
-        t,
-        "USER_INPUT"
-            | "PLANNER_RESPONSE"
-            | "GENERIC"
-            | "SYSTEM_MESSAGE"
-            | "ERROR_MESSAGE"
-            | "CHECKPOINT"
-    ) || v.get("step_index").is_some()
-    {
+    if crate::agy_history::is_step(t, v) {
         return crate::agy::parse_agy_step(v);
     }
     let id = v.get("id").and_then(|x| x.as_str())?.to_string();
