@@ -25,6 +25,12 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.15 shared runtime state and stable signed updates
+
+Pi and AGY share rmux collection, state projection, liveness checks and project counters. Local AGY sessions now show attached/detached/unknown/ended/dead rmux states while busy state remains separate from process lifetime. Project counts require an identity-proven live agent in a non-dead pane; Pi real/mirror files count once. Remote AGY and non-rmux AGY terminal discovery remain unsupported.
+
+Maintainer updates use `npm run update:mac`: build with the existing pinned certificate, verify, back up the previous app, then install and relaunch. Do not overwrite the daily signed app with unsigned builds. First migration may still require authorization, and OS changes can affect TCC; stable signing is not a permanent-permission guarantee. See [development notes](docs/development.md).
+
 ## 0.1.14 Antigravity (AGY) sessions and TUI
 
 - **Dual-engine session discovery**: Automatically index `~/.gemini/antigravity-cli/conversation_summaries.db`, extracting workspace URIs and grouping AGY sessions alongside Pi sessions by workspace directory (`cwd`) with an `AGY` engine badge.
@@ -115,12 +121,13 @@ npm ci
 npm run tauri dev
 ```
 
-Install RMUX separately to use persistent terminal features. `npm run build:unsigned -- --bundles app --ci` builds only a local `.app` (no DMG) without requiring the maintainer's named signing certificate; it is not a notarized distribution. Maintainers with the existing signing identity can use `npm run tauri -- build --bundles app --ci`. Neither command installs or launches the app. See [development notes](docs/development.md) for stable signing and accessibility permissions.
+Install RMUX separately to use persistent terminal features. `npm run build:unsigned -- --bundles app --ci` builds only a local `.app` (no DMG) without requiring the maintainer's named signing certificate; it is not a notarized distribution. For daily maintainer updates, `npm run update:mac` uses the existing pinned certificate, verifies signatures, backs up the old app, then installs and relaunches. Use `npm run build:mac` to build and verify without installing. **Do not replace the daily signed app with unsigned output**, which can break permission continuity. See [development notes](docs/development.md) for stable signing and accessibility permissions.
 
 ## Isolated verification
 
 ```bash
 npm run test:adaptation
+npm run test:agy
 npm run test:data-access
 npm run test:local-links
 npm run test:history-controls
@@ -128,6 +135,8 @@ npm run test:detail
 node scripts/test-sidebar-paging.mjs
 npm run build
 cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory
+cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_tests -- --test-threads=1
+cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_inventory_fake_cli_isolated -- --test-threads=1
 cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests -- --test-threads=1
 cargo test --offline --manifest-path src-tauri/Cargo.toml data_access_tests -- --test-threads=1
 cargo test --offline --manifest-path src-tauri/Cargo.toml local_links_tests -- --test-threads=1

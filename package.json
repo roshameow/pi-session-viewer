@@ -1,7 +1,7 @@
 {
   "name": "pi-session-viewer",
   "private": true,
-  "version": "0.1.14",
+  "version": "0.1.15",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,10 @@
     "demo": "vite --open /demo.html",
     "build:demo": "tsc && vite build --mode demo",
     "build:unsigned": "tauri build --config src-tauri/tauri.unsigned.conf.json",
+    "build:mac": "bash scripts/build-macos-signed.sh",
+    "verify:mac": "bash scripts/build-macos-signed.sh --verify",
+    "install:mac": "bash scripts/install-macos-signed.sh",
+    "update:mac": "npm run build:mac && npm run install:mac",
     "test:detail": "node scripts/test-bounded-detail-app.mjs && node scripts/test-bounded-detail-thread.mjs",
     "test:config-skills": "node scripts/test-config-skills.mjs"
   },

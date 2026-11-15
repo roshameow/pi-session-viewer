@@ -315,19 +315,34 @@ fn runtime_inventory_fake_cli_isolated() {
         }
     }
     let _cleanup = Cleanup(root.clone());
-    for case in ["remote", "local"] {
+    for case in ["remote", "local", "agy"] {
         let mut rows = String::new();
         if case == "local" {
             for pid in 1..=512 {
                 rows.push_str(&format!("{pid} 20:00 pi\n"));
             }
             rows.push_str("1002 00:05 unrelated\n1003 20:00 node sdk-runner.js\n1004 invalid pi\n");
+        } else if case == "agy" {
+            rows.push_str("71 20:00 /local/bin/agy --conversation 11111111-1111-4111-8111-111111111111\n");
+            rows.push_str("72 20:00 /local/bin/agy --conversation=22222222-2222-4222-8222-222222222222\n");
+            rows.push_str("73 20:00 /bin/zsh\n");
+            rows.push_str("74 20:00 /local/bin/agy --conversation 44444444-4444-4444-8444-444444444444\n");
+            rows.push_str("75 20:00 /bin/bash -c echo agy --conversation 55555555-5555-4555-8555-555555555555\n");
         } else {
             rows.push_str("11 20:00 pi\n");
         }
         for name in ["ps", "rmux", "lsof", "kill"] {
             let output=match name {
                 "ps" => format!("case \"$*\" in *-eo*) printf '11 ttys-local 20:00 pi\\n';; *) printf '%s' '{rows}';; esac"),
+                "rmux" if case == "agy" => r#"case "$1" in
+list-panes)
+  printf 'attached:main.0 71 0 \n'
+  printf 'detached:main.0 72 0 %s/brain/11111111-1111-4111-8111-111111111111/.system_generated/logs/transcript.jsonl\n' "$AGY_CLI_HOME"
+  printf 'unknown:main.0 73 0 %s/brain/33333333-3333-4333-8333-333333333333/.system_generated/logs/transcript.jsonl\n' "$AGY_CLI_HOME"
+  printf 'dead:main.0 74 1 %s/brain/44444444-4444-4444-8444-444444444444/.system_generated/logs/transcript.jsonl\n' "$AGY_CLI_HOME"
+  printf 'wrapper:main.0 75 0 \n';;
+list-clients) printf 'attached\n';;
+esac"#.into(),
                 "lsof" => "printf 'p11\\nn/local-cwd\\n'".into(),
                 _ => String::new(),
             };
@@ -344,10 +359,11 @@ fn runtime_inventory_fake_cli_isolated() {
                 "--nocapture",
             ])
             .env("HOME", &root)
-            .env("PI_CODING_AGENT_DIR", root.join("local-agent"))
+            .env("AGY_CLI_HOME", root.join("agy-home"))
+            .env("PI_CODING_AGENT_DIR", root.join(format!("{case}-agent")))
             .env(
                 "PI_CODING_AGENT_SESSION_DIR",
-                root.join("local-agent/sessions"),
+                root.join(format!("{case}-agent/sessions")),
             )
             .env("PI_VIEWER_TEST_COMMAND_DIR", root.join("commands"))
             .env("PI_VIEWER_TEST_COMMAND_TRACE", &trace)
@@ -396,6 +412,35 @@ fn runtime_inventory_isolated_child() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+    if case == "agy" {
+        let root = crate::agy::agy_dir();
+        let paths: Vec<_> = [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+            "44444444-4444-4444-8444-444444444444",
+            "55555555-5555-4555-8555-555555555555",
+        ].iter().map(|id| write_session(&root,
+            &format!("brain/{id}/.system_generated/logs/transcript.jsonl"))).collect();
+        let map = rmux_runtime_map();
+        assert_eq!(map.len(), 4);
+        assert_eq!(map[&paths[0]].pi_alive, Some(true));
+        assert!(map[&paths[0]].attached);
+        // Exact argv wins over stale @pi_session; detached does not mean dead.
+        assert_eq!(map[&paths[1]].target, "detached:main.0");
+        assert_eq!(map[&paths[1]].pi_alive, Some(true));
+        assert!(!map[&paths[1]].attached);
+        assert_eq!(map[&paths[2]].pi_alive, None);
+        assert!(!map[&paths[2]].dead);
+        assert_eq!(map[&paths[3]].pi_alive, Some(false));
+        assert!(map[&paths[3]].dead);
+        assert!(!map.contains_key(&paths[4]), "shell mentions are not AGY evidence");
+        let before = fs::read_to_string(&trace).unwrap();
+        let _ = rmux_runtime_map();
+        assert_eq!(fs::read_to_string(&trace).unwrap(), before, "cache reused");
+        assert!(!before.contains("lsof") && !before.contains("kill"));
+        return;
+    }
     if case == "local" {
         for pid in 1..=512 {
             write_runtime(

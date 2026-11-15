@@ -87,7 +87,7 @@ try {
     engine: 'agy',
   };
 
-  const sidebarHtml = render(Sidebar, {
+  const sidebarProps = {
     projects: [{
       key: '--Users-wenliu-Code-python-quantnight--',
       cwd: '/Users/wenliu/Code/python/quantnight',
@@ -105,11 +105,33 @@ try {
     remoteHosts: [],
     onSelectProject: () => {},
     onSelectSession: () => {},
-  });
+  };
+  const sidebarHtml = render(Sidebar, sidebarProps);
 
   assert.match(sidebarHtml, /engine-chip agy/);
   assert.match(sidebarHtml, /QuantNight AGY Session/);
+  assert.doesNotMatch(sidebarHtml, />● term</, 'AGY busy flag alone is not terminal evidence');
+  assert.match(sidebarHtml, /active; runtime location unknown/);
   console.log('PASS AGY engine chip and session list rendering in Sidebar');
+
+  for (const [label, flags, expected] of [
+    ['attached', { rmuxAttached: true, rmuxPiAlive: true }, '● rmux'],
+    ['detached', { rmuxAttached: false, rmuxPiAlive: true }, '○ rmux'],
+    ['unknown', { rmuxAttached: false, rmuxPiAlive: null }, '? rmux'],
+    ['ended', { rmuxAttached: false, rmuxPiAlive: false }, 'ended rmux'],
+    ['dead', { rmuxAttached: false, rmuxPiAlive: false, rmuxDead: true }, '✕ rmux'],
+  ]) {
+    const html = render(Sidebar, {
+      ...sidebarProps,
+      sessions: [{ ...agyMain, running: false, inRmux: true,
+        rmuxTarget: 'synthetic:main.0', ...flags }],
+    });
+    assert.ok(html.includes(expected), `AGY ${label} should display ${expected}`);
+    assert.match(html, /engine-chip agy/);
+    assert.doesNotMatch(html, /Pi process identity unknown/);
+    assert.doesNotMatch(html, />● term</);
+  }
+  console.log('PASS AGY rmux chips: attached/detached/unknown/ended/dead, including idle TUI');
 
   // 2. Thread rendering of AGY entries (thinking, toolCall + result pairing, user text)
   const detail = {

@@ -71,7 +71,9 @@ function SessionItem({
         s.running
           ? s.inRmux
             ? `⛭ in rmux: ${s.rmuxTarget ?? ""} (closable tab)`
-            : "in terminal window"
+            : s.engine === "agy" && !s.termAlive
+              ? "active; runtime location unknown"
+              : "in terminal window"
           : "not running"
       }\n(right-click for options)`}
     >
@@ -81,7 +83,7 @@ function SessionItem({
       </div>
       <div className="session-item-line2">
         <span className="session-time">{relTime(s.updatedAt)}</span>
-        {(s.running || s.inRmux || s.termAlive) && (
+        {(s.inRmux || s.termAlive || (s.running && s.engine !== "agy")) && (
           <span
             className={`runtime-chip ${s.inRmux ? "rmux" : "term"} ${
               s.inRmux ? (s.rmuxDead || s.rmuxPiAlive === false ? "dead" : s.rmuxPiAlive === null ? "unknown" : s.rmuxAttached ? "attached" : "detached") : ""
@@ -93,11 +95,11 @@ function SessionItem({
                   : s.rmuxPiAlive === false
                     ? `rmux · worker ended; shell/window retained (Attach to browse) · id: ${s.id}`
                     : s.rmuxPiAlive === null
-                      ? `rmux · historical location; Pi process identity unknown · id: ${s.id}`
+                      ? `rmux · historical location; agent process identity unknown · id: ${s.id}`
                   : s.rmuxAttached
                     ? `rmux · attached (${s.rmuxTarget ?? ""}) — detach: Ctrl+G or close the tab · id: ${s.id}`
                     : `rmux · detached (${s.rmuxTarget ?? ""}) — attach to view · id: ${s.id}`
-                : `terminal window · pi process alive (closing the tab kills pi) · id: ${s.id}`
+                : `terminal window · agent process alive (closing the tab kills the agent) · id: ${s.id}`
             }
           >
             {s.inRmux
@@ -731,7 +733,7 @@ export const Sidebar = React.memo(function Sidebar({
           {ctxMenu.s.inRmux && ctxMenu.s.rmuxAttached && !ctxMenu.s.rmuxDead && (
             <button
               className="ctx-item"
-              title="Detach all terminals from this rmux session — the pi keeps running"
+              title="Detach all terminals from this rmux session — the agent keeps running"
               onClick={() => {
                 const p = ctxMenu.s.path;
                 setCtxMenu(null);
@@ -744,7 +746,7 @@ export const Sidebar = React.memo(function Sidebar({
           {ctxMenu.s.inRmux && (
             <button
               className="ctx-item danger"
-              title="Close the rmux session — terminates the pi process running inside (hard stop, unlike Detach; works for detached sessions too)"
+              title="Close the rmux session — terminates the agent process running inside (hard stop, unlike Detach; works for detached sessions too)"
               onClick={() => {
                 if (!confirmingKill) {
                   setConfirmingKill(true);

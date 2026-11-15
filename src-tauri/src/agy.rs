@@ -2,7 +2,8 @@
 //! Sessions live in `~/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl`.
 //! Metadata is indexed in `~/.gemini/antigravity-cli/conversation_summaries.db`.
 
-use crate::sessions::{ContentBlock, Entry, Project, SessionMeta};
+use crate::sessions::{ContentBlock, Entry, Project, RmuxRuntime, SessionMeta};
+use crate::sessions::runtime::{apply_rmux_runtime, RmuxSessionCount};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -215,13 +216,35 @@ pub fn parse_agy_iso_epoch(s: &str) -> i64 {
 }
 
 pub fn list_agy_projects() -> Vec<Project> {
-    let summaries = query_all_summaries();
+    list_agy_projects_with_runtime(&crate::sessions::rmux_runtime_map())
+}
+
+/// Reuse the caller's inventory; never collect runtime evidence per conversation.
+pub fn list_agy_projects_with_runtime(rmux: &HashMap<String, RmuxRuntime>) -> Vec<Project> {
+    build_agy_projects(&query_all_summaries(), &agy_dir(), rmux)
+}
+
+fn transcript_path(root: &Path, conversation_id: &str) -> PathBuf {
+    root.join("brain")
+        .join(conversation_id)
+        .join(".system_generated")
+        .join("logs")
+        .join("transcript.jsonl")
+}
+
+// These builders only use supplied summaries/root/runtime and transcript metadata.
+// In particular they must not query sqlite, processes, rmux, or environment paths.
+fn build_agy_projects(
+    summaries: &[AgySummary],
+    root: &Path,
+    rmux: &HashMap<String, RmuxRuntime>,
+) -> Vec<Project> {
     if summaries.is_empty() {
         return Vec::new();
     }
 
     let mut parent_workspaces: HashMap<String, String> = HashMap::new();
-    for s in &summaries {
+    for s in summaries {
         if let Some(cwd) = extract_workspace_path(&s.workspace_uris) {
             parent_workspaces.insert(s.conversation_id.clone(), cwd);
         }
@@ -232,6 +255,7 @@ pub fn list_agy_projects() -> Vec<Project> {
         session_count: usize,
         subagent_count: usize,
         running_count: usize,
+        rmux_count: RmuxSessionCount,
         updated_at: i64,
     }
 
@@ -245,12 +269,7 @@ pub fn list_agy_projects() -> Vec<Project> {
             _ => continue,
         };
 
-        let transcript_path = agy_dir()
-            .join("brain")
-            .join(&s.conversation_id)
-            .join(".system_generated")
-            .join("logs")
-            .join("transcript.jsonl");
+        let transcript_path = transcript_path(root, &s.conversation_id);
 
         if !transcript_path.is_file() {
             continue;
@@ -262,6 +281,7 @@ pub fn list_agy_projects() -> Vec<Project> {
             session_count: 0,
             subagent_count: 0,
             running_count: 0,
+            rmux_count: RmuxSessionCount::default(),
             updated_at: 0,
         });
 
@@ -273,6 +293,9 @@ pub fn list_agy_projects() -> Vec<Project> {
         if s.not_fully_idle {
             g.running_count += 1;
         }
+        g.rmux_count.observe(
+            &s.conversation_id, transcript_path.to_string_lossy().as_ref(), rmux,
+        );
         if updated > g.updated_at {
             g.updated_at = updated;
         }
@@ -287,20 +310,35 @@ pub fn list_agy_projects() -> Vec<Project> {
             subagent_count: g.subagent_count,
             updated_at: g.updated_at,
             running_count: g.running_count,
-            rmux_count: 0,
+            rmux_count: g.rmux_count.len(),
             term_count: 0,
         })
         .collect()
 }
 
 pub fn list_agy_sessions(cwd: &str) -> Vec<SessionMeta> {
-    let summaries = query_all_summaries();
+    list_agy_sessions_with_runtime(cwd, &crate::sessions::rmux_runtime_map())
+}
+
+pub fn list_agy_sessions_with_runtime(
+    cwd: &str,
+    rmux: &HashMap<String, RmuxRuntime>,
+) -> Vec<SessionMeta> {
+    build_agy_sessions(cwd, &query_all_summaries(), &agy_dir(), rmux)
+}
+
+fn build_agy_sessions(
+    cwd: &str,
+    summaries: &[AgySummary],
+    root: &Path,
+    rmux: &HashMap<String, RmuxRuntime>,
+) -> Vec<SessionMeta> {
     if summaries.is_empty() {
         return Vec::new();
     }
 
     let mut parent_workspaces: HashMap<String, String> = HashMap::new();
-    for s in &summaries {
+    for s in summaries {
         if let Some(c) = extract_workspace_path(&s.workspace_uris) {
             parent_workspaces.insert(s.conversation_id.clone(), c);
         }
@@ -318,12 +356,7 @@ pub fn list_agy_sessions(cwd: &str) -> Vec<SessionMeta> {
             continue;
         }
 
-        let transcript_path = agy_dir()
-            .join("brain")
-            .join(&s.conversation_id)
-            .join(".system_generated")
-            .join("logs")
-            .join("transcript.jsonl");
+        let transcript_path = transcript_path(root, &s.conversation_id);
 
         let meta = match std::fs::metadata(&transcript_path) {
             Ok(m) => m,
@@ -344,12 +377,7 @@ pub fn list_agy_sessions(cwd: &str) -> Vec<SessionMeta> {
         let is_subagent = !s.parent_conversation_id.is_empty();
         let parent_session_path = if is_subagent {
             Some(
-                agy_dir()
-                    .join("brain")
-                    .join(&s.parent_conversation_id)
-                    .join(".system_generated")
-                    .join("logs")
-                    .join("transcript.jsonl")
+                self::transcript_path(root, &s.parent_conversation_id)
                     .to_string_lossy()
                     .to_string(),
             )
@@ -357,7 +385,7 @@ pub fn list_agy_sessions(cwd: &str) -> Vec<SessionMeta> {
             None
         };
 
-        out.push(SessionMeta {
+        let mut session = SessionMeta {
             path: path_str,
             id: s.conversation_id.clone(),
             cwd: norm_cwd.to_string(),
@@ -400,7 +428,12 @@ pub fn list_agy_sessions(cwd: &str) -> Vec<SessionMeta> {
             term_alive: false,
             size: file_size,
             engine: Some("agy".to_string()),
-        });
+        };
+        // Exact-path decoration is shared with Pi; AGY supplies only metadata
+        // and its own busy flag. Parent/cwd are never runtime ownership.
+        let runtime = rmux.get(&session.path);
+        apply_rmux_runtime(&mut session, runtime);
+        out.push(session);
     }
 
     out
@@ -755,5 +788,277 @@ mod tests {
             assert!(cmd.contains("--dangerously-skip-permissions"));
             assert!(cmd.contains("--conversation 'c2ec9bfb-e49a-4d8e-842a-eb9bcbadba07'"));
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Every fixture owns a unique temp tree. No CLI, database, environment
+    // mutation, real session files, or process inventory is needed by these tests.
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "agy-runtime-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn path(&self, id: &str) -> String {
+            transcript_path(&self.0, id).to_string_lossy().into_owned()
+        }
+
+        fn transcript(&self, id: &str) {
+            let path = transcript_path(&self.0, id);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}\n").unwrap();
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn summary(id: &str, cwd: &str, running: bool) -> AgySummary {
+        AgySummary {
+            conversation_id: id.into(),
+            title: format!("Title {id}"),
+            preview: "Preview".into(),
+            step_count: 7,
+            last_modified_time: "2026-10-01T12:34:56Z".into(),
+            workspace_uris: serde_json::json!([format!("file://{cwd}")]).to_string(),
+            not_fully_idle: running,
+            ..Default::default()
+        }
+    }
+
+    fn runtime(target: &str, attached: bool, dead: bool, pi_alive: Option<bool>) -> RmuxRuntime {
+        RmuxRuntime {
+            target: target.into(),
+            attached,
+            dead,
+            pi_alive,
+        }
+    }
+
+    #[test]
+    fn session_runtime_matrix_preserves_busy_and_metadata() {
+        let fixture = Fixture::new();
+        let cwd = "/synthetic/workspace";
+        let cases = [
+            Some(runtime("agy:attached", true, false, Some(true))),
+            Some(runtime("agy:detached", false, false, Some(true))),
+            Some(runtime("agy:ended-shell", true, false, Some(false))),
+            Some(runtime("agy:dead", false, true, Some(false))),
+            Some(runtime("agy:unknown", true, false, None)),
+            None,
+        ];
+        for (index, rt) in cases.iter().enumerate() {
+            for busy in [false, true] {
+                let id = format!("conversation-{index}-{busy}");
+                fixture.transcript(&id);
+                let s = summary(&id, cwd, busy);
+                let mut rmux = HashMap::new();
+                if let Some(rt) = rt {
+                    rmux.insert(fixture.path(&id), rt.clone());
+                }
+                let sessions = build_agy_sessions(cwd, &[s.clone()], &fixture.0, &rmux);
+                assert_eq!(sessions.len(), 1);
+                let m = &sessions[0];
+                assert_eq!(m.path, fixture.path(&id));
+                assert_eq!(m.id, id);
+                assert_eq!(m.cwd, cwd);
+                assert_eq!(m.running, busy, "pane state must not override AGY busy");
+                assert_eq!(m.in_rmux, rt.is_some());
+                assert_eq!(m.rmux_target, rt.as_ref().map(|rt| rt.target.clone()));
+                assert_eq!(m.rmux_attached, rt.as_ref().is_some_and(|rt| rt.attached));
+                assert_eq!(m.rmux_dead, rt.as_ref().is_some_and(|rt| rt.dead));
+                assert_eq!(m.rmux_pi_alive, rt.as_ref().and_then(|rt| rt.pi_alive));
+                assert_eq!(m.name.as_deref(), Some(s.title.as_str()));
+                assert_eq!(m.first_message.as_deref(), Some("Preview"));
+                assert_eq!(m.message_count, 7);
+                assert_eq!(m.created_iso, s.last_modified_time);
+                assert_eq!(m.created_at, parse_agy_iso_epoch(&s.last_modified_time));
+                assert!(m.updated_at > 0);
+                assert_eq!(m.size, 3);
+                assert_eq!(m.engine.as_deref(), Some("agy"));
+                assert_eq!(m.model.as_deref(), Some("gemini"));
+                assert!(!m.is_subagent && !m.sleeping && !m.interrupted && !m.term_alive);
+                assert!(m.parent_session_id.is_none() && m.parent_session_path.is_none());
+
+                let projects = build_agy_projects(&[s], &fixture.0, &rmux);
+                assert_eq!(projects.len(), 1);
+                assert_eq!(projects[0].running_count, usize::from(busy));
+                let confirmed = rt
+                    .as_ref()
+                    .is_some_and(|rt| !rt.dead && rt.pi_alive == Some(true));
+                assert_eq!(projects[0].rmux_count, usize::from(confirmed));
+            }
+        }
+    }
+
+    #[test]
+    fn project_counts_include_inherited_children_but_not_unknown_or_dead_runtime() {
+        let fixture = Fixture::new();
+        let cwd = "/synthetic/project";
+        let mut summaries = vec![
+            summary("parent", cwd, false),
+            summary("detached", cwd, true),
+            summary("ended", cwd, true),
+            summary("dead", cwd, true),
+            summary("unknown", cwd, false),
+            summary("unmapped", cwd, true),
+            summary("child", cwd, true),
+            summary("missing-transcript", cwd, true),
+            summary("orphan", cwd, true),
+            summary("other", "/synthetic/other", false),
+        ];
+        summaries[6].workspace_uris = "[]".into();
+        summaries[6].parent_conversation_id = "parent".into();
+        summaries[6].agent_name = "researcher".into();
+        summaries[6].nesting_depth = 1;
+        summaries[6].last_modified_time = "2026-10-02T12:34:56Z".into();
+        summaries[8].workspace_uris = "[]".into();
+        summaries[8].parent_conversation_id = "absent-parent".into();
+        for s in &summaries {
+            if s.conversation_id != "missing-transcript" {
+                fixture.transcript(&s.conversation_id);
+            }
+        }
+        let mut rmux = HashMap::new();
+        for (id, attached, dead, alive) in [
+            ("parent", true, false, Some(true)),
+            ("detached", false, false, Some(true)),
+            ("ended", false, false, Some(false)),
+            // Even contradictory liveness must not count a dead pane.
+            ("dead", false, true, Some(true)),
+            ("unknown", false, false, None),
+            ("child", false, false, Some(true)),
+            ("missing-transcript", true, false, Some(true)),
+            ("orphan", true, false, Some(true)),
+            ("other", true, false, Some(true)),
+        ] {
+            rmux.insert(
+                fixture.path(id),
+                runtime(&format!("agy:{id}"), attached, dead, alive),
+            );
+        }
+        let projects = build_agy_projects(&summaries, &fixture.0, &rmux);
+        assert_eq!(projects.len(), 2);
+        let p = projects.iter().find(|p| p.cwd == cwd).unwrap();
+        assert_eq!(p.key, crate::sessions::encode_dir_name(cwd));
+        assert_eq!(p.session_count, 6);
+        assert_eq!(p.subagent_count, 1);
+        assert_eq!(p.running_count, 5);
+        assert_eq!(p.rmux_count, 3);
+        assert_eq!(p.term_count, 0);
+        assert_eq!(
+            p.updated_at,
+            parse_agy_iso_epoch(&summaries[6].last_modified_time)
+        );
+        let other = projects
+            .iter()
+            .find(|p| p.cwd == "/synthetic/other")
+            .unwrap();
+        assert_eq!(
+            (
+                other.session_count,
+                other.subagent_count,
+                other.running_count,
+                other.rmux_count
+            ),
+            (1, 0, 0, 1)
+        );
+
+        let sessions = build_agy_sessions(&format!("{cwd}/"), &summaries, &fixture.0, &rmux);
+        assert_eq!(sessions.len(), 7);
+        let child = sessions.iter().find(|s| s.id == "child").unwrap();
+        assert_eq!(child.cwd, cwd);
+        assert!(child.is_subagent && child.running && child.in_rmux);
+        assert_eq!(child.parent_session_id.as_deref(), Some("parent"));
+        assert_eq!(
+            child.parent_session_path.as_deref(),
+            Some(fixture.path("parent").as_str())
+        );
+        assert_eq!(child.task_id.as_deref(), Some("researcher"));
+        assert_eq!(child.rmux_target.as_deref(), Some("agy:child"));
+        assert!(
+            !child.rmux_attached,
+            "child must not inherit parent pane state"
+        );
+    }
+
+    #[test]
+    fn runtime_ownership_requires_exact_transcript_path_not_cwd_id_or_parent() {
+        let fixture = Fixture::new();
+        let other_root = Fixture::new();
+        let cwd = "/synthetic/shared";
+        let parent = summary("parent", cwd, false);
+        let mut child = summary("child", cwd, true);
+        child.workspace_uris = "[]".into();
+        child.parent_conversation_id = parent.conversation_id.clone();
+        let sibling = summary("sibling", cwd, true);
+        let summaries = [parent, child, sibling];
+        for s in &summaries {
+            fixture.transcript(&s.conversation_id);
+            other_root.transcript(&s.conversation_id);
+        }
+        let live = runtime("agy:not-the-child", true, false, Some(true));
+        let mut rmux = HashMap::from([
+            (fixture.path("parent"), live.clone()),
+            (other_root.path("child"), live.clone()),
+            (cwd.to_string(), live.clone()),
+            ("child".to_string(), live.clone()),
+            (format!("{}/", fixture.path("child")), live),
+        ]);
+        let sessions = build_agy_sessions(cwd, &summaries, &fixture.0, &rmux);
+        assert_eq!(sessions.len(), 3);
+        assert!(sessions[0].in_rmux);
+        for s in &sessions[1..] {
+            assert!(s.running);
+            assert!(!s.in_rmux && !s.rmux_attached && !s.rmux_dead && !s.term_alive);
+            assert!(s.rmux_target.is_none() && s.rmux_pi_alive.is_none());
+        }
+        let projects = build_agy_projects(&summaries, &fixture.0, &rmux);
+        assert_eq!(projects[0].rmux_count, 1);
+        assert_eq!(projects[0].running_count, 2);
+
+        rmux.insert(
+            fixture.path("child"),
+            runtime("agy:exact-child", false, false, Some(false)),
+        );
+        let sessions = build_agy_sessions(cwd, &summaries, &fixture.0, &rmux);
+        assert!(sessions[1].in_rmux && sessions[1].running);
+        assert_eq!(sessions[1].rmux_target.as_deref(), Some("agy:exact-child"));
+        assert_eq!(sessions[1].rmux_pi_alive, Some(false));
+        assert_eq!(
+            build_agy_projects(&summaries, &fixture.0, &rmux)[0].rmux_count,
+            1
+        );
+    }
+
+    #[test]
+    fn empty_and_missing_transcripts_stay_absent() {
+        let fixture = Fixture::new();
+        let rmux = HashMap::new();
+        assert!(build_agy_projects(&[], &fixture.0, &rmux).is_empty());
+        assert!(build_agy_sessions("/synthetic", &[], &fixture.0, &rmux).is_empty());
+        let summaries = [summary("missing", "/synthetic", true)];
+        assert!(build_agy_projects(&summaries, &fixture.0, &rmux).is_empty());
+        assert!(build_agy_sessions("/synthetic", &summaries, &fixture.0, &rmux).is_empty());
     }
 }

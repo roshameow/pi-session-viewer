@@ -11,10 +11,20 @@ GitHub: https://github.com/roshameow/pi-session-viewer
 - 🌌 **Antigravity (AGY) 适配**:解析 `conversation_summaries.db` SQLite 索引与 `transcript.jsonl`，提取工作区归类，清洗 prompt 包装，确定性配对 tool calls 与结果；右键与顶部支持“Open in agy TUI”，以 `agy --dangerously-skip-permissions --conversation <id>` 启动，并与 rmux 统一托管。
 - 🕸️ **子代理嵌套**:`pi-subagent-durable` 的显式父 UUID 关联到去重后的主会话或 worker 会话，支持 worker → grandchild（镜像与真实文件的 header `id` 是同一子会话 UUID，不是父 UUID）。缺失、自指、循环或歧义关系不猜测父节点；侧栏主会话分组仍只显示直接子代理，嵌套父标签在子代理区显示
 - ⏳ **实时续聊**:输入消息 → Rust 直接 spawn `pi --session <file> --mode json`,增量事件流式渲染(text_delta / tool_execution),pi 自动把新消息写回原 JSONL
-- 🟢 **运行状态 chip**(每会话):`● rmux` 已附着 / `○ rmux` 分离 / `ended rmux` worker 已结束但 shell 留存 / `? rmux` Pi 身份未知 / `✕ rmux` pane 已退出 / `● term` 在终端窗口里跑 — **运行状态与位置解耦**:空闲的 rmux 显示位置 chip 但不显示 running
+- 🟢 **运行状态 chip**(每会话):`● rmux` 已附着 / `○ rmux` 分离 / `ended rmux` worker 已结束但 shell 留存 / `? rmux` Agent 身份未知 / `✕ rmux` pane 已退出 / `● term` 在终端窗口里跑 — **运行状态与位置解耦**:空闲的 rmux 显示位置 chip 但不显示 running
 - ⚡ **rmux 集成**:Attach(附着)、右键 Detach(rmux 内 `Ctrl+G` 或关标签页)、Open TUI(在现有 Terminal 窗口开**标签页**,而不是新窗口)
 - ⚙️ **Config 面板**:MCP 服务器 / Agents(全局 + 项目级 `.pi/agents`)/ Skills(全局 + 项目级)
 - 📤 导出 HTML、右键删除会话、搜索、可拖拽侧边栏、toast
+
+## AGY 的 rmux 状态
+
+Pi 与 AGY 共用 `src-tauri/src/sessions/runtime.rs` 中的运行位置模型、字段填充、存活判定、优先级和项目计数器。计数按各引擎内的会话 ID 去重；同一 Pi 的 real/mirror 文件只计一次，且不依赖扫描顺序。两个引擎都要求已关联位置、Agent 存活证据和未退出的 pane 才计入项目 rmux 数；仅 task busy 不再充当 rmux 位置证据。AGY 要求精确 conversation/path 关联；Pi 保留历史 bare `pi` pane 按 cwd/启动时间推断会话的兼容路径，因此 Pi 的位置关联并非全部精确。忙碌/睡眠/中断规则仍由各引擎处理，IPC 字段 `rmuxPiAlive` 暂保留原名以兼容前端。
+
+本机 AGY 列表复用同一次 rmux inventory，按 transcript 完整路径关联位置；直接 `agy --conversation <uuid>` 进程可提供精确身份，且优先于过期的窗口选项。不会把 shell 命令里提到的 agy 当成进程，也不会按相同工作目录或父会话推断子会话位置。
+
+AGY 同样显示 attached / detached / dead / ended / unknown rmux，项目计数只包含有存活证据且 pane 未退出的会话。忙碌状态仍来自 AGY 索引的 `not_fully_idle`，不等于进程存活；仅忙碌而无位置证据时不虚构 term 标签。远程 AGY inventory 和非 rmux 的 AGY 终端识别不在本次支持范围内。
+
+隔离测试：`npm run test:agy`；Rust 使用 `cargo test --offline --manifest-path src-tauri/Cargo.toml agy::runtime_tests`、`cargo test --offline --manifest-path src-tauri/Cargo.toml agy_runtime`、`cargo test --offline --manifest-path src-tauri/Cargo.toml sessions::runtime_tests` 和 `cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_inventory_fake_cli_isolated`，不启动真实 AGY、Pi 或 rmux。
 
 ## rmux 检测原理(为什么可靠)
 
@@ -29,7 +39,14 @@ pi 会清理自己的 argv(只剩 `pi`),`ps -o command=` 永远看不到 `--sess
 
 Open TUI 通过 bundle 内的 `tab-open-helper` 发送 `Cmd+T`,在现有 Terminal 窗口**开标签页**(标签页是 Terminal 菜单快捷键,唯一不需要改 Terminal 的建标签方式),然后命令跑在新标签里 — 避免把命令打进 raw-mode pi 的 stdin。
 
-**一次性授权(必须)**:macOS 按二进制 hash 记录辅助功能授权,主 app 每次重建都会失效。`tab-open-helper` **从不重建**,授权可在辅助程序二进制不变时复用；系统更新或设置变更仍可能要求重新授权:
+**授权与更新**：macOS TCC 不只是检查二进制 hash。主 app 使用同一证书、同一 identifier 和稳定 designated requirement 签名时，可在重建后保持身份；ad-hoc 主 app 的要求包含随构建变化的 CDHash，可能导致旧授权失效。当前 `tab-open-helper` 自身为 ad-hoc 签名，因此保持它的字节、路径和签名不变；但 helper 不变并不能保证主 app 的授权归属不变。系统升级、手动撤权等仍可能要求重新授权。
+
+首次授权或从 unsigned 版本迁移后仍无法开标签页时：
+
+1. 在系统设置 → 隐私与安全性 → **辅助功能**中重新添加 `/Applications/pi-session-viewer.app` 并启用（若已有失效条目，先移除旧条目）。
+2. 若仍失败，再按下方路径添加 helper。不要重置整个 TCC 数据库，也不需要为开 tab 开启完全磁盘访问。
+
+Helper 添加方式:
 
 1. 系统设置 → 隐私与安全性 → **辅助功能**
 2. `+` → `Cmd+Shift+G` → 输入路径:
@@ -42,14 +59,31 @@ Open TUI 通过 bundle 内的 `tab-open-helper` 发送 `Cmd+T`,在现有 Termina
 
 本地 ad-hoc 签名 app 的二进制 hash 随重建变化，TCC 授权可能需要重新确认。仓库保留维护者的既有签名身份 `Pi Session Viewer Dev Signing`（tauri.conf.json → `bundle.macOS.signingIdentity`），但不包含证书或私钥，也不要求新环境创建该身份。
 
+维护者本机的日常更新统一使用：
+
 ```bash
-# 已有该 identity：保留默认签名配置，只打 .app，不生成 DMG
-npm run tauri -- build --bundles app --ci
-# 没有该 identity：覆盖签名配置，适合本机验证；不是公证发行包
+npm run update:mac
+```
+
+此命令**会关闭、替换并重启查看器**，请先完成查看器中的当前操作。它用既有证书构建 `.app`，保留 helper 字节，验证后安装到 `/Applications/pi-session-viewer.app`；旧 app 移至被忽略的 `artifacts/builds/stable-signing/backups/`。不修改会话数据、TCC 或钥匙串，不主动停止独立 Pi / RMUX 进程。若查看器无法正常退出则取消，不强制杀进程。
+
+需要分步操作时：
+
+```bash
+npm run build:mac                 # 只构建并验签，不安装、不启动
+npm run install:mac               # 安装并重启已构建的签名版
+npm run verify:mac -- /Applications/pi-session-viewer.app
+```
+
+`scripts/build-macos-signed.sh` 固定既有证书指纹和 `com.pidesktop.viewer` 的 designated requirement，不仅检查证书同名；还直接验证 helper、核对其 SHA-256 并执行整个 bundle 的严格验签。证书缺失不会创建新证书、修改信任或降级为 unsigned。**保留原证书及私钥；新建一个同名证书不能保持身份。** 这些检查不代表 Apple 公证，也不保证所有系统版本永久保留 TCC 授权。
+
+其他没有维护者证书的开发环境仍可使用：
+
+```bash
 npm run build:unsigned -- --bundles app --ci
 ```
 
-构建不安装、不启动应用。不要为构建自动创建证书或修改钥匙串；是否替换已安装、正在运行的应用由用户另行决定。可用 `codesign --verify --deep --strict <bundle.app>` 验证本地签名完整性，但通过不代表 Apple 公证或 Gatekeeper 信任。
+此命令只做本地开发构建，不安装、不启动。**不要用 unsigned 产物覆盖日常使用的签名 app**，否则可能再次失去授权连续性。签名安装命令会拒绝此产物。
 
 本地验证注意：`security find-identity -v -p codesigning` 的有效列表可能不列出既有自签名 identity，不能仅凭这一列表判断身份不存在；普通 `find-identity -p codesigning` 可确认 presence。本次既有身份的正常 app-only 构建与严格签名验证通过，而 unsigned 配置产生的 linker ad-hoc 签名缺少 bundle resource seal，严格验证失败。Unsigned 构建只用于开发，不应冒充签名验收通过的发行包。
 
@@ -61,9 +95,11 @@ Tauri v2 + React 18 + Vite (TypeScript)
 │                               - list_projects / list_sessions / session_detail
 │                               - rmux_runtime_map(每 pi 会话 + @pi_session 选项)/ alive_terminal_pis(进程级)
 │                               - 多级缓存:(mtime,size) 文件指纹 + 2s TTL 子进程结果
+├── src-tauri/src/sessions/runtime.rs  Pi/AGY 共用位置模型、填充、存活/优先级与去重计数
+├── src-tauri/src/agy.rs        AGY 索引/会话解析与忙碌状态，复用共享 runtime
 ├── src-tauri/src/agent.rs      spawn `pi --mode json`,stdout 逐行转发到 Channel 流
 ├── src-tauri/src/lib.rs        命令注册(全部 spawn_blocking 后台线程)+ rmux/terminal 集成
-├── src-tauri/resources/        tab-open-helper(稳定签名,标签页按键)
+├── src-tauri/resources/        tab-open-helper(字节/签名保持不变的标签页按键助手)
 └── src/                        React 前端(侧边栏 + 线程渲染 + 输入区)
 ```
 

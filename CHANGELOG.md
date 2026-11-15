@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.15 — 2026-11-16
+
+- Unify Pi and AGY rmux location projection, confirmed-live checks, runtime ranking and deduplicated project counts in `sessions/runtime.rs`. Count a session only with mapped, identity-proven live runtime in a non-dead pane; a busy task alone is not rmux-location evidence, and Pi real/mirror files count once regardless of scan order.
+- Hydrate local AGY sessions from the shared batched inventory. Recognize direct `agy --conversation <uuid>` processes, prefer exact conversation identity over stale window options, and display attached/detached/unknown/ended/dead rmux states. Keep AGY busy state independent, and do not infer terminal location from its busy flag. Remote AGY and non-rmux AGY terminal discovery remain unsupported.
+- Add explicit maintainer macOS build, verify, install and update commands that pin the existing certificate and designated requirement, preserve the terminal helper bytes, verify signatures before/after installation, back up the previous app and relaunch. Do not create certificates, modify TCC/keychain settings or silently fall back to unsigned updates. Stable identity supports permission continuity, but is not a permanent TCC or notarization guarantee.
+- Add synthetic cross-engine runtime/counting tests, isolated fake-CLI inventory coverage and AGY sidebar state regressions. Synchronize package, lockfile and application versions without dependency updates.
+
 ## 0.1.14 — 2026-11-07
 
 - Support discovering and parsing Antigravity (`agy`) sessions alongside Pi sessions. Sessions from `~/.gemini/antigravity-cli/conversation_summaries.db` are automatically aggregated and grouped by workspace (`cwd`) into project session lists with an `AGY` engine badge.

@@ -13,6 +13,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+pub(crate) mod runtime;
+pub use runtime::RmuxRuntime;
+use runtime::{apply_rmux_runtime, runtime_rank, RmuxSessionCount};
+
 // ---------------------------------------------------------------------------
 // Global running-session registry (written by agent.rs, read by sessions.rs)
 // ---------------------------------------------------------------------------
@@ -232,7 +236,7 @@ pub struct Project {
     pub subagent_count: usize,
     pub updated_at: i64,      // latest file mtime (secs)
     pub running_count: usize, // running main sessions + running subagents
-    pub rmux_count: usize,    // alive sessions in rmux windows, mains + running subagents
+    pub rmux_count: usize,    // distinct identity-proven live agents in non-dead rmux panes
     pub term_count: usize,    // main sessions actively running in a terminal window
 }
 
@@ -260,7 +264,7 @@ pub struct SessionMeta {
     pub in_rmux: bool,
     pub rmux_target: Option<String>, // e.g. "pi-Users-...:s<id8>"
     pub rmux_attached: bool, // a terminal client is attached to the rmux session
-    pub rmux_pi_alive: Option<bool>, // Some = identity evidence; None = location only
+    pub rmux_pi_alive: Option<bool>, // legacy IPC name: Pi/AGY identity evidence; None = location only
     pub rmux_dead: bool,     // rmux window kept by remain-on-exit, pane process exited
     pub term_alive: bool,    // an alive pi process runs this session in a terminal window
     pub size: u64,
@@ -454,7 +458,7 @@ pub fn list_projects() -> Vec<Project> {
             let mut sub_count = 0usize;
             let mut updated = 0i64;
             let mut running_count = 0usize;
-            let mut rmux_count = 0usize;
+            let mut rmux_count = RmuxSessionCount::default();
             let mut seen_uuids: HashSet<String> = HashSet::new();
             let mut best_cwd: Option<(i64, String)> = None;
             let cwd = decode_dir_name(&name);
@@ -477,25 +481,20 @@ pub fn list_projects() -> Vec<Project> {
                     });
                     if let Some(h) = &header {
                         if let Some(u) = h.get("id").and_then(|x| x.as_str()) {
+                            // Count location independently of metadata scan order:
+                            // either a real file or its later mirror may own the pane.
+                            rmux_count.observe(u, f.path().to_string_lossy().as_ref(), rmux_map);
                             if seen_uuids.insert(u.to_string()) {
                                 if let Some(tasks) = task_by_uuid.get(u) {
-                                    // subagent: running tasks live in pi-agents (rmux);
-                                    // counted in rmux_count (mains + subagents together)
+                                    // Task activity and rmux location are independent.
                                     let is_running = tasks.iter().any(|t| alive.contains(t));
                                     if is_running {
                                         running_count += 1;
-                                        rmux_count += 1;
                                     }
                                 } else {
                                     // main session
                                     if main_file_running_with_paths(&f.path(), rmux_map, &evidence.registered_paths) {
                                         running_count += 1;
-                                    }
-                                    let spath = f.path().to_string_lossy().into_owned();
-                                    if let Some(rt) = rmux_map.get(&spath) {
-                                        if rt.pi_alive == Some(true) {
-                                            rmux_count += 1;
-                                        }
                                     }
                                 }
                             }
@@ -546,18 +545,20 @@ pub fn list_projects() -> Vec<Project> {
                 subagent_count: sub_count,
                 updated_at: updated,
                 running_count,
-                rmux_count,
+                rmux_count: rmux_count.len(),
                 term_count,
             });
         }
     }
     if !source.remote && crate::agy::is_agy_available() {
-        let agy_projects = crate::agy::list_agy_projects();
+        let agy_projects = crate::agy::list_agy_projects_with_runtime(rmux_map);
         for agy_p in agy_projects {
             if let Some(existing) = out.iter_mut().find(|p| p.cwd == agy_p.cwd) {
                 existing.session_count += agy_p.session_count;
                 existing.subagent_count += agy_p.subagent_count;
                 existing.running_count += agy_p.running_count;
+                existing.rmux_count += agy_p.rmux_count;
+                existing.term_count += agy_p.term_count;
                 if agy_p.updated_at > existing.updated_at {
                     existing.updated_at = agy_p.updated_at;
                 }
@@ -1098,6 +1099,53 @@ fn is_pi_command(command: &str) -> bool {
     }))
 }
 
+// An AGY argv is stronger session evidence than a historical @pi_session.
+// Match the executable and exact conversation flag, never shell command text.
+fn agy_command_conversation(command: &str) -> Option<&str> {
+    let mut args = command.split_whitespace();
+    let exe = args.next()?.trim_matches(['\'', '"']);
+    if Path::new(exe).file_name()?.to_str()? != "agy" { return None; }
+    while let Some(arg) = args.next() {
+        let id = if arg == "--conversation" {
+            args.next()?
+        } else if let Some(id) = arg.strip_prefix("--conversation=") {
+            id
+        } else {
+            continue;
+        }.trim_matches(['\'', '"']);
+        if is_conversation_uuid(id) { return Some(id); }
+        return None;
+    }
+    None
+}
+
+fn is_conversation_uuid(id: &str) -> bool {
+    id.len() == 36 && id.bytes().enumerate().all(|(i, b)| {
+        if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() }
+    })
+}
+
+fn agy_transcript_conversation(path: &str) -> Option<&str> {
+    let mut p = Path::new(path);
+    for name in ["transcript.jsonl", "logs", ".system_generated"] {
+        if p.file_name()?.to_str()? != name { return None; }
+        p = p.parent()?;
+    }
+    let id = p.file_name()?.to_str()?;
+    if p.parent()?.file_name()?.to_str()? != "brain" || !is_conversation_uuid(id) {
+        return None;
+    }
+    Some(id)
+}
+
+fn agy_pane_liveness(dead: bool, exact: bool, path: &str, command: Option<&str>) -> Option<bool> {
+    if dead { return Some(false); }
+    if let Some(current) = command.and_then(agy_command_conversation) {
+        return Some(current == agy_transcript_conversation(path)?);
+    }
+    if exact { Some(true) } else { None }
+}
+
 fn worker_title_task(title: &str) -> Option<String> {
     let task = title.strip_prefix("pi-subagent-task-")?;
     let (id, suffix) = task.split_once('-')?;
@@ -1381,14 +1429,6 @@ fn extract_task_id(s: &str) -> Option<String> {
         i += 1;
     }
     None
-}
-
-#[derive(Clone)]
-pub struct RmuxRuntime {
-    pub target: String, // e.g. "pi-Users-...:s<id8>"
-    pub attached: bool, // a terminal client is currently attached (has UI)
-    pub dead: bool,     // pane_dead only: shell/wrapper lifetime is NOT Pi lifetime
-    pub pi_alive: Option<bool>, // true exact/runtime or Pi evidence; false ended; None unknown
 }
 
 /// Map of session file path -> rmux runtime info for sessions running inside
@@ -1973,12 +2013,6 @@ fn pane_pi_liveness(dead: bool, exact: bool, task_alive: bool, worker: bool,
     None // missing snapshot, unregistered shell/SDK runner: NOT dead
 }
 
-fn runtime_rank(dead: bool, pi_alive: Option<bool>) -> u8 {
-    if dead { 0 } else {
-        match pi_alive { Some(true) => 3, None => 2, Some(false) => 1 }
-    }
-}
-
 fn insert_runtime(out: &mut HashMap<String, RmuxRuntime>, path: String, rt: RmuxRuntime) {
     if out.get(&path).is_some_and(|old| runtime_rank(old.dead, old.pi_alive)
         >= runtime_rank(rt.dead, rt.pi_alive)) { return; }
@@ -2150,7 +2184,11 @@ fn rmux_runtime_map_with_evidence(
             &pi_agent_dir().join("agent-logs").join(format!("task-{t}.jsonl"))), LastTaskEvent::Terminal));
         let task_alive = task.as_ref().is_some_and(|t| alive_tasks.contains(t));
         let cmd = ps_info.get(&pid).map(|(_, cmd)| cmd.as_str());
-        let pi_alive = pane_pi_liveness(dead, exact, task_alive, task.is_some(), terminal, cmd);
+        let pi_alive = if agy_transcript_conversation(&path).is_some() {
+            agy_pane_liveness(dead, exact, &path, cmd)
+        } else {
+            pane_pi_liveness(dead, exact, task_alive, task.is_some(), terminal, cmd)
+        };
         let rt = RmuxRuntime { target, attached: attached_sess.contains(sess), dead, pi_alive };
         insert_runtime(out, path, rt);
     };
@@ -2175,6 +2213,19 @@ fn rmux_runtime_map_with_evidence(
             if Path::new(&entry.session_path).is_file() {
                 add(entry.session_path.clone(), target.to_string(), &sess, pid, dead, &mut out);
                 continue;
+            }
+        }
+        // AGY keeps its exact conversation id in argv. This also recognizes
+        // manually opened panes and overrides a stale option after resuming
+        // a different conversation. Never resolve local AGY paths for remote panes.
+        if !remote {
+            if let Some(id) = ps_info.get(&pid).and_then(|(_, cmd)| agy_command_conversation(cmd)) {
+                let path = crate::agy::agy_dir().join("brain").join(id)
+                    .join(".system_generated/logs/transcript.jsonl");
+                if path.is_file() {
+                    add(path.to_string_lossy().into_owned(), target.to_string(), &sess, pid, dead, &mut out);
+                    continue;
+                }
             }
         }
         let win = target.split(':').nth(1).unwrap_or("").to_string();
@@ -2207,12 +2258,11 @@ fn rmux_runtime_map_with_evidence(
         };
         let opt_is_file = !opt_effective.is_empty() && Path::new(&opt_effective).is_file();
         let opt_matches_win = opt_is_file && win_id12.as_ref().map_or(false, |w| {
-            Path::new(&opt)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.find('_').map(|pos| &n[pos + 1..]))
-                .map(|uuid| uuid.len() >= 12 && &uuid[..12] == w.as_str())
-                .unwrap_or(false)
+            let id = agy_transcript_conversation(&opt).map(str::to_string).or_else(|| {
+                Path::new(&opt).file_name().and_then(|n| n.to_str())
+                    .and_then(|n| n.find('_').map(|pos| n[pos + 1..].to_string()))
+            });
+            id.is_some_and(|uuid| uuid.get(..12) == Some(w.as_str()))
         });
         // authoritative: the window records which session it was created for
         // (set by ensure_rmux_window). this beats the id8-prefix heuristic,
@@ -2445,6 +2495,11 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                 continue;
             }
             if let Some(mut m) = parse_meta(&path, &fname, &running, &sub_uuids, &task_by_uuid, &alive) {
+                // The same engine-neutral decoration used by AGY. Pi-specific
+                // busy/sleeping/worker inference below consumes, but does not
+                // define, the location contract.
+                let runtime = rmux_map.get(&m.path);
+                apply_rmux_runtime(&mut m, runtime);
                 if m.is_subagent {
                     m.running = running.contains(&m.path);
                     m.sleeping = false;
@@ -2457,27 +2512,12 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
                             _ => {}
                         }
                     }
-                    // Location survives task completion; do not fabricate an
-                    // rmux target when durable already removed the dead pane.
-                    if let Some(rt) = rmux_map.get(&m.path) {
-                        m.in_rmux = true;
-                        m.rmux_target = Some(rt.target.clone());
-                        m.rmux_attached = rt.attached;
-                        m.rmux_dead = rt.dead;
-                        m.rmux_pi_alive = rt.pi_alive;
-                        if rt.pi_alive == Some(true) { m.running = !m.sleeping; m.interrupted = false; }
+                    if runtime.is_some_and(RmuxRuntime::is_live) {
+                        m.running = !m.sleeping;
+                        m.interrupted = false;
                     }
-                } else if let Some(rt) = rmux_map.get(&m.path) {
-                    // runtime location is independent of the task state: an idle
-                    // pi parked in an rmux window is not "running" but is in rmux
-                    m.in_rmux = true;
-                    m.rmux_target = Some(rt.target.clone());
-                    m.rmux_attached = rt.attached;
-                    m.rmux_dead = rt.dead;
-                    m.rmux_pi_alive = rt.pi_alive;
-                    m.running = running.contains(&m.path) || main_file_running_with_paths(&path, rmux_map, &evidence.registered_paths);
                 } else {
-                    // not in rmux: running = pi actively writing in a terminal
+                    // An idle TUI may have a location but no active turn.
                     m.running = running.contains(&m.path) || main_file_running_with_paths(&path, rmux_map, &evidence.registered_paths);
                 }
                 out.push(m);
@@ -2544,7 +2584,7 @@ pub fn list_sessions(project_key: &str) -> Vec<SessionMeta> {
 
     if !source.remote && crate::agy::is_agy_available() {
         let cwd = decode_dir_name(project_key);
-        let agy_sessions = crate::agy::list_agy_sessions(&cwd);
+        let agy_sessions = crate::agy::list_agy_sessions_with_runtime(&cwd, rmux_map);
         out.extend(agy_sessions);
     }
 
@@ -4305,6 +4345,12 @@ mod perf_tests {
 }
 
 // Pure mock regressions only: these tests never call rmux, ps, SSH, or Pi.
+#[cfg(test)]
+mod runtime_tests;
+
+#[cfg(test)]
+mod agy_runtime_tests;
+
 #[cfg(test)]
 mod adaptation_tests {
     use super::*;

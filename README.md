@@ -35,6 +35,12 @@ npm run demo
 - 通过本机 Pi 继续会话，复用已配置的模型与扩展。
 - 浏览 Agents、Skills 和 MCP 配置，导出会话 HTML。
 
+## 0.1.15 统一运行状态与稳定签名更新
+
+Pi 与 AGY 共用 rmux 状态采集、字段填充、存活判定和项目计数。AGY 可显示已附着／分离／退出／未知状态；“正在工作”与“进程存活”分开判断。项目 rmux 数只计有明确存活证据的非 dead pane，同一 Pi 的 real/mirror 会话只计一次。远程 AGY 和非 rmux 的 AGY 终端识别暂不支持。
+
+维护者本机日常更新运行 `npm run update:mac`：使用原有固定证书构建、验签、备份旧版并安装重启。不要用 unsigned 构建覆盖日常签名 app；首次迁移可能仍需授权，系统升级等也可能改变 TCC 状态，不承诺永久免授权。详见[运行状态与签名说明](docs/development.md)。
+
 ## 0.1.14 适配 Antigravity (AGY) 会话与 TUI
 
 - **双引擎会话发现**：自动读取 `~/.gemini/antigravity-cli/conversation_summaries.db`，提取工作区路径并与 Pi 会话统一按项目工作区（`cwd`）归类，侧边栏以 `AGY` 徽章标明引擎类型。
@@ -129,12 +135,13 @@ npm ci
 npm run tauri dev
 ```
 
-macOS 本地打包可运行 `npm run build:unsigned -- --bundles app --ci`（只构建 `.app`，不生成 DMG）；它覆盖开发者证书配置，不需要创建同名私有签名身份。用于分发的签名、公证及系统授权仍需自行处理。已有稳定签名配置的维护者可使用 `npm run tauri -- build --bundles app --ci`。这些命令不会安装或启动应用。
+macOS 本地打包可运行 `npm run build:unsigned -- --bundles app --ci`（只构建 `.app`，不生成 DMG）；它覆盖开发者证书配置，不需要创建同名私有签名身份。用于分发的签名、公证及系统授权仍需自行处理。维护者日常更新使用 `npm run update:mac`：沿用既有证书、验签、备份旧 app，并安装重启；只构建则用 `npm run build:mac`。**不要用 unsigned 产物覆盖日常签名 app**，以免更新后重复授权。详见[开发文档](docs/development.md#代码签名)。
 
 ## 隔离验证
 
 ```bash
 npm run test:adaptation
+npm run test:agy
 npm run test:data-access
 npm run test:local-links
 npm run test:history-controls
@@ -142,6 +149,8 @@ npm run test:detail
 node scripts/test-sidebar-paging.mjs
 npm run build
 cargo test --offline --manifest-path src-tauri/Cargo.toml running_diagnostics -- --skip live_running_inventory
+cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_tests -- --test-threads=1
+cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_inventory_fake_cli_isolated -- --test-threads=1
 cargo test --offline --manifest-path src-tauri/Cargo.toml adaptation_tests -- --test-threads=1
 cargo test --offline --manifest-path src-tauri/Cargo.toml data_access_tests -- --test-threads=1
 cargo test --offline --manifest-path src-tauri/Cargo.toml local_links_tests -- --test-threads=1
