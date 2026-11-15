@@ -379,7 +379,7 @@ pub(crate) fn parse_iso_ts(s: &str) -> Option<i64> {
     let month: i64 = date[1].parse().ok()?;
     let day: i64 = date[2].parse().ok()?;
     let time: Vec<&str> = parts[1].split(':').collect();
-    if time.len() < 2 {
+    if time.len() != 3 {
         return None;
     }
     let hour: i64 = time[0].parse().ok()?;
@@ -2013,6 +2013,19 @@ fn pane_pi_liveness(dead: bool, exact: bool, task_alive: bool, worker: bool,
     None // missing snapshot, unregistered shell/SDK runner: NOT dead
 }
 
+// rmux window/session names are user text, not necessarily ASCII UUIDs.
+fn trailing_id12(name: &str) -> Option<String> {
+    let suffix = name.get(name.len().checked_sub(12)?..)?;
+    let bytes = suffix.as_bytes();
+    (bytes[8] == b'-' && bytes[..8].iter().all(u8::is_ascii_hexdigit)
+        && bytes[9..].iter().all(u8::is_ascii_hexdigit)).then(|| suffix.to_string())
+}
+
+fn window_id8(name: &str) -> Option<&str> {
+    name.strip_prefix('s')?.get(..8)
+        .filter(|id| id.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 fn insert_runtime(out: &mut HashMap<String, RmuxRuntime>, path: String, rt: RmuxRuntime) {
     if out.get(&path).is_some_and(|old| runtime_rank(old.dead, old.pi_alive)
         >= runtime_rank(rt.dead, rt.pi_alive)) { return; }
@@ -2148,7 +2161,9 @@ fn rmux_runtime_map_with_evidence(
                                 }
                                 // id12 ("019fec06-2f1", dash at byte 8): window
                                 // names pi-<cwd>-<id12> carry this exactly.
-                                let id12 = &id_part[..12];
+                                let Some(id12) = id_part.get(..12).filter(|id| {
+                                    id.as_bytes()[9..].iter().all(u8::is_ascii_hexdigit)
+                                }) else { continue };
                                 match id12_map.get(id12) {
                                     Some(existing) => {
                                         let new_mt = fmetadata(&f.path()).map(|m| m.mtime).unwrap_or(0);
@@ -2233,20 +2248,6 @@ fn rmux_runtime_map_with_evidence(
         // name (`pi-<cwd>-<id12>`) while some older layouts put it in the
         // window name. Check both. This is an important fallback when a
         // foreign terminal pi has polluted @pi_session.
-        let trailing_id12 = |name: &str| -> Option<String> {
-            if name.len() < 12 {
-                return None;
-            }
-            let s = &name[name.len() - 12..];
-            if s.as_bytes().get(8) == Some(&b'-')
-                && s[..8].chars().all(|c| c.is_ascii_hexdigit())
-                && s[9..].chars().all(|c| c.is_ascii_hexdigit())
-            {
-                Some(s.to_string())
-            } else {
-                None
-            }
-        };
         let win_id12 = trailing_id12(&win).or_else(|| trailing_id12(&sess));
         // remote snapshots record the HOST-side absolute path (~/.pi/agent/...);
         // map it into our local cache dir so is_file() and the map key match
@@ -2287,13 +2288,11 @@ fn rmux_runtime_map_with_evidence(
             }
         }
         // Open TUI main: window s<id8>
-        if let Some(id8) = win.strip_prefix('s') {
-            if id8.len() >= 8 && id8[..8].chars().all(|c| c.is_ascii_hexdigit()) {
-                if let Some(p) = id8_map.get(&id8[..8]) {
-                    add(p.clone(), target.to_string(), &sess, pid, dead, &mut out);
-                }
-                continue;
+        if let Some(id8) = window_id8(&win) {
+            if let Some(p) = id8_map.get(id8) {
+                add(p.clone(), target.to_string(), &sess, pid, dead, &mut out);
             }
+            continue;
         }
         // subagent: window <agent>-<taskId>
         if let Some(tid) = extract_task_id(&win) {

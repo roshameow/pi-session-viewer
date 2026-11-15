@@ -25,6 +25,10 @@ npm run demo
 
 Open `/demo.html`. The demo renders the actual sidebar and conversation components with synthetic sessions. It never reads your session directory or calls a model. Requires Node.js 22+.
 
+## 0.1.17 Unicode rmux names and empty inventories
+
+Fix Chinese/emoji rmux names crashing inventory reads and making every project/session list appear empty. Worker failures now surface as errors instead of successful empty arrays. No session deletion or re-import is required.
+
 ## 0.1.16 AGY older-history display fix
 
 Fix the viewer hiding older AGY messages when transcript step indexes have gaps. Entries now link in actual record order so older history remains pageable and searchable. Switching sessions does not delete disk history; earlier messages are still loaded on demand. This does not rewrite AGY logs or change compaction.

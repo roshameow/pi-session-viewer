@@ -54,3 +54,25 @@ fn engine_classification_requires_exact_agy_transcript_shape() {
     assert_eq!(agy_pane_liveness(false, true, &path, Some("/bin/zsh")), Some(true));
     assert_eq!(agy_pane_liveness(true, true, &path, Some("/bin/zsh")), Some(false));
 }
+
+#[test]
+fn incomplete_timestamps_are_rejected_without_inventory_panics() {
+    assert_eq!(parse_iso_ts("2026-01-01T12:34"), None);
+    assert_eq!(parse_iso_ts("2026-01-01T12"), None);
+    assert_eq!(parse_iso_ts("2026-01-01T12:34:56:78"), None);
+    assert!(parse_iso_ts("2026-01-01T12:34:56Z").is_some());
+}
+
+#[test]
+fn rmux_unicode_names_are_not_uuid_slices() {
+    for name in [
+        "测试兼容窗口.0", "s😀中文窗口.0", "中文会话", "ééééééé",
+        "😀😀😀😀", "ascii", "s中文测试窗口.0",
+    ] {
+        assert_eq!(trailing_id12(name), None, "{name}");
+        assert_eq!(window_id8(name), None, "{name}");
+    }
+    assert_eq!(trailing_id12("中文项目-12345678-abc").as_deref(), Some("12345678-abc"));
+    assert_eq!(trailing_id12("😀12345678-abc").as_deref(), Some("12345678-abc"));
+    assert_eq!(window_id8("s12345678.0"), Some("12345678"));
+}

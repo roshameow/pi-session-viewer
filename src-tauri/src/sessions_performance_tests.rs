@@ -340,7 +340,9 @@ list-panes)
   printf 'detached:main.0 72 0 %s/brain/11111111-1111-4111-8111-111111111111/.system_generated/logs/transcript.jsonl\n' "$AGY_CLI_HOME"
   printf 'unknown:main.0 73 0 %s/brain/33333333-3333-4333-8333-333333333333/.system_generated/logs/transcript.jsonl\n' "$AGY_CLI_HOME"
   printf 'dead:main.0 74 1 %s/brain/44444444-4444-4444-8444-444444444444/.system_generated/logs/transcript.jsonl\n' "$AGY_CLI_HOME"
-  printf 'wrapper:main.0 75 0 \n';;
+  printf 'wrapper:main.0 75 0 \n'
+  printf '中文会话:测试兼容窗口.0 75 0 \n'
+  printf 'emoji:s😀中文窗口.0 75 0 \n';;
 list-clients) printf 'attached\n';;
 esac"#.into(),
                 "lsof" => "printf 'p11\\nn/local-cwd\\n'".into(),

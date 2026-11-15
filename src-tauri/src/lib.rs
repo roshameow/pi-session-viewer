@@ -19,16 +19,33 @@ use tauri::async_runtime::spawn_blocking;
 // spawn_blocking — same principle as agy_bridge.py's asyncio.to_thread: never
 // block the event loop / UI thread.
 
-#[tauri::command]
-async fn list_projects() -> Vec<sessions::Project> {
-    spawn_blocking(|| remote::with_current_source(sessions::list_projects)).await.unwrap_or_default()
+// A failed inventory is not an empty inventory. Returning an IPC error lets
+// the frontend retain previous rows and show the existing error/retry UI.
+async fn inventory_task<T: Send + 'static>(
+    name: &'static str, read: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    spawn_blocking(move || remote::with_current_source(read))
+        .await.map_err(|e| format!("{name} task failed: {e}"))
+}
+
+fn inventory_count(name: &str, count: usize) {
+    if std::env::var("PI_VIEWER_DIAGNOSTICS").as_deref() == Ok("1") {
+        eprintln!("viewer inventory {name}: {count}");
+    }
 }
 
 #[tauri::command]
-async fn list_sessions(project_key: String) -> Vec<sessions::SessionMeta> {
-    spawn_blocking(move || remote::with_current_source(|| sessions::list_sessions(&project_key)))
-        .await
-        .unwrap_or_default()
+async fn list_projects() -> Result<Vec<sessions::Project>, String> {
+    let projects = inventory_task("list_projects", sessions::list_projects).await?;
+    inventory_count("projects", projects.len());
+    Ok(projects)
+}
+
+#[tauri::command]
+async fn list_sessions(project_key: String) -> Result<Vec<sessions::SessionMeta>, String> {
+    let sessions = inventory_task("list_sessions", move || sessions::list_sessions(&project_key)).await?;
+    inventory_count("sessions", sessions.len());
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -943,8 +960,8 @@ async fn session_status(path: String) -> String {
 
 /// Lightweight snapshot of currently running sessions across ALL projects.
 #[tauri::command]
-async fn list_running() -> Vec<sessions::RunningSession> {
-    spawn_blocking(|| remote::with_current_source(sessions::list_running)).await.unwrap_or_default()
+async fn list_running() -> Result<Vec<sessions::RunningSession>, String> {
+    inventory_task("list_running", sessions::list_running).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1001,5 +1018,22 @@ mod adaptation_tests {
         assert_eq!(rmux_window_target("pi-agents:worker-task-muabcdef-1234.0"),
             Some("pi-agents:worker-task-muabcdef-1234".into()));
         assert_eq!(rmux_window_target(""), None);
+    }
+}
+
+#[cfg(test)]
+mod inventory_error_tests {
+    use super::*;
+
+    #[test]
+    fn worker_failure_is_an_error_not_an_empty_session_list() {
+        tauri::async_runtime::block_on(async {
+            let empty = inventory_task("synthetic", Vec::<String>::new).await;
+            assert!(empty.unwrap().is_empty());
+            let failure = inventory_task("synthetic", || -> Vec<String> {
+                panic!("synthetic inventory failure");
+            }).await;
+            assert!(failure.unwrap_err().contains("synthetic task failed"));
+        });
     }
 }

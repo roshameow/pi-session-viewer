@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.17 — 2026-11-16
+
+- Fix an inventory panic when rmux window/session names contain Chinese, emoji or other multibyte text. Use checked UTF-8 slices for UUID suffix/prefix extraction and reject malformed timestamp shapes without indexing missing components.
+- Return project/session/running inventory worker failures as IPC errors instead of successful empty arrays, allowing existing frontend error handling to retain prior rows. Add Unicode fake-CLI coverage and a worker-failure propagation regression.
+- Add opt-in `PI_VIEWER_DIAGNOSTICS=1` aggregate project/session counts on stderr for installed-app acceptance; no session bodies, titles or paths are logged by this counter.
+
 ## 0.1.16 — 2026-11-16
 
 - Fix older AGY messages disappearing from the viewer when transcript `step_index` values have gaps. Link AGY entries to the actual previous parsed record in both bounded and legacy readers instead of inventing `step_index - 1` parent IDs. Preserve indexed parent linkage when loading full/preview record bodies; Pi parent-id branches remain unchanged.

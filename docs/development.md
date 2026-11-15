@@ -34,6 +34,14 @@ AGY 同样显示 attached / detached / dead / ended / unknown rmux，项目计�
 
 隔离测试：`npm run test:agy`；Rust 使用 `cargo test --offline --manifest-path src-tauri/Cargo.toml agy::runtime_tests`、`cargo test --offline --manifest-path src-tauri/Cargo.toml agy_runtime`、`cargo test --offline --manifest-path src-tauri/Cargo.toml sessions::runtime_tests` 和 `cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_inventory_fake_cli_isolated`，不启动真实 AGY、Pi 或 rmux。
 
+## 空列表与本机验收
+
+rmux 名称是任意用户文本，UUID 前后缀匹配必须用 UTF-8 安全切片；不能按长度直接截取中文或 emoji。`list_projects`、`list_sessions`、`list_running` 的阻塞任务异常返回 IPC error，不转换为空数组；前端沿用错误提示和既有列表保留逻辑。发生过缓存锁中毒时，需要在修复后重新启动进程。
+
+需要核验实际安装版时，可显式设置 `PI_VIEWER_DIAGNOSTICS=1` 并将 stderr 保存到被忽略的 `artifacts/`：仅输出项目/会话条数，不输出会话正文、标题或路径。计数证明后端已给实际页面请求返回数据，不等于完整视觉、分页、终端交互验收；不要只因单元测试通过就宣称原生界面恢复。诊断日志不提交。
+
+回归：`cargo test --offline --manifest-path src-tauri/Cargo.toml rmux_unicode`、`cargo test --offline --manifest-path src-tauri/Cargo.toml runtime_inventory_fake_cli_isolated`、`cargo test --offline --manifest-path src-tauri/Cargo.toml inventory_error_tests`。
+
 ## rmux 检测原理(为什么可靠)
 
 pi 会清理自己的 argv(只剩 `pi`),`ps -o command=` 永远看不到 `--session`。所以定位靠:
